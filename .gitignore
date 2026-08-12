@@ -1,0 +1,18 @@
+# Build outputs
+dist/
+dist-electron/
+out/
+
+# Dependencies
+node_modules/
+
+# Testing
+playwright-report/
+test-results/
+coverage/
+
+# OS & IDE
+.DS_Store
+*.log
+.vscode/
+.idea/

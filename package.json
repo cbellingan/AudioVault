@@ -1,0 +1,45 @@
+{
+  "name": "maker-hub",
+  "version": "1.0.0",
+  "description": "Multi-Channel Business Manager for Makers (Etsy, Amazon, eBay, Pinterest)",
+  "main": "dist-electron/main/index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc --noEmit",
+    "start": "electron ."
+  },
+  "keywords": [
+    "electron",
+    "maker",
+    "etsy",
+    "amazon",
+    "ebay",
+    "pinterest",
+    "e-commerce",
+    "inventory"
+  ],
+  "author": "Antigravity Maker Hub",
+  "license": "MIT",
+  "devDependencies": {
+    "@playwright/test": "^1.49.1",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.2.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "vite-plugin-electron": "^0.29.0",
+    "vite-plugin-electron-renderer": "^0.14.6",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}
