@@ -434,7 +434,7 @@ export default function App() {
   const allTags = Array.from(new Set(clips.flatMap((c) => c.userTags)));
 
   return (
-    <div onClick={() => contextMenu && setContextMenu(null)}>
+    <div className="app-container" onClick={() => contextMenu && setContextMenu(null)}>
       {/* Header */}
       <header className="app-header">
         <div className="brand-wrapper">

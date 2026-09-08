@@ -182,6 +182,7 @@ export interface AudioVaultAPI {
   // Pipeline Queue & Non-blocking Stream
   selectAndImport: () => Promise<{ batchId: string; count: number } | null>;
   enqueuePipelineBatch: (filePaths: string[], unmountVolumePath?: string) => Promise<{ batchId: string; count: number }>;
+  reconcileVault: () => Promise<number>;
   onPipelineStatus: (callback: (status: PipelineStatusEvent) => void) => () => void;
 
   // Audio Library & Clips

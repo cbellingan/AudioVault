@@ -80,59 +80,91 @@ export class TranscriptionService {
    */
   public decodeWavToFloat32_16k(filePath: string, maxDurationSeconds: number): Float32Array | null {
     if (!fs.existsSync(filePath)) return null;
-    const buffer = fs.readFileSync(filePath);
+    const stats = fs.statSync(filePath);
+    const fileSize = stats.size;
+    const fd = fs.openSync(filePath, 'r');
 
-    if (buffer.length < 44 || buffer.toString('ascii', 0, 4) !== 'RIFF') {
-      return null;
-    }
+    try {
+      // Read header to parse RIFF chunks
+      const headerSize = Math.min(65536, fileSize);
+      const header = Buffer.alloc(headerSize);
+      fs.readSync(fd, header, 0, headerSize, 0);
 
-    const sampleRate = buffer.readUInt32LE(24);
-    const numChannels = buffer.readUInt16LE(22);
-    const bitsPerSample = buffer.readUInt16LE(34);
-
-    if (bitsPerSample !== 16) {
-      // Basic 16-bit PCM expected
-      return null;
-    }
-
-    // Find 'data' chunk
-    let pos = 12;
-    let dataOffset = 44;
-    let dataLength = buffer.length - 44;
-
-    while (pos < buffer.length - 8) {
-      const chunkId = buffer.toString('ascii', pos, pos + 4);
-      const chunkSize = buffer.readUInt32LE(pos + 4);
-      if (chunkId === 'data') {
-        dataOffset = pos + 8;
-        dataLength = Math.min(chunkSize, buffer.length - dataOffset);
-        break;
+      if (headerSize < 12 || header.toString('ascii', 0, 4) !== 'RIFF') {
+        return null;
       }
-      pos += 8 + chunkSize;
+
+      let sampleRate = 44100;
+      let numChannels = 1;
+      let bitsPerSample = 16;
+      let audioFormat = 1;
+      let dataOffset = 44;
+      let dataLength = fileSize - 44;
+
+      let pos = 12;
+      while (pos < headerSize - 8) {
+        const chunkId = header.toString('ascii', pos, pos + 4);
+        const chunkSize = header.readUInt32LE(pos + 4);
+
+        if (chunkId === 'fmt ') {
+          if (pos + 8 + 16 <= headerSize) {
+            audioFormat = header.readUInt16LE(pos + 8);
+            numChannels = Math.max(1, header.readUInt16LE(pos + 10));
+            sampleRate = Math.max(8000, header.readUInt32LE(pos + 12));
+            bitsPerSample = Math.max(8, header.readUInt16LE(pos + 22));
+          }
+        } else if (chunkId === 'data') {
+          dataOffset = pos + 8;
+          dataLength = Math.min(chunkSize, fileSize - dataOffset);
+          break;
+        }
+
+        pos += 8 + chunkSize;
+        if (chunkSize % 2 !== 0) pos++;
+      }
+
+      const bytesPerSample = Math.max(1, Math.floor(bitsPerSample / 8));
+      const blockAlign = bytesPerSample * numChannels;
+      const totalInputSamples = blockAlign > 0 ? Math.floor(dataLength / blockAlign) : 0;
+      const maxSamplesToRead = Math.min(totalInputSamples, Math.floor(sampleRate * maxDurationSeconds));
+
+      if (maxSamplesToRead <= 0) return null;
+
+      const bytesToRead = maxSamplesToRead * blockAlign;
+      const rawAudioBuffer = Buffer.alloc(bytesToRead);
+      fs.readSync(fd, rawAudioBuffer, 0, bytesToRead, dataOffset);
+
+      // Linear resampling ratio to 16000 Hz
+      const targetSampleRate = 16000;
+      const resampleRatio = targetSampleRate / sampleRate;
+      const targetLength = Math.floor(maxSamplesToRead * resampleRatio);
+      const output = new Float32Array(targetLength);
+
+      for (let i = 0; i < targetLength; i++) {
+        const originalSampleIndex = Math.floor(i / resampleRatio);
+        const bytePos = originalSampleIndex * blockAlign;
+        if (bytePos + bytesPerSample > rawAudioBuffer.length) break;
+
+        let val = 0;
+        if (audioFormat === 3 && bitsPerSample === 32) {
+          val = rawAudioBuffer.readFloatLE(bytePos);
+        } else if (bitsPerSample === 16) {
+          val = rawAudioBuffer.readInt16LE(bytePos) / 32768.0;
+        } else if (bitsPerSample === 24) {
+          val = rawAudioBuffer.readIntLE(bytePos, 3) / 8388608.0;
+        } else if (bitsPerSample === 32) {
+          val = rawAudioBuffer.readInt32LE(bytePos) / 2147483648.0;
+        } else {
+          val = (rawAudioBuffer.readUInt8(bytePos) - 128) / 128.0;
+        }
+
+        if (isNaN(val) || !isFinite(val)) val = 0;
+        output[i] = Math.max(-1.0, Math.min(1.0, val));
+      }
+
+      return output;
+    } finally {
+      fs.closeSync(fd);
     }
-
-    const bytesPerSample = 2;
-    const totalInputSamples = Math.floor(dataLength / (bytesPerSample * numChannels));
-    const maxSamplesToRead = Math.min(totalInputSamples, Math.floor(sampleRate * maxDurationSeconds));
-
-    if (maxSamplesToRead <= 0) return null;
-
-    // Linear resampling ratio to 16000 Hz
-    const targetSampleRate = 16000;
-    const resampleRatio = targetSampleRate / sampleRate;
-    const targetLength = Math.floor(maxSamplesToRead * resampleRatio);
-    const output = new Float32Array(targetLength);
-
-    for (let i = 0; i < targetLength; i++) {
-      const originalSampleIndex = Math.floor(i / resampleRatio);
-      const bytePos = dataOffset + originalSampleIndex * bytesPerSample * numChannels;
-      if (bytePos + 2 > buffer.length) break;
-
-      // Read channel 0 (mono / left channel)
-      const int16Val = buffer.readInt16LE(bytePos);
-      output[i] = int16Val / 32768.0;
-    }
-
-    return output;
   }
 }

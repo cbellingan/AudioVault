@@ -93,4 +93,53 @@ describe('Deduplication & Classification Engine Tests', () => {
     expect(classification.category).toBe('music');
     expect(classification.confidence).toBeGreaterThan(0.7);
   });
+
+  it('correctly parses BWF Broadcast Wave format with bext chunk before fmt and 32-bit float', () => {
+    // Generate a BWF file: RIFF header -> bext chunk -> fmt chunk (32-bit float) -> data chunk
+    const bextData = Buffer.alloc(256, 'bext metadata');
+    const bextChunk = Buffer.alloc(8 + 256);
+    bextChunk.write('bext', 0);
+    bextChunk.writeUInt32LE(256, 4);
+    bextData.copy(bextChunk, 8);
+
+    // fmt chunk: IEEE Float (format 3), 2 channels, 48000 Hz, 32 bits
+    const fmtChunk = Buffer.alloc(8 + 16);
+    fmtChunk.write('fmt ', 0);
+    fmtChunk.writeUInt32LE(16, 4);
+    fmtChunk.writeUInt16LE(3, 8); // format 3 = IEEE float
+    fmtChunk.writeUInt16LE(2, 10); // 2 channels
+    fmtChunk.writeUInt32LE(48000, 12); // 48kHz
+    fmtChunk.writeUInt32LE(48000 * 2 * 4, 16); // byte rate
+    fmtChunk.writeUInt16LE(8, 20); // block align
+    fmtChunk.writeUInt16LE(32, 22); // 32 bits per sample
+
+    // data chunk: 48000 samples * 2 channels * 4 bytes = 384000 bytes (1 second)
+    const numSamples = 48000;
+    const dataSize = numSamples * 2 * 4;
+    const dataChunk = Buffer.alloc(8 + dataSize);
+    dataChunk.write('data', 0);
+    dataChunk.writeUInt32LE(dataSize, 4);
+    for (let i = 0; i < numSamples; i++) {
+      const floatVal = Math.sin((2 * Math.PI * 440 * i) / 48000) * 0.5;
+      dataChunk.writeFloatLE(floatVal, 8 + i * 8); // left
+      dataChunk.writeFloatLE(floatVal, 8 + i * 8 + 4); // right
+    }
+
+    const totalRiffSize = 4 + bextChunk.length + fmtChunk.length + dataChunk.length;
+    const riffHeader = Buffer.alloc(12);
+    riffHeader.write('RIFF', 0);
+    riffHeader.writeUInt32LE(totalRiffSize, 4);
+    riffHeader.write('WAVE', 8);
+
+    const bwfFile = Buffer.concat([riffHeader, bextChunk, fmtChunk, dataChunk]);
+    const filePath = path.join(tempDir, 'bwf_32float.wav');
+    fs.writeFileSync(filePath, bwfFile);
+
+    const result = audioEngine.analyzeWavFile(filePath, 50);
+    expect(result.features.durationSeconds).toBeCloseTo(1.0, 1);
+    expect(result.features.sampleRate).toBe(48000);
+    expect(result.features.channels).toBe(2);
+    expect(result.peaks.length).toBe(50);
+    expect(result.peaks[10]).toBeGreaterThan(0.2);
+  });
 });

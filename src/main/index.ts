@@ -95,6 +95,11 @@ app.whenReady().then(() => {
     }
   });
 
+  // Reconcile and process any unprocessed takes on startup
+  setTimeout(() => {
+    pipelineOrchestrator.enqueueUnprocessedRawFiles();
+  }, 1000);
+
   // Background check for mounted external media
   const volumeInterval = setInterval(async () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -151,6 +156,10 @@ function setupIpcHandlers() {
   // Non-blocking batch pipeline enqueue
   ipcMain.handle('vault:enqueue-pipeline-batch', async (_, filePaths: string[], unmountVolumePath?: string) => {
     return pipelineOrchestrator.enqueueBatch(filePaths, unmountVolumePath);
+  });
+
+  ipcMain.handle('vault:reconcile-vault', async (): Promise<number> => {
+    return pipelineOrchestrator.enqueueUnprocessedRawFiles();
   });
 
   // Native Open Dialog to import folders, SD cards, or audio files

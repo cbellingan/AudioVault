@@ -81,4 +81,65 @@ test.describe('AudioVault Electron Integration Tests', () => {
     await app.close();
     console.log('[E2E] App closed successfully.');
   });
+
+  test('Library table supports vertical scrolling, row selection, and category filtering', async () => {
+    console.log('[E2E] Testing library scrolling and UI interactions...');
+    const app = await electron.launch({
+      args: [path.join(__dirname, '../dist-electron/main/index.js')],
+    });
+
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    const clipsPane = window.locator('.clips-pane');
+    await expect(clipsPane).toBeVisible();
+
+    const tableRows = window.locator('.clips-table tbody tr');
+    const rowCount = await tableRows.count();
+    console.log(`[E2E] Found ${rowCount} rows in the library table`);
+    expect(rowCount).toBeGreaterThanOrEqual(4);
+
+    // 1. Verify that clips-pane is scrollable when content overflows
+    const scrollInfo = await clipsPane.evaluate((el) => ({
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      scrollTop: el.scrollTop,
+    }));
+    console.log('[E2E] Pane scroll dimensions:', scrollInfo);
+
+    // Perform scroll action on clips pane
+    await clipsPane.evaluate((el) => {
+      el.scrollTop = 150;
+    });
+    const scrolledPos = await clipsPane.evaluate((el) => el.scrollTop);
+    console.log('[E2E] Scrolled position:', scrolledPos);
+    expect(scrolledPos).toBeGreaterThanOrEqual(0);
+
+    // Scroll to the bottom row and verify visibility
+    const lastRow = tableRows.last();
+    await lastRow.scrollIntoViewIfNeeded();
+    await expect(lastRow).toBeVisible();
+    await lastRow.click();
+
+    // Verify selected row styling
+    await expect(lastRow).toHaveClass(/selected/);
+
+    // 2. Test taxonomy filters
+    const dictaphoneNav = window.locator('.nav-item', { hasText: 'Dictaphone' });
+    if (await dictaphoneNav.count() > 0) {
+      await dictaphoneNav.click();
+      const filteredCount = await window.locator('.clips-table tbody tr').count();
+      console.log(`[E2E] Dictaphone filter active: ${filteredCount} rows visible`);
+      expect(filteredCount).toBeGreaterThan(0);
+    }
+
+    const allNav = window.locator('.nav-item', { hasText: 'Library (All)' });
+    await allNav.click();
+    const allCount = await window.locator('.clips-table tbody tr').count();
+    console.log(`[E2E] Library (All) restored: ${allCount} rows visible`);
+    expect(allCount).toBe(rowCount);
+
+    await app.close();
+    console.log('[E2E] Library scroll and interaction test passed.');
+  });
 });

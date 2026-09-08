@@ -28,6 +28,7 @@ const audioVaultApi: AudioVaultAPI = {
   selectAndImport: () => ipcRenderer.invoke('vault:select-and-import'),
   enqueuePipelineBatch: (filePaths: string[], unmountVolumePath?: string) =>
     ipcRenderer.invoke('vault:enqueue-pipeline-batch', filePaths, unmountVolumePath),
+  reconcileVault: () => ipcRenderer.invoke('vault:reconcile-vault'),
   onPipelineStatus: (callback: (status: PipelineStatusEvent) => void) => {
     const handler = (_: unknown, status: PipelineStatusEvent) => callback(status);
     ipcRenderer.on('vault:pipeline-status', handler);

@@ -26,110 +26,141 @@ export class AudioEngine {
     features: AcousticFeatures;
     peaks: number[];
   } {
-    const buffer = fs.readFileSync(filePath);
-    let sampleRate = 44100;
-    let numChannels = 1;
-    let bitsPerSample = 16;
-    let dataOffset = 44;
-    let dataLength = buffer.length - 44;
+    const stats = fs.statSync(filePath);
+    const fileSize = stats.size;
+    const fd = fs.openSync(filePath, 'r');
 
-    // Parse RIFF header if available
-    if (buffer.length >= 44 && buffer.toString('ascii', 0, 4) === 'RIFF') {
-      sampleRate = buffer.readUInt32LE(24);
-      numChannels = buffer.readUInt16LE(22);
-      bitsPerSample = buffer.readUInt16LE(34);
+    try {
+      // Read up to 64KB for header chunk parsing
+      const headerSize = Math.min(65536, fileSize);
+      const header = Buffer.alloc(headerSize);
+      fs.readSync(fd, header, 0, headerSize, 0);
 
-      // Find data chunk
-      let pos = 12;
-      while (pos < buffer.length - 8) {
-        const chunkId = buffer.toString('ascii', pos, pos + 4);
-        const chunkSize = buffer.readUInt32LE(pos + 4);
-        if (chunkId === 'data') {
-          dataOffset = pos + 8;
-          dataLength = Math.min(chunkSize, buffer.length - dataOffset);
-          break;
+      let sampleRate = 44100;
+      let numChannels = 1;
+      let bitsPerSample = 16;
+      let audioFormat = 1; // 1 = PCM, 3 = IEEE float
+      let dataOffset = 44;
+      let dataLength = fileSize - 44;
+
+      if (headerSize >= 12 && header.toString('ascii', 0, 4) === 'RIFF') {
+        let pos = 12;
+        while (pos < headerSize - 8) {
+          const chunkId = header.toString('ascii', pos, pos + 4);
+          const chunkSize = header.readUInt32LE(pos + 4);
+
+          if (chunkId === 'fmt ') {
+            if (pos + 8 + 16 <= headerSize) {
+              audioFormat = header.readUInt16LE(pos + 8);
+              numChannels = Math.max(1, header.readUInt16LE(pos + 10));
+              sampleRate = Math.max(8000, header.readUInt32LE(pos + 12));
+              bitsPerSample = Math.max(8, header.readUInt16LE(pos + 22));
+            }
+          } else if (chunkId === 'data') {
+            dataOffset = pos + 8;
+            dataLength = Math.min(chunkSize, fileSize - dataOffset);
+            break;
+          }
+
+          pos += 8 + chunkSize;
+          if (chunkSize % 2 !== 0) pos++; // RIFF 2-byte word boundary alignment
         }
-        pos += 8 + chunkSize;
       }
+
+      const bytesPerSample = Math.max(1, Math.floor(bitsPerSample / 8));
+      const blockAlign = bytesPerSample * numChannels;
+      const totalSamples = blockAlign > 0 ? Math.floor(dataLength / blockAlign) : 0;
+      const durationSeconds = totalSamples > 0 && sampleRate > 0 ? totalSamples / sampleRate : 0;
+
+      // Downsample waveform peaks and compute acoustic features across file
+      const peaks: number[] = [];
+      let sumSquares = 0;
+      let zeroCrossings = 0;
+      let silentFrames = 0;
+      let maxVal = 0;
+      let prevVal = 0;
+      let sampledCount = 0;
+
+      // Sample evenly across the file
+      const numBlocks = Math.min(maxPeaks, Math.max(1, totalSamples));
+      const blockSize = Math.max(1, Math.floor(totalSamples / numBlocks));
+      const samplesPerSlice = Math.min(256, blockSize);
+      const sliceByteSize = samplesPerSlice * blockAlign;
+      const sliceBuf = Buffer.alloc(sliceByteSize);
+
+      for (let b = 0; b < numBlocks; b++) {
+        const sampleOffset = b * blockSize;
+        const fileBytePos = dataOffset + sampleOffset * blockAlign;
+        if (fileBytePos + sliceByteSize > fileSize) break;
+
+        const bytesRead = fs.readSync(fd, sliceBuf, 0, sliceByteSize, fileBytePos);
+        const samplesInSlice = Math.floor(bytesRead / blockAlign);
+        let blockMax = 0;
+
+        for (let s = 0; s < samplesInSlice; s++) {
+          const sampleByteIdx = s * blockAlign;
+          let val = 0;
+
+          if (audioFormat === 3 && bitsPerSample === 32) {
+            // IEEE 32-bit float
+            val = sliceBuf.readFloatLE(sampleByteIdx);
+          } else if (bitsPerSample === 16) {
+            // 16-bit signed PCM
+            val = sliceBuf.readInt16LE(sampleByteIdx) / 32768.0;
+          } else if (bitsPerSample === 24) {
+            // 24-bit signed PCM
+            val = sliceBuf.readIntLE(sampleByteIdx, 3) / 8388608.0;
+          } else if (bitsPerSample === 32) {
+            // 32-bit signed integer PCM
+            val = sliceBuf.readInt32LE(sampleByteIdx) / 2147483648.0;
+          } else {
+            // 8-bit unsigned PCM
+            val = (sliceBuf.readUInt8(sampleByteIdx) - 128) / 128.0;
+          }
+
+          if (isNaN(val) || !isFinite(val)) val = 0;
+          const absVal = Math.min(1.0, Math.abs(val));
+          if (absVal > blockMax) blockMax = absVal;
+          if (absVal > maxVal) maxVal = absVal;
+
+          sumSquares += val * val;
+          if ((val >= 0 && prevVal < 0) || (val < 0 && prevVal >= 0)) {
+            zeroCrossings++;
+          }
+          if (absVal < 0.05) {
+            silentFrames++;
+          }
+          prevVal = val;
+          sampledCount++;
+        }
+
+        peaks.push(parseFloat(blockMax.toFixed(3)));
+      }
+
+      while (peaks.length < maxPeaks) {
+        peaks.push(0.01);
+      }
+
+      const rms = sampledCount > 0 ? Math.sqrt(sumSquares / sampledCount) : 0;
+      const silenceRatio = sampledCount > 0 ? silentFrames / sampledCount : 0;
+      const zeroCrossingRate = sampledCount > 0 ? zeroCrossings / sampledCount : 0;
+      const dynamicRangeDb = maxVal > 0 && rms > 0 ? 20 * Math.log10(maxVal / Math.max(rms, 0.0001)) : 0;
+
+      return {
+        features: {
+          durationSeconds: parseFloat(durationSeconds.toFixed(2)),
+          sampleRate,
+          channels: numChannels,
+          rms: parseFloat(rms.toFixed(3)),
+          silenceRatio: parseFloat(silenceRatio.toFixed(3)),
+          zeroCrossingRate: parseFloat(zeroCrossingRate.toFixed(3)),
+          dynamicRangeDb: parseFloat(dynamicRangeDb.toFixed(1)),
+        },
+        peaks,
+      };
+    } finally {
+      fs.closeSync(fd);
     }
-
-    const bytesPerSample = bitsPerSample / 8;
-    const totalSamples = Math.floor(dataLength / (bytesPerSample * numChannels));
-    const durationSeconds = totalSamples > 0 ? totalSamples / sampleRate : 0;
-
-    // Downsample waveform peaks and compute acoustic features
-    const peaks: number[] = [];
-    let sumSquares = 0;
-    let zeroCrossings = 0;
-    let silentFrames = 0;
-    let maxVal = 0;
-    let prevVal = 0;
-
-    const blockSize = Math.max(1, Math.floor(totalSamples / maxPeaks));
-    let currentBlockMax = 0;
-    let sampleCounter = 0;
-
-    const step = Math.max(1, Math.floor(totalSamples / 50000));
-    let sampledCount = 0;
-
-    for (let i = 0; i < totalSamples; i += step) {
-      const byteIndex = dataOffset + i * bytesPerSample * numChannels;
-      if (byteIndex + 2 > buffer.length) break;
-
-      let val = 0;
-      if (bitsPerSample === 16) {
-        val = buffer.readInt16LE(byteIndex) / 32768.0;
-      } else {
-        val = (buffer.readUInt8(byteIndex) - 128) / 128.0;
-      }
-
-      const absVal = Math.abs(val);
-      if (absVal > currentBlockMax) currentBlockMax = absVal;
-      if (absVal > maxVal) maxVal = absVal;
-
-      sumSquares += val * val;
-      if ((val >= 0 && prevVal < 0) || (val < 0 && prevVal >= 0)) {
-        zeroCrossings++;
-      }
-      if (absVal < 0.05) {
-        silentFrames++;
-      }
-      prevVal = val;
-      sampledCount++;
-
-      sampleCounter += step;
-      if (sampleCounter >= blockSize) {
-        peaks.push(parseFloat(currentBlockMax.toFixed(3)));
-        currentBlockMax = 0;
-        sampleCounter = 0;
-      }
-    }
-
-    if (peaks.length < maxPeaks && currentBlockMax > 0) {
-      peaks.push(parseFloat(currentBlockMax.toFixed(3)));
-    }
-
-    while (peaks.length < maxPeaks) {
-      peaks.push(0.01);
-    }
-
-    const rms = sampledCount > 0 ? Math.sqrt(sumSquares / sampledCount) : 0;
-    const silenceRatio = sampledCount > 0 ? silentFrames / sampledCount : 0;
-    const zeroCrossingRate = sampledCount > 0 ? zeroCrossings / sampledCount : 0;
-    const dynamicRangeDb = maxVal > 0 && rms > 0 ? 20 * Math.log10(maxVal / Math.max(rms, 0.0001)) : 0;
-
-    return {
-      features: {
-        durationSeconds: parseFloat(durationSeconds.toFixed(2)),
-        sampleRate,
-        channels: numChannels,
-        rms: parseFloat(rms.toFixed(3)),
-        silenceRatio: parseFloat(silenceRatio.toFixed(3)),
-        zeroCrossingRate: parseFloat(zeroCrossingRate.toFixed(3)),
-        dynamicRangeDb: parseFloat(dynamicRangeDb.toFixed(1)),
-      },
-      peaks,
-    };
   }
 
   /**

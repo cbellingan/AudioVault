@@ -102,6 +102,55 @@ export class PipelineOrchestrator extends EventEmitter {
     return { batchId, count: addedCount };
   }
 
+  /**
+   * Scans local vault raw directory for any existing files that have not yet completed analysis,
+   * queuing them directly for background SSD analysis.
+   */
+  public enqueueUnprocessedRawFiles(): number {
+    const rawDir = this.dedupEngine.getRawDir();
+    if (!fs.existsSync(rawDir)) return 0;
+
+    const registeredPaths = new Set(this.dedupEngine.getAllRawFiles().map((r) => r.storagePath));
+    const entries = fs.readdirSync(rawDir);
+    let count = 0;
+
+    for (const name of entries) {
+      if (name.startsWith('.')) continue;
+      const fullPath = path.join(rawDir, name);
+      if (!registeredPaths.has(fullPath) && fs.existsSync(fullPath)) {
+        try {
+          const stats = fs.statSync(fullPath);
+          if (stats.isFile() && stats.size > 44) {
+            const fingerprint = this.dedupEngine.computeFileFingerprint(fullPath);
+            const job: IngestJobProgress = {
+              jobId: `reconcile_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+              sourcePath: fullPath,
+              filename: name.replace(/^\d+_/, ''),
+              stage: 'queued_analysis',
+              bytesCopied: stats.size,
+              totalBytes: stats.size,
+              copyPercent: 100,
+              analysisPercent: 0,
+              currentTaskDescription: 'Analyzing unprocessed take from vault...',
+            };
+            (job as any).targetPath = fullPath;
+            (job as any).fingerprint = fingerprint;
+
+            this.analysisQueue.push(job);
+            this.totalBatchJobsCount++;
+            count++;
+          }
+        } catch (err) {}
+      }
+    }
+
+    if (count > 0) {
+      this.throttleBroadcastStatus();
+      this.processNextAnalysis();
+    }
+    return count;
+  }
+
   public getStatus(): PipelineStatusEvent {
     return {
       totalJobs: this.totalBatchJobsCount,
@@ -200,15 +249,20 @@ export class PipelineOrchestrator extends EventEmitter {
       const targetPath = (currentJob as any).targetPath;
       const fingerprint = (currentJob as any).fingerprint;
       const stats = fs.statSync(targetPath);
+      console.log(`[AudioVault Pipeline] 🚀 Starting analysis of: ${currentJob.filename} (${(stats.size / 1024 / 1024).toFixed(1)} MB)`);
 
       // 1. Acoustic & Waveform Analysis
       const analysis = this.audioEngine.analyzeWavFile(targetPath);
+      console.log(`[AudioVault Pipeline] 📊 Analyzed WAV: ${analysis.features.sampleRate}Hz, ${analysis.features.channels}ch, ${analysis.features.durationSeconds}s, peaks: ${analysis.peaks.length}`);
       currentJob.analysisPercent = 50;
       currentJob.currentTaskDescription = 'Running local Whisper speech transcription...';
       this.throttleBroadcastStatus();
 
       // 2. Local Whisper Transcription
       const transcript = await this.audioEngine.transcribeAudio(targetPath);
+      if (transcript) {
+        console.log(`[AudioVault Pipeline] 🗣️ Whisper transcript for ${currentJob.filename}: "${transcript.slice(0, 60)}..."`);
+      }
       currentJob.analysisPercent = 85;
       currentJob.currentTaskDescription = 'Classifying audio events & generating metadata...';
       this.throttleBroadcastStatus();
@@ -219,6 +273,7 @@ export class PipelineOrchestrator extends EventEmitter {
         currentJob.filename,
         transcript
       );
+      console.log(`[AudioVault Pipeline] 🏷️ Classified as: ${classification.category.toUpperCase()} (${(classification.confidence * 100).toFixed(0)}%)`);
       currentJob.analysisPercent = 95;
       this.throttleBroadcastStatus();
 
@@ -262,8 +317,10 @@ export class PipelineOrchestrator extends EventEmitter {
       currentJob.analysisPercent = 100;
       currentJob.currentTaskDescription = `Completed. Categorized as ${classification.category.toUpperCase()}`;
       this.completedJobsCount++;
+      console.log(`[AudioVault Pipeline] ✅ Registered into Vault: ${currentJob.filename}`);
       this.emit('job-completed', currentJob, defaultClip);
     } catch (err: any) {
+      console.error(`[AudioVault Pipeline] ❌ Analysis FAILED for ${currentJob.filename}:`, err);
       currentJob.stage = 'failed';
       currentJob.error = err.message || String(err);
       this.failedJobsCount++;

@@ -55,6 +55,19 @@ body {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+.app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
 }
 
 /* Custom Scrollbar */
@@ -75,6 +88,7 @@ body {
 
 /* Header */
 .app-header {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -199,12 +213,15 @@ body {
 .app-body {
   display: flex;
   flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 
 /* Sidebar */
 .app-sidebar {
   width: 250px;
+  flex-shrink: 0;
+  min-height: 0;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border-color);
   display: flex;
@@ -290,14 +307,18 @@ body {
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0;
   overflow: hidden;
 }
 
 /* Clips Table Pane (Top) */
 .clips-pane {
   flex: 1;
+  min-height: 0;
   padding: 1.25rem 1.5rem;
   overflow-y: auto;
+  overflow-x: auto;
+  overscroll-behavior: contain;
 }
 
 .table-header-row {
@@ -309,23 +330,26 @@ body {
 
 .clips-table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   text-align: left;
   font-size: 0.88rem;
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
-  overflow: hidden;
 }
 
 .clips-table th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   padding: 0.85rem 1rem;
   color: var(--text-muted);
   font-size: 0.78rem;
   font-weight: 600;
   text-transform: uppercase;
   border-bottom: 1px solid var(--border-color);
-  background: rgba(255, 255, 255, 0.02);
+  background: #0b1120;
 }
 
 .clips-table td {
@@ -365,6 +389,9 @@ body {
 /* Interactive Waveform Pane (Bottom) */
 .waveform-dock {
   height: 250px;
+  min-height: 220px;
+  max-height: 270px;
+  flex-shrink: 0;
   background: rgba(11, 17, 32, 0.95);
   border-top: 1px solid var(--border-color);
   display: flex;
