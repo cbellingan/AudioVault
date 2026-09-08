@@ -324,4 +324,59 @@ test.describe('AudioVault Electron Integration Tests', () => {
     console.log('[E2E] Clip context menu and metadata modal verified successfully!');
     await app.close();
   });
+
+  test('Right-click context menu exports clip or selection to MP3 with metadata and provides Show in Finder', async () => {
+    console.log('[E2E] Testing MP3 export with ID3 metadata and Show in Finder...');
+    const app = await electron.launch({
+      args: [path.join(__dirname, '../dist-electron/main/index.js')],
+    });
+
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    // 1. Right-click on a clip row
+    const firstRow = window.locator('.clips-table tbody tr').first();
+    await expect(firstRow).toBeVisible();
+    await firstRow.click({ button: 'right' });
+
+    // 2. Context menu should show "Export to MP3" or "Re-export to MP3"
+    const contextMenu = window.locator('.clip-context-menu');
+    await expect(contextMenu).toBeVisible();
+
+    const exportMp3Item = contextMenu.locator('.context-menu-item', { hasText: /Export to MP3|Re-export to MP3/ });
+    await expect(exportMp3Item).toBeVisible();
+
+    // Click export to MP3
+    await exportMp3Item.click();
+
+    // 3. Verify MP3 badge appears on the row
+    const mp3Badge = firstRow.locator('.badge-mp3');
+    await expect(mp3Badge).toBeVisible({ timeout: 10000 });
+    console.log('[E2E] MP3 badge visible on clip row!');
+
+    // 4. Right-click on the row again
+    await firstRow.click({ button: 'right' });
+    await expect(contextMenu).toBeVisible();
+
+    // Now "Show in Finder" and "Re-export to MP3" should be present
+    const showInFinderItem = contextMenu.locator('.context-menu-item', { hasText: 'Show in Finder' });
+    await expect(showInFinderItem).toBeVisible();
+
+    const reExportMp3Item = contextMenu.locator('.context-menu-item', { hasText: 'Re-export to MP3' });
+    await expect(reExportMp3Item).toBeVisible();
+
+    // 5. Verify Waveform context menu has MP3 export & Show in Finder
+    const canvas = window.locator('.waveform-canvas');
+    await canvas.click({ button: 'right', position: { x: 150, y: 40 } });
+
+    const waveformContextMenu = window.locator('.context-menu:not(.clip-context-menu)');
+    await expect(waveformContextMenu).toBeVisible();
+
+    const waveShowInFinder = waveformContextMenu.locator('.context-menu-item', { hasText: 'Show in Finder' });
+    await expect(waveShowInFinder).toBeVisible();
+
+    console.log('[E2E] Waveform and table MP3 context actions verified successfully!');
+    await app.close();
+  });
 });
+

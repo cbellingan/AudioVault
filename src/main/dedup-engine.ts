@@ -49,6 +49,10 @@ export class DedupEngine {
     return path.join(this.vaultDir, 'raw');
   }
 
+  public getExportsDir(): string {
+    return path.join(this.vaultDir, 'exports');
+  }
+
   private ensureDirectories() {
     if (!fs.existsSync(this.vaultDir)) {
       fs.mkdirSync(this.vaultDir, { recursive: true });
@@ -56,6 +60,10 @@ export class DedupEngine {
     const rawDir = this.getRawDir();
     if (!fs.existsSync(rawDir)) {
       fs.mkdirSync(rawDir, { recursive: true });
+    }
+    const exportsDir = this.getExportsDir();
+    if (!fs.existsSync(exportsDir)) {
+      fs.mkdirSync(exportsDir, { recursive: true });
     }
   }
 

@@ -1,6 +1,20 @@
-import { app, BrowserWindow, ipcMain, dialog, protocol, net } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, protocol, net, shell } from 'electron';
 import path from 'path';
 import fs from 'fs';
+import { execFile } from 'child_process';
+import util from 'util';
+
+const execFilePromise = util.promisify(execFile);
+
+function getFfmpegPath(): string {
+  if (fs.existsSync('/opt/homebrew/bin/ffmpeg')) {
+    return '/opt/homebrew/bin/ffmpeg';
+  }
+  if (fs.existsSync('/usr/local/bin/ffmpeg')) {
+    return '/usr/local/bin/ffmpeg';
+  }
+  return 'ffmpeg';
+}
 import { DedupEngine } from './dedup-engine';
 import { VolumeWatcher } from './volume-watcher';
 import { AudioEngine } from './audio-engine';
@@ -352,6 +366,105 @@ function setupIpcHandlers() {
       return destination;
     }
     return '';
+  });
+
+  ipcMain.handle(
+    'vault:export-clip-mp3',
+    async (
+      _,
+      clipId: string,
+      startSeconds?: number,
+      durationSeconds?: number,
+      targetPath?: string
+    ): Promise<{ filePath: string; clip: VirtualClip }> => {
+      const clip = dedupEngine.getVirtualClips().find((c) => c.id === clipId);
+      if (!clip) throw new Error(`Clip ${clipId} not found`);
+      const rawFile = dedupEngine.getRawFile(clip.parentFileId);
+      if (!rawFile || !fs.existsSync(rawFile.storagePath)) {
+        throw new Error(`Raw audio file for clip ${clipId} not found`);
+      }
+
+      const clipStart = typeof startSeconds === 'number' ? Math.max(0, startSeconds) : clip.startTimeSeconds;
+      const clipDur =
+        typeof durationSeconds === 'number'
+          ? Math.max(0.1, durationSeconds)
+          : Math.max(0.1, clip.endTimeSeconds - clipStart);
+
+      const isSubSelection =
+        typeof startSeconds === 'number' &&
+        typeof durationSeconds === 'number' &&
+        (Math.abs(startSeconds - clip.startTimeSeconds) > 0.1 ||
+          Math.abs(startSeconds + durationSeconds - clip.endTimeSeconds) > 0.1);
+
+      const cleanTitle = (clip.title || 'Untitled')
+        .replace(/[/\\?%*:|"<>]/g, '_')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      const fileName = isSubSelection
+        ? `${cleanTitle}_selection_${Math.round(clipStart)}s-${Math.round(clipStart + clipDur)}s.mp3`
+        : `${cleanTitle}.mp3`;
+
+      const destination = targetPath || path.join(dedupEngine.getExportsDir(), fileName);
+
+      // Metadata extraction
+      const artist = clip.userTags && clip.userTags.length > 0 ? clip.userTags.join(', ') : 'AudioVault';
+      const album = `AudioVault - ${clip.category.charAt(0).toUpperCase() + clip.category.slice(1)}`;
+      const genre = clip.category;
+      const comment = (clip.transcription || clip.notes || '').replace(/"/g, "'");
+      const date = clip.createdAt ? clip.createdAt.substring(0, 4) : new Date().getFullYear().toString();
+
+      const args = [
+        '-y',
+        '-ss',
+        clipStart.toFixed(3),
+        '-i',
+        rawFile.storagePath,
+        '-t',
+        clipDur.toFixed(3),
+        '-codec:a',
+        'libmp3lame',
+        '-b:a',
+        '320k',
+        '-id3v2_version',
+        '3',
+        '-write_id3v1',
+        '1',
+        '-metadata',
+        `title=${clip.title}`,
+        '-metadata',
+        `artist=${artist}`,
+        '-metadata',
+        `album=${album}`,
+        '-metadata',
+        `genre=${genre}`,
+        '-metadata',
+        `comment=${comment}`,
+        '-metadata',
+        `date=${date}`,
+        destination,
+      ];
+
+      await execFilePromise(getFfmpegPath(), args);
+
+      const updated = dedupEngine.updateVirtualClip(clipId, {
+        exportedMp3Path: destination,
+        exportedAt: new Date().toISOString(),
+      });
+
+      return {
+        filePath: destination,
+        clip: updated || clip,
+      };
+    }
+  );
+
+  ipcMain.handle('vault:show-in-finder', async (_, filePath: string): Promise<boolean> => {
+    if (filePath && fs.existsSync(filePath)) {
+      shell.showItemInFolder(filePath);
+      return true;
+    }
+    return false;
   });
 
   ipcMain.handle('vault:transcribe-clip-region', async (_, clipId: string, startSeconds?: number, durationSeconds?: number): Promise<VirtualClip | null> => {

@@ -698,6 +698,54 @@ export default function App() {
     setContextMenu(null);
   }
 
+  const [isExportingMp3, setIsExportingMp3] = useState<string | null>(null);
+
+  async function handleExportClipMp3(clip: VirtualClip, isSelection: boolean = false) {
+    if (!window.audioVault) {
+      alert(`Exporting MP3 for "${clip.title}" (simulated)`);
+      return;
+    }
+    setIsExportingMp3(clip.id);
+    try {
+      let start: number | undefined = undefined;
+      let dur: number | undefined = undefined;
+
+      if (isSelection && selectionRange && clip.id === selectedClipId) {
+        const clipDuration = Math.max(0.1, clip.endTimeSeconds - clip.startTimeSeconds);
+        start = clip.startTimeSeconds + selectionRange.start * clipDuration;
+        const end = clip.startTimeSeconds + selectionRange.end * clipDuration;
+        dur = Math.max(0.1, end - start);
+      }
+
+      const res = await window.audioVault.exportClipMp3(clip.id, start, dur);
+      if (res && res.clip) {
+        setClips((prev) => prev.map((c) => (c.id === res.clip.id ? res.clip : c)));
+      }
+    } catch (err) {
+      console.error('Failed to export clip to MP3:', err);
+      alert(`Export to MP3 failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsExportingMp3(null);
+      setContextMenu(null);
+      setClipContextMenu(null);
+    }
+  }
+
+  async function handleShowInFinder(filePath: string) {
+    if (!window.audioVault) return;
+    try {
+      const opened = await window.audioVault.showInFinder(filePath);
+      if (!opened) {
+        alert(`Could not find exported MP3 file on disk:\n${filePath}`);
+      }
+    } catch (err) {
+      console.error('Failed to show item in Finder:', err);
+    } finally {
+      setContextMenu(null);
+      setClipContextMenu(null);
+    }
+  }
+
   const [isTranscribingRegion, setIsTranscribingRegion] = useState(false);
 
   async function handleTranscribeRegion(customStartSec?: number, customEndSec?: number) {
@@ -1196,8 +1244,20 @@ export default function App() {
                     title="Right-click for options (Edit Title, Add Tags, AI Title, Category)"
                   >
                     <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
                         <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{clip.title}</span>
+                        {clip.exportedMp3Path && (
+                          <span
+                            className="badge-mp3"
+                            title={`Exported to MP3: ${clip.exportedMp3Path}\nClick to show in Finder`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleShowInFinder(clip.exportedMp3Path!);
+                            }}
+                          >
+                            MP3
+                          </span>
+                        )}
                         <button
                           type="button"
                           className="icon-btn-subtle"
@@ -1307,6 +1367,26 @@ export default function App() {
                 <button className="btn btn-primary btn-sm" onClick={handleExportClip}>
                   💾 Export WAV
                 </button>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => handleExportClipMp3(activeClip, !!selectionRange)}
+                  title="Export track or selection to MP3 with ID3 metadata"
+                >
+                  {isExportingMp3 === activeClip.id
+                    ? '⏳ Exporting...'
+                    : selectionRange
+                    ? '🎵 Export Selection MP3'
+                    : '🎵 Export MP3'}
+                </button>
+                {activeClip.exportedMp3Path && (
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => handleShowInFinder(activeClip.exportedMp3Path!)}
+                    title="Show exported MP3 in Finder"
+                  >
+                    📂 Show in Finder
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1515,6 +1595,31 @@ export default function App() {
           <div className="context-menu-item" onClick={handleExportClip}>
             💾 Export Region to WAV
           </div>
+          {activeClip && (
+            <>
+              <div
+                className="context-menu-item"
+                onClick={() => handleExportClipMp3(activeClip, !!selectionRange)}
+              >
+                {isExportingMp3 === activeClip.id
+                  ? '⏳ Exporting MP3...'
+                  : selectionRange
+                  ? '🎵 Export Selection to MP3'
+                  : activeClip.exportedMp3Path
+                  ? '🔄 Re-export to MP3'
+                  : '🎵 Export Track to MP3'}
+              </div>
+              {activeClip.exportedMp3Path && (
+                <div
+                  className="context-menu-item"
+                  style={{ color: 'var(--accent-amber, #fbbf24)', fontWeight: 500 }}
+                  onClick={() => handleShowInFinder(activeClip.exportedMp3Path!)}
+                >
+                  📂 Show in Finder
+                </div>
+              )}
+            </>
+          )}
           <div className="context-divider" />
           <div className="context-menu-item danger" onClick={handleExcludeRegion}>
             🗑️ Exclude / Delete Region
@@ -1563,6 +1668,29 @@ export default function App() {
             ) : (
               <span>🤖 Generate AI Title (Local LLM)</span>
             )}
+          </div>
+
+          <div className="context-divider" />
+
+          {clipContextMenu.clip.exportedMp3Path && (
+            <div
+              className="context-menu-item"
+              style={{ color: 'var(--accent-amber, #fbbf24)', fontWeight: 500 }}
+              onClick={() => handleShowInFinder(clipContextMenu.clip.exportedMp3Path!)}
+            >
+              📂 Show in Finder
+            </div>
+          )}
+
+          <div
+            className="context-menu-item"
+            onClick={() => handleExportClipMp3(clipContextMenu.clip, false)}
+          >
+            {isExportingMp3 === clipContextMenu.clip.id
+              ? '⏳ Exporting MP3...'
+              : clipContextMenu.clip.exportedMp3Path
+              ? '🔄 Re-export to MP3'
+              : '🎵 Export to MP3'}
           </div>
 
           <div className="context-divider" />

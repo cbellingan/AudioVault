@@ -114,6 +114,8 @@ export interface VirtualClip {
   transcriptionChunks?: Array<{ text: string; timestamp: [number, number] }>;
   notes?: string;
   isExcluded: boolean;
+  exportedMp3Path?: string;
+  exportedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -194,6 +196,8 @@ export interface AudioVaultAPI {
   deleteVirtualClip: (id: string) => Promise<boolean>;
   reclassifyClip: (clipId: string, category: PrimaryCategory, userTag?: string) => Promise<VirtualClip>;
   exportClip: (clipId: string, targetPath?: string) => Promise<string>;
+  exportClipMp3: (clipId: string, startSeconds?: number, durationSeconds?: number, targetPath?: string) => Promise<{ filePath: string; clip: VirtualClip }>;
+  showInFinder: (filePath: string) => Promise<boolean>;
   transcribeClipRegion: (clipId: string, startSeconds?: number, durationSeconds?: number) => Promise<VirtualClip | null>;
   generateAiTitle: (clipId: string) => Promise<VirtualClip>;
 }

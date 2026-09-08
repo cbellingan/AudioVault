@@ -47,6 +47,10 @@ const audioVaultApi: AudioVaultAPI = {
     ipcRenderer.invoke('vault:reclassify-clip', clipId, category, userTag),
   exportClip: (clipId: string, targetPath?: string) =>
     ipcRenderer.invoke('vault:export-clip', clipId, targetPath),
+  exportClipMp3: (clipId: string, startSeconds?: number, durationSeconds?: number, targetPath?: string) =>
+    ipcRenderer.invoke('vault:export-clip-mp3', clipId, startSeconds, durationSeconds, targetPath),
+  showInFinder: (filePath: string) =>
+    ipcRenderer.invoke('vault:show-in-finder', filePath),
   transcribeClipRegion: (clipId: string, startSeconds?: number, durationSeconds?: number) =>
     ipcRenderer.invoke('vault:transcribe-clip-region', clipId, startSeconds, durationSeconds),
   generateAiTitle: (clipId: string) =>

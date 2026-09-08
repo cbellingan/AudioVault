@@ -394,6 +394,27 @@ body {
 .cat-meeting { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); border: 1px solid rgba(245, 158, 11, 0.3); }
 .cat-ambient { background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); border: 1px solid rgba(16, 185, 129, 0.3); }
 
+.badge-mp3 {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.45rem;
+  border-radius: 3px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  background: rgba(6, 182, 212, 0.18);
+  color: var(--accent-cyan);
+  border: 1px solid rgba(6, 182, 212, 0.4);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.badge-mp3:hover {
+  background: rgba(6, 182, 212, 0.35);
+  box-shadow: 0 0 6px rgba(6, 182, 212, 0.4);
+}
+
 /* Interactive Waveform Pane (Bottom) */
 .waveform-dock {
   height: 290px;

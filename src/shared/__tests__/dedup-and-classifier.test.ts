@@ -201,4 +201,46 @@ describe('Deduplication & Classification Engine Tests', () => {
     expect(composite.startsWith('260907-180558 - ')).toBe(true);
     expect(composite.length).toBeGreaterThan('260907-180558 - '.length);
   });
+
+  it('manages export directory and stores exported MP3 metadata on virtual clips', () => {
+    const exportsDir = dedupEngine.getExportsDir();
+    expect(exportsDir).toBe(path.join(tempDir, 'exports'));
+    expect(fs.existsSync(exportsDir)).toBe(true);
+
+    const clipId = 'test-mp3-clip-1';
+    dedupEngine.addVirtualClip({
+      id: clipId,
+      parentFileId: 'raw-1',
+      title: '260831-185613 - Pushing Feel',
+      startTimeSeconds: 0,
+      endTimeSeconds: 45.5,
+      category: 'music',
+      userTags: ['Guitar', 'Idea'],
+      classificationConfidence: 0.95,
+      classificationSource: 'whisper_local',
+      transcription: 'Testing MP3 metadata export',
+      notes: 'Take 3 with overdrive',
+      isExcluded: false,
+      createdAt: '2026-08-31T18:56:13.000Z',
+      updatedAt: '2026-08-31T18:56:13.000Z',
+    });
+
+    const exportPath = path.join(exportsDir, '260831-185613 - Pushing Feel.mp3');
+    const exportedAt = new Date().toISOString();
+
+    const updated = dedupEngine.updateVirtualClip(clipId, {
+      exportedMp3Path: exportPath,
+      exportedAt,
+    });
+
+    expect(updated).toBeDefined();
+    expect(updated?.exportedMp3Path).toBe(exportPath);
+    expect(updated?.exportedAt).toBe(exportedAt);
+
+    // Verify persisted in registry
+    const reloaded = dedupEngine.getVirtualClips().find((c) => c.id === clipId);
+    expect(reloaded?.exportedMp3Path).toBe(exportPath);
+    expect(reloaded?.exportedAt).toBe(exportedAt);
+  });
 });
+
