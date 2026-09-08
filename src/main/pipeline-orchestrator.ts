@@ -259,7 +259,9 @@ export class PipelineOrchestrator extends EventEmitter {
       this.throttleBroadcastStatus();
 
       // 2. Local Whisper Transcription
-      const transcript = await this.audioEngine.transcribeAudio(targetPath);
+      const transcriptRes = await this.audioEngine.transcribeAudioDetails(targetPath);
+      const transcript = transcriptRes?.text || null;
+      const transcriptChunks = transcriptRes?.chunks;
       if (transcript) {
         console.log(`[AudioVault Pipeline] 🗣️ Whisper transcript for ${currentJob.filename}: "${transcript.slice(0, 60)}..."`);
       }
@@ -307,6 +309,7 @@ export class PipelineOrchestrator extends EventEmitter {
         classificationConfidence: classification.confidence,
         classificationSource: 'yamnet_local',
         transcription: classification.transcriptionSnippet,
+        transcriptionChunks: transcriptChunks,
         isExcluded: false,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),

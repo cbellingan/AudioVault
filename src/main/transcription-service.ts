@@ -54,18 +54,28 @@ export class TranscriptionService {
       const audioData = this.decodeWavToFloat32_16k(filePath, maxDurationSeconds);
       if (!audioData || audioData.length === 0) return null;
 
-      // Run local Whisper inference on Float32Array
+      // Run local Whisper inference on Float32Array with timestamps enabled
       const output = await transcriber(audioData, {
         chunk_length_s: 30,
         stride_length_s: 5,
-        return_timestamps: false,
+        return_timestamps: true,
       });
 
       if (output && typeof output.text === 'string') {
         const cleanedText = output.text.trim();
+        const chunks = Array.isArray(output.chunks)
+          ? output.chunks.map((c: any) => ({
+              text: (c.text || '').trim(),
+              timestamp: Array.isArray(c.timestamp)
+                ? [c.timestamp[0] ?? 0, c.timestamp[1] ?? 0] as [number, number]
+                : [0, 0] as [number, number],
+            }))
+          : undefined;
+
         return {
           text: cleanedText,
           language: 'en',
+          chunks,
         };
       }
       return null;

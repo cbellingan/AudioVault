@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import {
   PrimaryCategory,
   RawAudioFile,
@@ -73,6 +73,13 @@ const mockFallbackClips: VirtualClip[] = [
 
 const mockFallbackPeaks = Array.from({ length: 120 }, () => Math.random() * 0.75 + 0.15);
 
+interface TimedWord {
+  id: string;
+  word: string;
+  startSec: number;
+  endSec: number;
+}
+
 export default function App() {
   const [clips, setClips] = useState<VirtualClip[]>(mockFallbackClips);
   const [rawFiles, setRawFiles] = useState<RawAudioFile[]>([]);
@@ -104,6 +111,114 @@ export default function App() {
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
 
   const activeClip = clips.find((c) => c.id === selectedClipId) || clips[0] || mockFallbackClips[0];
+
+  const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
+  const wordRefs = useRef<(HTMLSpanElement | null)[]>([]);
+
+  // Parse speech transcript into timed words for synchronized scrolling
+  const activeWords = useMemo<TimedWord[]>(() => {
+    if (!activeClip) return [];
+    const duration = Math.max(0.1, activeClip.endTimeSeconds - activeClip.startTimeSeconds);
+
+    // 1. If clip has precise Whisper timestamp chunks
+    if (activeClip.transcriptionChunks && activeClip.transcriptionChunks.length > 0) {
+      const words: TimedWord[] = [];
+      activeClip.transcriptionChunks.forEach((chunk, chunkIdx) => {
+        const rawTokens = chunk.text.trim().split(/\s+/).filter(Boolean);
+        if (rawTokens.length === 0) return;
+        const [chunkStart, chunkEnd] = chunk.timestamp;
+        const chunkDur = Math.max(0.1, chunkEnd - chunkStart);
+        const perWord = chunkDur / rawTokens.length;
+
+        rawTokens.forEach((tok, wIdx) => {
+          words.push({
+            id: `chunk_${chunkIdx}_word_${wIdx}`,
+            word: tok,
+            startSec: chunkStart + wIdx * perWord,
+            endSec: chunkStart + (wIdx + 1) * perWord,
+          });
+        });
+      });
+      if (words.length > 0) return words;
+    }
+
+    // 2. Fallback: Parse plain transcription string and distribute across duration
+    if (activeClip.transcription) {
+      const cleanText = activeClip.transcription
+        .replace(/^\[[^\]]+\]:\s*"?/, '')
+        .replace(/"?$/, '')
+        .trim();
+      const rawTokens = cleanText.split(/\s+/).filter(Boolean);
+      if (rawTokens.length === 0) return [];
+
+      const perWord = duration / rawTokens.length;
+      return rawTokens.map((tok, i) => ({
+        id: `word_${i}`,
+        word: tok,
+        startSec: i * perWord,
+        endSec: (i + 1) * perWord,
+      }));
+    }
+
+    return [];
+  }, [activeClip]);
+
+  // Determine currently active word index based on playback time
+  const activeWordIndex = useMemo(() => {
+    if (activeWords.length === 0) return -1;
+
+    for (let i = 0; i < activeWords.length; i++) {
+      if (currentTimeSec >= activeWords[i].startSec && currentTimeSec <= activeWords[i].endSec) {
+        return i;
+      }
+    }
+
+    if (currentTimeSec >= activeWords[activeWords.length - 1].endSec) {
+      return activeWords.length - 1;
+    }
+    if (currentTimeSec <= activeWords[0].startSec) {
+      return 0;
+    }
+
+    let closestIdx = 0;
+    let minDiff = Infinity;
+    for (let i = 0; i < activeWords.length; i++) {
+      const diff = Math.abs(activeWords[i].startSec - currentTimeSec);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closestIdx = i;
+      }
+    }
+    return closestIdx;
+  }, [activeWords, currentTimeSec]);
+
+  // Synchronously scroll the transcript ribbon with the waveform playhead
+  useEffect(() => {
+    if (activeWordIndex < 0 || !transcriptScrollRef.current) return;
+    const container = transcriptScrollRef.current;
+    const activeEl = wordRefs.current[activeWordIndex];
+    if (activeEl) {
+      const targetLeft = activeEl.offsetLeft - (container.clientWidth / 2) + (activeEl.clientWidth / 2);
+      container.scrollTo({
+        left: Math.max(0, targetLeft),
+        behavior: 'smooth',
+      });
+    }
+  }, [activeWordIndex]);
+
+  function handleSeekToWord(relativeStartSec: number) {
+    if (!activeClip) return;
+    const duration = Math.max(0.1, activeClip.endTimeSeconds - activeClip.startTimeSeconds);
+    const clampedSec = Math.max(0, Math.min(duration, relativeStartSec));
+    const newProgress = clampedSec / duration;
+
+    setPlaybackProgress(newProgress);
+    setCurrentTimeSec(clampedSec);
+
+    if (audioRef.current) {
+      audioRef.current.currentTime = activeClip.startTimeSeconds + clampedSec;
+    }
+  }
 
   useEffect(() => {
     let ticker: NodeJS.Timeout | null = null;
@@ -231,48 +346,110 @@ export default function App() {
     }
   }
 
-  // Draw Waveform Canvas
+  // Draw Waveform Canvas (High-DPI Retina scaling, fine micro-bars, mirrored DAW envelope)
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const width = canvas.width;
-    const height = canvas.height;
-    ctx.clearRect(0, 0, width, height);
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    const displayWidth = Math.round(rect.width || canvas.width / dpr || 1000);
+    const displayHeight = Math.round(rect.height || canvas.height / dpr || 120);
+
+    if (canvas.width !== displayWidth * dpr || canvas.height !== displayHeight * dpr) {
+      canvas.width = displayWidth * dpr;
+      canvas.height = displayHeight * dpr;
+    }
+
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, displayWidth, displayHeight);
 
     const activeClip = clips.find((c) => c.id === selectedClipId);
     const activeRaw = rawFiles.find((r) => r.id === activeClip?.parentFileId);
-    const peaks = activeRaw?.waveformPeaks && activeRaw.waveformPeaks.length > 0
+    const rawPeaks = activeRaw?.waveformPeaks && activeRaw.waveformPeaks.length > 0
       ? activeRaw.waveformPeaks
       : mockFallbackPeaks;
 
-    const barWidth = width / peaks.length;
-    const centerY = height / 2;
+    // Slot spacing: 1.6px micro-bar + 1.0px gap = 2.6px total step
+    const step = 2.6;
+    const totalBars = Math.max(80, Math.floor(displayWidth / step));
+    const barWidth = Math.max(1.2, step - 1.0);
 
-    // Draw baseline center line
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+    // DAW style asymmetric center: 62% upper amplitude, 38% reflection
+    const baselineY = Math.round(displayHeight * 0.62);
+    const maxTop = Math.max(10, baselineY - 6);
+    const maxBottom = Math.max(6, (displayHeight - baselineY) - 6);
+
+    // Subtle zero-crossing guide line
+    ctx.strokeStyle = 'rgba(6, 182, 212, 0.2)';
+    ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(0, centerY);
-    ctx.lineTo(width, centerY);
+    ctx.moveTo(0, baselineY);
+    ctx.lineTo(displayWidth, baselineY);
     ctx.stroke();
 
-    // Draw waveform bars
-    peaks.forEach((peak, i) => {
-      const x = i * barWidth;
-      const barHeight = Math.max(3, peak * (height * 0.85));
-      const normalizedPos = i / peaks.length;
+    // Played gradients
+    const playedTopGrad = ctx.createLinearGradient(0, 4, 0, baselineY);
+    playedTopGrad.addColorStop(0, '#22d3ee');
+    playedTopGrad.addColorStop(1, '#06b6d4');
 
-      // Color based on playback progress
-      if (normalizedPos <= playbackProgress) {
-        ctx.fillStyle = '#06b6d4';
+    const playedBottomGrad = ctx.createLinearGradient(0, baselineY, 0, displayHeight - 4);
+    playedBottomGrad.addColorStop(0, '#0891b2');
+    playedBottomGrad.addColorStop(1, 'rgba(6, 182, 212, 0.25)');
+
+    // Unplayed colors
+    const unplayedTopColor = 'rgba(148, 163, 184, 0.42)';
+    const unplayedBottomColor = 'rgba(100, 116, 139, 0.22)';
+
+    // Smooth cosine interpolation function across rawPeaks
+    function samplePeak(peaksArr: number[], barIdx: number, total: number): number {
+      if (!peaksArr || peaksArr.length === 0) return 0.03;
+      const pos = (barIdx / (total - 1)) * (peaksArr.length - 1);
+      const low = Math.floor(pos);
+      const high = Math.min(peaksArr.length - 1, Math.ceil(pos));
+      const frac = pos - low;
+      const mu = (1 - Math.cos(frac * Math.PI)) / 2;
+      const base = peaksArr[low] * (1 - mu) + peaksArr[high] * mu;
+      return Math.min(1.0, Math.max(0.02, base));
+    }
+
+    // Helper for rounded bar rectangles
+    function drawBar(targetCtx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, radii: number[]) {
+      if (h <= 0) return;
+      targetCtx.beginPath();
+      if (typeof (targetCtx as any).roundRect === 'function') {
+        (targetCtx as any).roundRect(x, y, w, h, radii);
       } else {
-        ctx.fillStyle = 'rgba(148, 163, 184, 0.45)';
+        targetCtx.rect(x, y, w, h);
       }
+      targetCtx.fill();
+    }
 
-      ctx.fillRect(x, centerY - barHeight / 2, Math.max(1, barWidth - 1.5), barHeight);
-    });
+    // Render all micro-bars
+    for (let i = 0; i < totalBars; i++) {
+      const x = i * step;
+      if (x + barWidth > displayWidth) break;
+
+      const peakVal = samplePeak(rawPeaks, i, totalBars);
+      const normPos = i / totalBars;
+      const isPlayed = normPos <= playbackProgress;
+
+      const topHeight = Math.max(2, peakVal * maxTop);
+      const bottomHeight = Math.max(1, peakVal * 0.45 * maxBottom);
+
+      // Draw top amplitude bar
+      ctx.fillStyle = isPlayed ? playedTopGrad : unplayedTopColor;
+      drawBar(ctx, x, baselineY - topHeight, barWidth, topHeight, [1.5, 1.5, 0, 0]);
+
+      // Draw bottom reflection bar
+      ctx.fillStyle = isPlayed ? playedBottomGrad : unplayedBottomColor;
+      drawBar(ctx, x, baselineY, barWidth, bottomHeight, [0, 0, 1.5, 1.5]);
+    }
+
+    ctx.restore();
   }, [selectedClipId, rawFiles, clips, playbackProgress]);
 
   // Handle hardware ingest confirmation (Non-blocking pipeline)
@@ -838,15 +1015,47 @@ export default function App() {
               />
             </div>
 
-            {/* Whisper Transcription Box */}
-            {activeClip.transcription && (
-              <div style={{ fontSize: '0.78rem', color: 'var(--accent-cyan)', background: 'rgba(6, 182, 212, 0.08)', padding: '0.4rem 0.75rem', borderRadius: '4px', border: '1px solid rgba(6, 182, 212, 0.25)' }}>
-                <strong>🗣️ Local Whisper Transcript:</strong> {activeClip.transcription}
+            {/* Synchronized Scrolling Transcript Ribbon */}
+            <div className="transcript-ribbon" data-testid="transcript-ribbon">
+              <div className="transcript-ribbon-badge">
+                <span>🗣️ Speech</span>
               </div>
-            )}
+              <div className="transcript-scroll-viewport" ref={transcriptScrollRef}>
+                {activeWords.length > 0 ? (
+                  <div className="transcript-track">
+                    {activeWords.map((item, idx) => {
+                      const isSpoken = currentTimeSec > item.endSec;
+                      const isActive = idx === activeWordIndex;
+
+                      let statusClass = 'upcoming';
+                      if (isActive) statusClass = 'active';
+                      else if (isSpoken) statusClass = 'spoken';
+
+                      return (
+                        <span
+                          key={item.id}
+                          ref={(el) => (wordRefs.current[idx] = el)}
+                          className={`transcript-word ${statusClass}`}
+                          onClick={() => handleSeekToWord(item.startSec)}
+                          title={`Click to seek to ${item.startSec.toFixed(1)}s`}
+                        >
+                          {item.word}
+                        </span>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="transcript-empty-notice">
+                    {activeClip.category === 'music' || activeClip.category === 'concerts'
+                      ? '🎵 Instrumental / Acoustic take — no spoken dialogue detected'
+                      : '🎙️ No speech detected for this take'}
+                  </div>
+                )}
+              </div>
+            </div>
 
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-              <span>Click waveform to seek playback &bull; Drag cursor to select virtual region &bull; Right-click for context actions</span>
+              <span>Click waveform or word to seek &bull; Drag cursor to select virtual region &bull; Right-click for context actions</span>
               <span>Selection: {selectionRange ? `${(selectionRange.start * (activeClip.endTimeSeconds - activeClip.startTimeSeconds)).toFixed(1)}s – ${(selectionRange.end * (activeClip.endTimeSeconds - activeClip.startTimeSeconds)).toFixed(1)}s` : 'None'}</span>
             </div>
           </div>

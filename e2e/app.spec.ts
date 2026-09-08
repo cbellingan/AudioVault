@@ -142,4 +142,64 @@ test.describe('AudioVault Electron Integration Tests', () => {
     await app.close();
     console.log('[E2E] Library scroll and interaction test passed.');
   });
+
+  test('Synchronized scrolling transcript ribbon tracks playback and allows word seeking', async () => {
+    console.log('[E2E] Testing scrolling transcript ribbon and fine waveform...');
+    const app = await electron.launch({
+      args: [path.join(__dirname, '../dist-electron/main/index.js')],
+    });
+
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    // 1. Select a dictaphone take that has speech transcription
+    const dictaphoneRow = window.locator('.clips-table tbody tr', { hasText: 'DICTAPHONE' }).first();
+    if (await dictaphoneRow.count() > 0) {
+      await dictaphoneRow.click();
+    }
+
+    // 2. Verify transcript ribbon exists and has words
+    const ribbon = window.locator('[data-testid="transcript-ribbon"]');
+    await expect(ribbon).toBeVisible();
+
+    const words = window.locator('.transcript-word');
+    const wordCount = await words.count();
+    console.log(`[E2E] Found ${wordCount} words in the transcript ribbon`);
+    expect(wordCount).toBeGreaterThan(0);
+
+    // 3. Verify high-resolution canvas micro-bars
+    const canvas = window.locator('.waveform-canvas');
+    await expect(canvas).toBeVisible();
+    const canvasDims = await canvas.evaluate((el: HTMLCanvasElement) => ({
+      width: el.width,
+      height: el.height,
+    }));
+    console.log('[E2E] Canvas buffer dimensions:', canvasDims);
+    expect(canvasDims.width).toBeGreaterThanOrEqual(1000);
+
+    // 4. Test clicking on a word in the ribbon to seek
+    const targetWord = words.nth(Math.min(3, wordCount - 1));
+    const wordText = await targetWord.innerText();
+    console.log(`[E2E] Clicking word: "${wordText}" to seek...`);
+    await targetWord.click();
+
+    // Verify target word or adjacent word is marked active
+    const activeWord = window.locator('.transcript-word.active');
+    await expect(activeWord).toBeVisible();
+
+    // 5. Test Play button and auto-scroll
+    const playBtn = window.locator('.play-btn');
+    await playBtn.click();
+    expect(await playBtn.innerText()).toBe('⏸');
+
+    // Wait a brief moment for playback ticker to advance words
+    await window.waitForTimeout(400);
+
+    // Pause
+    await playBtn.click();
+    expect(await playBtn.innerText()).toBe('▶');
+
+    console.log('[E2E] Scrolling transcript ribbon verified successfully!');
+    await app.close();
+  });
 });

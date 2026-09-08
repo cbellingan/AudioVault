@@ -111,6 +111,7 @@ export interface VirtualClip {
   classificationConfidence: number;
   classificationSource: 'yamnet_local' | 'whisper_local' | 'user_manual' | 'cloud_ai';
   transcription?: string;
+  transcriptionChunks?: Array<{ text: string; timestamp: [number, number] }>;
   notes?: string;
   isExcluded: boolean;
   createdAt: string;

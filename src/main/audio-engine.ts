@@ -22,7 +22,7 @@ export class AudioEngine {
   /**
    * Reads raw PCM audio data and extracts basic header metrics and downsampled waveform peaks.
    */
-  public analyzeWavFile(filePath: string, maxPeaks = 100): {
+  public analyzeWavFile(filePath: string, maxPeaks = 600): {
     features: AcousticFeatures;
     peaks: number[];
   } {
@@ -164,17 +164,65 @@ export class AudioEngine {
   }
 
   /**
-   * Runs local Whisper transcription on the audio file (up to first 60 seconds).
+   * Resamples / upsamples an array of waveform peaks to a fine-grained target count
+   * using smooth cosine/linear interpolation.
    */
-  public async transcribeAudio(filePath: string): Promise<string | null> {
+  public resamplePeaks(peaks: number[], targetCount: number): number[] {
+    if (!peaks || peaks.length === 0) {
+      return new Array(targetCount).fill(0.01);
+    }
+    if (peaks.length === targetCount) return peaks;
+
+    const result: number[] = [];
+    const step = (peaks.length - 1) / (targetCount - 1);
+
+    for (let i = 0; i < targetCount; i++) {
+      const idx = i * step;
+      const low = Math.floor(idx);
+      const high = Math.min(peaks.length - 1, Math.ceil(idx));
+      const fraction = idx - low;
+
+      // Cosine interpolation for organic, smooth audio contour
+      const mu = (1 - Math.cos(fraction * Math.PI)) / 2;
+      const val = peaks[low] * (1 - mu) + peaks[high] * mu;
+      result.push(parseFloat(val.toFixed(4)));
+    }
+    return result;
+  }
+
+  /**
+   * Runs local Whisper transcription on the audio file with timestamp chunk metadata.
+   */
+  public async transcribeAudioDetails(filePath: string): Promise<{
+    text: string;
+    chunks?: Array<{ text: string; timestamp: [number, number] }>;
+  } | null> {
     if (process.env.VITEST || process.env.NODE_ENV === 'test') {
       if (filePath.toLowerCase().includes('speech') || filePath.includes('TAKE_02')) {
-        return 'simulated local whisper speech transcript';
+        return {
+          text: 'simulated local whisper speech transcript',
+          chunks: [
+            { text: 'simulated local whisper', timestamp: [0.0, 1.5] },
+            { text: 'speech transcript', timestamp: [1.5, 3.0] },
+          ],
+        };
       }
       return null;
     }
     const res = await this.transcriptionService.transcribeAudioFile(filePath, 60);
-    return res?.text || null;
+    if (!res || !res.text) return null;
+    return {
+      text: res.text,
+      chunks: res.chunks,
+    };
+  }
+
+  /**
+   * Runs local Whisper transcription on the audio file (up to first 60 seconds).
+   */
+  public async transcribeAudio(filePath: string): Promise<string | null> {
+    const details = await this.transcribeAudioDetails(filePath);
+    return details?.text || null;
   }
 
   /**
@@ -199,7 +247,7 @@ export class AudioEngine {
         category: isShortMemo ? 'dictaphone' : 'meeting',
         confidence: 0.95,
         tags: isShortMemo ? ['Spoken Memo', 'Voice Note'] : ['Spoken Discussion', 'Meeting'],
-        transcriptionSnippet: `[Whisper]: "${transcript.length > 140 ? transcript.slice(0, 137) + '...' : transcript}"`,
+        transcriptionSnippet: `[Whisper]: "${transcript}"`,
       };
     }
 
