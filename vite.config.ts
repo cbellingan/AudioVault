@@ -13,6 +13,9 @@ export default defineConfig({
         vite: {
           build: {
             outDir: path.resolve(__dirname, 'dist-electron/main'),
+            rollupOptions: {
+              external: ['@xenova/transformers', 'onnxruntime-node'],
+            },
           },
         },
       },

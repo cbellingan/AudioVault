@@ -58,8 +58,25 @@ export class PipelineOrchestrator extends EventEmitter {
     this.sdCardCopyFinished = false;
     this.unmountMessage = undefined;
 
+    // Resolve directories to individual audio files
+    const resolvedPaths: string[] = [];
+    for (const p of filePaths) {
+      if (!fs.existsSync(p)) continue;
+      try {
+        const stats = fs.statSync(p);
+        if (stats.isDirectory()) {
+          const found = this.volumeWatcher.scanDirectoryForAudio(p);
+          for (const f of found) {
+            resolvedPaths.push(f.path);
+          }
+        } else if (stats.isFile()) {
+          resolvedPaths.push(p);
+        }
+      } catch (e) {}
+    }
+
     let addedCount = 0;
-    for (const filePath of filePaths) {
+    for (const filePath of resolvedPaths) {
       if (!fs.existsSync(filePath)) continue;
 
       const stats = fs.statSync(filePath);
@@ -186,13 +203,23 @@ export class PipelineOrchestrator extends EventEmitter {
 
       // 1. Acoustic & Waveform Analysis
       const analysis = this.audioEngine.analyzeWavFile(targetPath);
-      currentJob.analysisPercent = 60;
-      currentJob.currentTaskDescription = 'Running local event classification (YAMNet + Whisper)...';
+      currentJob.analysisPercent = 50;
+      currentJob.currentTaskDescription = 'Running local Whisper speech transcription...';
       this.throttleBroadcastStatus();
 
-      // 2. Local AI Classification
-      const classification = this.audioEngine.classifyAcoustics(analysis.features, currentJob.filename);
-      currentJob.analysisPercent = 90;
+      // 2. Local Whisper Transcription
+      const transcript = await this.audioEngine.transcribeAudio(targetPath);
+      currentJob.analysisPercent = 85;
+      currentJob.currentTaskDescription = 'Classifying audio events & generating metadata...';
+      this.throttleBroadcastStatus();
+
+      // 3. Local AI Classification
+      const classification = this.audioEngine.classifyAcoustics(
+        analysis.features,
+        currentJob.filename,
+        transcript
+      );
+      currentJob.analysisPercent = 95;
       this.throttleBroadcastStatus();
 
       // 3. Register Raw File in Vault

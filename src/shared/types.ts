@@ -180,6 +180,7 @@ export interface AudioVaultAPI {
   onVolumeDetected: (callback: (event: VolumeDetectedEvent) => void) => () => void;
 
   // Pipeline Queue & Non-blocking Stream
+  selectAndImport: () => Promise<{ batchId: string; count: number } | null>;
   enqueuePipelineBatch: (filePaths: string[], unmountVolumePath?: string) => Promise<{ batchId: string; count: number }>;
   onPipelineStatus: (callback: (status: PipelineStatusEvent) => void) => () => void;
 

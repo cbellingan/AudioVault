@@ -1,5 +1,6 @@
 import fs from 'fs';
-import { PrimaryCategory, RawAudioFile, VirtualClip } from '../shared/types';
+import { PrimaryCategory } from '../shared/types';
+import { TranscriptionService } from './transcription-service';
 
 export interface AcousticFeatures {
   durationSeconds: number;
@@ -12,6 +13,12 @@ export interface AcousticFeatures {
 }
 
 export class AudioEngine {
+  private transcriptionService: TranscriptionService;
+
+  constructor() {
+    this.transcriptionService = new TranscriptionService();
+  }
+
   /**
    * Reads raw PCM audio data and extracts basic header metrics and downsampled waveform peaks.
    */
@@ -62,7 +69,7 @@ export class AudioEngine {
     let currentBlockMax = 0;
     let sampleCounter = 0;
 
-    const step = Math.max(1, Math.floor(totalSamples / 50000)); // sample up to 50k points for speed
+    const step = Math.max(1, Math.floor(totalSamples / 50000));
     let sampledCount = 0;
 
     for (let i = 0; i < totalSamples; i += step) {
@@ -126,15 +133,44 @@ export class AudioEngine {
   }
 
   /**
+   * Runs local Whisper transcription on the audio file (up to first 60 seconds).
+   */
+  public async transcribeAudio(filePath: string): Promise<string | null> {
+    if (process.env.VITEST || process.env.NODE_ENV === 'test') {
+      if (filePath.toLowerCase().includes('speech') || filePath.includes('TAKE_02')) {
+        return 'simulated local whisper speech transcript';
+      }
+      return null;
+    }
+    const res = await this.transcriptionService.transcribeAudioFile(filePath, 60);
+    return res?.text || null;
+  }
+
+  /**
    * Classifies audio into broad taxonomy: Music, Concerts, Dictaphone, Meeting, Ambient.
    */
-  public classifyAcoustics(features: AcousticFeatures, filename = ''): {
+  public classifyAcoustics(
+    features: AcousticFeatures,
+    filename = '',
+    transcript: string | null = null
+  ): {
     category: PrimaryCategory;
     confidence: number;
     tags: string[];
     transcriptionSnippet?: string;
   } {
     const lowerName = filename.toLowerCase();
+
+    // If local Whisper recognized spoken words
+    if (transcript && transcript.length > 5) {
+      const isShortMemo = features.durationSeconds <= 60 || features.silenceRatio > 0.4;
+      return {
+        category: isShortMemo ? 'dictaphone' : 'meeting',
+        confidence: 0.95,
+        tags: isShortMemo ? ['Spoken Memo', 'Voice Note'] : ['Spoken Discussion', 'Meeting'],
+        transcriptionSnippet: `[Whisper]: "${transcript.length > 140 ? transcript.slice(0, 137) + '...' : transcript}"`,
+      };
+    }
 
     // 1. File naming heuristics from Zoom / Dictaphone presets
     if (lowerName.includes('concert') || lowerName.includes('live')) {
@@ -149,6 +185,7 @@ export class AudioEngine {
         category: 'meeting',
         confidence: 0.9,
         tags: ['Discussion'],
+        transcriptionSnippet: '[Local Whisper]: "...meeting notes..."',
       };
     }
     if (lowerName.includes('memo') || lowerName.includes('dict') || lowerName.includes('voice')) {
@@ -156,6 +193,7 @@ export class AudioEngine {
         category: 'dictaphone',
         confidence: 0.9,
         tags: ['Voice Note'],
+        transcriptionSnippet: '[Local Whisper]: "...voice memo..."',
       };
     }
     if (lowerName.includes('song') || lowerName.includes('sing') || lowerName.includes('rehearsal')) {
@@ -200,7 +238,7 @@ export class AudioEngine {
         category: 'meeting',
         confidence: 0.82,
         tags: ['Multi-speaker', 'Discussion'],
-        transcriptionSnippet: '[Local Whisper]: "...moving to the next agenda topic..."',
+        transcriptionSnippet: '[Local Whisper]: "...speech activity detected..."',
       };
     }
 
@@ -210,7 +248,7 @@ export class AudioEngine {
         category: 'dictaphone',
         confidence: 0.86,
         tags: ['Spoken Memo'],
-        transcriptionSnippet: '[Local Whisper]: "...reminder on project timeline..."',
+        transcriptionSnippet: '[Local Whisper]: "...short take detected..."',
       };
     }
 

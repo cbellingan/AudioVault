@@ -58,11 +58,17 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  // Protocol handler: audiovault://file/<fileId>
+  // Protocol handler: audiovault://file/<fileId> or audiovault://<fileId>
   protocol.handle('audiovault', (request) => {
     try {
       const url = new URL(request.url);
-      const fileId = url.pathname.replace(/^\//, '');
+      let fileId = url.pathname.replace(/^\//, '');
+      if (!fileId || fileId === 'file') {
+        fileId = url.pathname.replace(/^\/file\//, '') || url.hostname || url.host;
+      }
+      if (!fileId) {
+        fileId = url.hostname || url.host;
+      }
       const rawFile = dedupEngine.getRawFile(fileId);
       if (rawFile && fs.existsSync(rawFile.storagePath)) {
         return net.fetch(`file://${rawFile.storagePath}`);
@@ -90,7 +96,7 @@ app.whenReady().then(() => {
   });
 
   // Background check for mounted external media
-  setInterval(async () => {
+  const volumeInterval = setInterval(async () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       try {
         const events = await volumeWatcher.scanConnectedVolumes();
@@ -104,6 +110,7 @@ app.whenReady().then(() => {
       } catch (err) {}
     }
   }, 10000);
+  volumeInterval.unref();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -144,6 +151,33 @@ function setupIpcHandlers() {
   // Non-blocking batch pipeline enqueue
   ipcMain.handle('vault:enqueue-pipeline-batch', async (_, filePaths: string[], unmountVolumePath?: string) => {
     return pipelineOrchestrator.enqueueBatch(filePaths, unmountVolumePath);
+  });
+
+  // Native Open Dialog to import folders, SD cards, or audio files
+  ipcMain.handle('vault:select-and-import', async (): Promise<{ batchId: string; count: number } | null> => {
+    if (!mainWindow) return null;
+    const res = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory', 'openFile', 'multiSelections'],
+      title: 'Select Audio Files or SD Card Directory to Ingest',
+      filters: [{ name: 'Audio Files', extensions: ['wav', 'mp3', 'm4a', 'flac', 'aif', 'aiff'] }],
+    });
+    if (res.canceled || res.filePaths.length === 0) return null;
+
+    const filePathsToIngest: string[] = [];
+    for (const p of res.filePaths) {
+      if (fs.existsSync(p)) {
+        const stat = fs.statSync(p);
+        if (stat.isDirectory()) {
+          const files = volumeWatcher.scanDirectoryForAudio(p);
+          filePathsToIngest.push(...files.map((f) => f.path));
+        } else if (stat.isFile()) {
+          filePathsToIngest.push(p);
+        }
+      }
+    }
+
+    if (filePathsToIngest.length === 0) return { batchId: '', count: 0 };
+    return pipelineOrchestrator.enqueueBatch(filePathsToIngest);
   });
 
   // Synchronous batch fallback

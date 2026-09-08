@@ -93,7 +93,6 @@ export default function App() {
   const [isSelecting, setIsSelecting] = useState(false);
   const [dragStart, setDragStart] = useState<number | null>(null);
 
-  // Floating Context Menu
   const [contextMenu, setContextMenu] = useState<{
     visible: boolean;
     x: number;
@@ -101,6 +100,57 @@ export default function App() {
   } | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [currentTimeSec, setCurrentTimeSec] = useState(0);
+
+  const activeClip = clips.find((c) => c.id === selectedClipId) || clips[0] || mockFallbackClips[0];
+
+  useEffect(() => {
+    let ticker: NodeJS.Timeout | null = null;
+
+    if (isPlaying) {
+      if (audioRef.current && audioRef.current.src && !audioRef.current.src.includes('undefined')) {
+        audioRef.current.play().catch((_err) => {
+          // Virtual clip or headless audio fallback
+        });
+      }
+
+      // Smoothly advance playback ticker if audio element is paused or virtual
+      ticker = setInterval(() => {
+        if (!audioRef.current || audioRef.current.paused) {
+          setCurrentTimeSec((prev) => {
+            const duration = Math.max(1, activeClip.endTimeSeconds - activeClip.startTimeSeconds);
+            const next = prev + 0.1;
+            if (next >= duration) {
+              setIsPlaying(false);
+              setPlaybackProgress(0);
+              return 0;
+            }
+            setPlaybackProgress(next / duration);
+            return next;
+          });
+        }
+      }, 100);
+    } else {
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+    }
+
+    return () => {
+      if (ticker) clearInterval(ticker);
+    };
+  }, [isPlaying, activeClip]);
+
+  useEffect(() => {
+    setIsPlaying(false);
+    setPlaybackProgress(0);
+    setCurrentTimeSec(0);
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+  }, [selectedClipId]);
 
   useEffect(() => {
     if (window.audioVault) {
@@ -120,6 +170,42 @@ export default function App() {
       };
     }
   }, []);
+
+  // Global Keyboard Shortcuts (Space to Play/Pause, Arrow keys to Seek)
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      const activeTag = (document.activeElement?.tagName || '').toLowerCase();
+      if (activeTag === 'input' || activeTag === 'textarea') return;
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        setIsPlaying((prev) => !prev);
+      } else if (e.code === 'ArrowLeft') {
+        e.preventDefault();
+        if (audioRef.current && activeClip) {
+          const newTime = Math.max(activeClip.startTimeSeconds, audioRef.current.currentTime - 3);
+          audioRef.current.currentTime = newTime;
+          const duration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+          if (duration > 0) {
+            setPlaybackProgress((newTime - activeClip.startTimeSeconds) / duration);
+          }
+        }
+      } else if (e.code === 'ArrowRight') {
+        e.preventDefault();
+        if (audioRef.current && activeClip) {
+          const newTime = Math.min(activeClip.endTimeSeconds, audioRef.current.currentTime + 3);
+          audioRef.current.currentTime = newTime;
+          const duration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+          if (duration > 0) {
+            setPlaybackProgress((newTime - activeClip.startTimeSeconds) / duration);
+          }
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeClip]);
 
   async function loadInitialVaultData() {
     try {
@@ -232,6 +318,13 @@ export default function App() {
     setSelectionRange({ start: pos, end: pos });
     setPlaybackProgress(pos);
     setContextMenu(null);
+
+    if (audioRef.current && activeClip) {
+      const duration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+      const targetTime = activeClip.startTimeSeconds + pos * duration;
+      audioRef.current.currentTime = targetTime;
+      setCurrentTimeSec(pos * duration);
+    }
   }
 
   function handleWaveformMouseMove(e: React.MouseEvent<HTMLDivElement>) {
@@ -338,7 +431,6 @@ export default function App() {
     return matchesCat && matchesTag;
   });
 
-  const activeClip = clips.find((c) => c.id === selectedClipId) || clips[0] || mockFallbackClips[0];
   const allTags = Array.from(new Set(clips.flatMap((c) => c.userTags)));
 
   return (
@@ -377,6 +469,19 @@ export default function App() {
             }}
           >
             🔍 Scan Connected Drives
+          </button>
+          <button
+            className="btn btn-secondary"
+            onClick={async () => {
+              if (window.audioVault) {
+                const res = await window.audioVault.selectAndImport();
+                if (res && res.count > 0) {
+                  alert(`Enqueued ${res.count} audio takes for serial ingest & local Whisper transcription!`);
+                }
+              }
+            }}
+          >
+            📥 Import Folder / SD Card
           </button>
           <button
             className="btn btn-primary"
@@ -654,6 +759,9 @@ export default function App() {
                 >
                   ⏮
                 </button>
+                <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+                  {Math.floor(currentTimeSec / 60).toString().padStart(2, '0')}:{(Math.floor(currentTimeSec % 60)).toString().padStart(2, '0')} / {Math.floor((activeClip.endTimeSeconds - activeClip.startTimeSeconds) / 60).toString().padStart(2, '0')}:{(Math.floor((activeClip.endTimeSeconds - activeClip.startTimeSeconds) % 60)).toString().padStart(2, '0')}
+                </span>
                 <button
                   className="btn btn-secondary btn-sm"
                   onClick={() => {
@@ -675,6 +783,27 @@ export default function App() {
                 </button>
               </div>
             </div>
+
+            {/* Hidden HTML5 Audio Element for real native audio playback */}
+            <audio
+              ref={audioRef}
+              src={`audiovault://file/${activeClip.parentFileId}`}
+              onTimeUpdate={() => {
+                if (audioRef.current && activeClip) {
+                  const duration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+                  const current = Math.max(0, audioRef.current.currentTime - activeClip.startTimeSeconds);
+                  setCurrentTimeSec(current);
+                  if (duration > 0) {
+                    setPlaybackProgress(Math.min(1, current / duration));
+                  }
+                }
+              }}
+              onEnded={() => {
+                setIsPlaying(false);
+                setPlaybackProgress(0);
+                setCurrentTimeSec(0);
+              }}
+            />
 
             {/* Interactive Waveform Canvas Container */}
             <div
@@ -709,9 +838,16 @@ export default function App() {
               />
             </div>
 
+            {/* Whisper Transcription Box */}
+            {activeClip.transcription && (
+              <div style={{ fontSize: '0.78rem', color: 'var(--accent-cyan)', background: 'rgba(6, 182, 212, 0.08)', padding: '0.4rem 0.75rem', borderRadius: '4px', border: '1px solid rgba(6, 182, 212, 0.25)' }}>
+                <strong>🗣️ Local Whisper Transcript:</strong> {activeClip.transcription}
+              </div>
+            )}
+
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-              <span>Drag cursor on waveform to select a non-destructive region &bull; Right-click selection for context actions</span>
-              <span>Selection: {selectionRange ? `${(selectionRange.start * activeClip.endTimeSeconds).toFixed(1)}s – ${(selectionRange.end * activeClip.endTimeSeconds).toFixed(1)}s` : 'None'}</span>
+              <span>Click waveform to seek playback &bull; Drag cursor to select virtual region &bull; Right-click for context actions</span>
+              <span>Selection: {selectionRange ? `${(selectionRange.start * (activeClip.endTimeSeconds - activeClip.startTimeSeconds)).toFixed(1)}s – ${(selectionRange.end * (activeClip.endTimeSeconds - activeClip.startTimeSeconds)).toFixed(1)}s` : 'None'}</span>
             </div>
           </div>
         </main>

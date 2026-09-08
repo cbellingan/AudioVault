@@ -25,6 +25,7 @@ const audioVaultApi: AudioVaultAPI = {
       ipcRenderer.removeListener('vault:volume-detected', handler);
     };
   },
+  selectAndImport: () => ipcRenderer.invoke('vault:select-and-import'),
   enqueuePipelineBatch: (filePaths: string[], unmountVolumePath?: string) =>
     ipcRenderer.invoke('vault:enqueue-pipeline-batch', filePaths, unmountVolumePath),
   onPipelineStatus: (callback: (status: PipelineStatusEvent) => void) => {
