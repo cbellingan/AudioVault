@@ -1,69 +1,44 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, protocol, net } from 'electron';
 import path from 'path';
+import fs from 'fs';
+import { DedupEngine } from './dedup-engine';
+import { VolumeWatcher } from './volume-watcher';
+import { AudioEngine } from './audio-engine';
 import {
-  EtsyAdapter,
-  AmazonAdapter,
-  EBayAdapter,
-  PinterestAdapter,
-  calculateStockAllocations,
-} from '../shared/channel-adapter';
-import { ChannelStatus, ChannelType, InventoryItem, Order, SyncLog } from '../shared/types';
+  IngestResult,
+  PrimaryCategory,
+  RawAudioFile,
+  VaultSettings,
+  VirtualClip,
+  VolumeDetectedEvent,
+} from '../shared/types';
 
 let mainWindow: BrowserWindow | null = null;
+const dedupEngine = new DedupEngine();
+const volumeWatcher = new VolumeWatcher(dedupEngine);
+const audioEngine = new AudioEngine();
 
-// Initialize mock channel adapters
-const adapters = {
-  etsy: new EtsyAdapter(),
-  amazon: new AmazonAdapter(),
-  ebay: new EBayAdapter(),
-  pinterest: new PinterestAdapter(),
-};
-
-// Initial mock inventory items
-let mockInventory: InventoryItem[] = [
+// Register custom protocol for streaming local audio to renderer
+protocol.registerSchemesAsPrivileged([
   {
-    id: 'inv_1',
-    sku: 'MK-CER-MUG-01',
-    name: 'Handcrafted Speckled Ceramic Mug (12oz)',
-    category: 'Ceramics',
-    totalStock: 35,
-    allocatedStock: calculateStockAllocations(35, ['etsy', 'amazon', 'pinterest']),
-    unitCost: 6.50,
-    basePrice: 28.00,
-    lastUpdated: new Date().toISOString(),
+    scheme: 'audiovault',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+    },
   },
-  {
-    id: 'inv_2',
-    sku: 'MK-WOD-BOARD-02',
-    name: 'Walnut End-Grain Cutting Board',
-    category: 'Woodworking',
-    totalStock: 12,
-    allocatedStock: calculateStockAllocations(12, ['etsy', 'amazon', 'ebay']),
-    unitCost: 22.00,
-    basePrice: 85.00,
-    lastUpdated: new Date().toISOString(),
-  },
-  {
-    id: 'inv_3',
-    sku: 'MK-LEATH-JRNL-03',
-    name: 'Full-Grain Leather Bound Journal',
-    category: 'Leathercraft',
-    totalStock: 50,
-    allocatedStock: calculateStockAllocations(50, ['etsy', 'pinterest']),
-    unitCost: 8.00,
-    basePrice: 42.00,
-    lastUpdated: new Date().toISOString(),
-  },
-];
+]);
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 840,
-    minWidth: 1024,
-    minHeight: 700,
-    title: 'MakerHub - Multi-Channel Business Manager',
-    backgroundColor: '#0f172a',
+    width: 1380,
+    height: 900,
+    minWidth: 1100,
+    minHeight: 720,
+    title: 'AudioVault - Hardware Ingestion & Non-Destructive Classifier',
+    backgroundColor: '#070a12',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -80,8 +55,39 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // Protocol handler: audiovault://file/<fileId>
+  protocol.handle('audiovault', (request) => {
+    try {
+      const url = new URL(request.url);
+      const fileId = url.pathname.replace(/^\//, '');
+      const rawFile = dedupEngine.getRawFile(fileId);
+      if (rawFile && fs.existsSync(rawFile.storagePath)) {
+        return net.fetch(`file://${rawFile.storagePath}`);
+      }
+    } catch (e) {
+      console.error('AudioVault protocol fetch error:', e);
+    }
+    return new Response('Not Found', { status: 404 });
+  });
+
   setupIpcHandlers();
   createWindow();
+
+  // Background check for mounted volumes
+  setInterval(async () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      try {
+        const events = await volumeWatcher.scanConnectedVolumes();
+        if (events.length > 0 && events.some((e) => e.newFilesCount > 0)) {
+          for (const ev of events) {
+            if (ev.newFilesCount > 0) {
+              mainWindow.webContents.send('vault:volume-detected', ev);
+            }
+          }
+        }
+      } catch (err) {}
+    }
+  }, 10000);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -97,87 +103,190 @@ app.on('window-all-closed', () => {
 });
 
 function setupIpcHandlers() {
-  ipcMain.handle('app:get-version', () => app.getVersion());
-
-  ipcMain.handle('channels:get-statuses', async (): Promise<ChannelStatus[]> => {
-    const statuses = await Promise.all([
-      adapters.etsy.getStatus(),
-      adapters.amazon.getStatus(),
-      adapters.ebay.getStatus(),
-      adapters.pinterest.getStatus(),
-    ]);
-    return statuses;
+  ipcMain.handle('vault:get-settings', async (): Promise<VaultSettings> => {
+    return dedupEngine.getSettings();
   });
 
-  ipcMain.handle('channels:toggle-connection', async (_, channelId: ChannelType): Promise<ChannelStatus> => {
-    const adapter = adapters[channelId as keyof typeof adapters];
-    if (!adapter) throw new Error(`Unknown channel: ${channelId}`);
-
-    const status = await adapter.getStatus();
-    if (status.connected) {
-      await adapter.disconnect();
-    } else {
-      await adapter.connect();
-    }
-    return adapter.getStatus();
+  ipcMain.handle('vault:update-settings', async (_, settings: Partial<VaultSettings>): Promise<VaultSettings> => {
+    return dedupEngine.updateSettings(settings);
   });
 
-  ipcMain.handle('inventory:get-items', async (): Promise<InventoryItem[]> => {
-    return mockInventory;
+  ipcMain.handle('vault:select-directory', async (): Promise<string | null> => {
+    if (!mainWindow) return null;
+    const res = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory', 'createDirectory'],
+      title: 'Select Audio Vault Storage Directory',
+    });
+    if (res.canceled || res.filePaths.length === 0) return null;
+    return res.filePaths[0];
   });
 
-  ipcMain.handle('inventory:update-stock', async (_, sku: string, newStock: number): Promise<InventoryItem> => {
-    const item = mockInventory.find((i) => i.sku === sku);
-    if (!item) throw new Error(`Item with SKU ${sku} not found`);
-
-    item.totalStock = newStock;
-    item.allocatedStock = calculateStockAllocations(newStock, ['etsy', 'amazon', 'pinterest']);
-    item.lastUpdated = new Date().toISOString();
-    return item;
+  ipcMain.handle('vault:scan-volumes', async (): Promise<VolumeDetectedEvent[]> => {
+    return volumeWatcher.scanConnectedVolumes();
   });
 
-  ipcMain.handle('orders:get-orders', async (): Promise<Order[]> => {
-    const allOrders = await Promise.all([
-      adapters.etsy.fetchOrders(),
-      adapters.amazon.fetchOrders(),
-      adapters.ebay.fetchOrders(),
-      adapters.pinterest.fetchOrders(),
-    ]);
-    return allOrders.flat();
-  });
+  ipcMain.handle('vault:import-files', async (_, filePaths: string[], unmountVolumePath?: string): Promise<IngestResult> => {
+    const result: IngestResult = {
+      importedCount: 0,
+      skippedCount: 0,
+      unmounted: false,
+      clips: [],
+      errors: [],
+    };
 
-  ipcMain.handle('sync:trigger', async (_, channelId?: ChannelType): Promise<SyncLog[]> => {
-    const timestamp = new Date().toISOString();
-    const logs: SyncLog[] = [];
+    const rawDir = dedupEngine.getRawDir();
+    const settings = dedupEngine.getSettings();
 
-    const targetChannels = channelId ? [channelId] : (['etsy', 'amazon', 'ebay', 'pinterest'] as ChannelType[]);
+    for (const sourcePath of filePaths) {
+      try {
+        if (!fs.existsSync(sourcePath)) {
+          result.errors.push(`File not found: ${sourcePath}`);
+          continue;
+        }
 
-    for (const ch of targetChannels) {
-      const adapter = adapters[ch as keyof typeof adapters];
-      if (!adapter) continue;
-      const status = await adapter.getStatus();
+        const fingerprint = dedupEngine.computeFileFingerprint(sourcePath);
+        if (dedupEngine.isFingerprintImported(fingerprint)) {
+          result.skippedCount++;
+          continue;
+        }
 
-      if (status.connected) {
-        logs.push({
-          id: `log_${Date.now()}_${ch}`,
-          timestamp,
-          channel: ch,
-          action: 'Full Catalogue & Stock Sync',
-          status: 'success',
-          details: `Successfully synchronized ${status.activeListingsCount} listings and updated inventory buffers.`,
-        });
-      } else {
-        logs.push({
-          id: `log_${Date.now()}_${ch}`,
-          timestamp,
-          channel: ch,
-          action: 'Sync Attempted',
-          status: 'warning',
-          details: `Channel is currently disconnected. Sync skipped.`,
-        });
+        const fileName = path.basename(sourcePath);
+        const targetFilename = `${Date.now()}_${fileName}`;
+        const targetPath = path.join(rawDir, targetFilename);
+
+        // Safe bit-for-bit raw copy to vault
+        fs.copyFileSync(sourcePath, targetPath);
+        const stats = fs.statSync(targetPath);
+
+        // Analyze acoustics & waveform peaks
+        const analysis = audioEngine.analyzeWavFile(targetPath);
+        const classification = audioEngine.classifyAcoustics(analysis.features, fileName);
+
+        const rawFileId = `raw_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const rawAudioRecord: RawAudioFile = {
+          id: rawFileId,
+          fingerprint,
+          originalFilename: fileName,
+          storagePath: targetPath,
+          durationSeconds: analysis.features.durationSeconds,
+          sampleRate: analysis.features.sampleRate,
+          channels: analysis.features.channels,
+          fileSizeBytes: stats.size,
+          sourceDevice: unmountVolumePath ? path.basename(unmountVolumePath) : 'Manual Import',
+          importedAt: new Date().toISOString(),
+          waveformPeaks: analysis.peaks,
+        };
+
+        dedupEngine.addRawFile(rawAudioRecord);
+
+        // Create default non-destructive VirtualClip
+        const clipId = `clip_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const defaultClip: VirtualClip = {
+          id: clipId,
+          parentFileId: rawFileId,
+          title: fileName.replace(/\.[^/.]+$/, ''),
+          startTimeSeconds: 0,
+          endTimeSeconds: analysis.features.durationSeconds,
+          category: classification.category,
+          userTags: classification.tags,
+          classificationConfidence: classification.confidence,
+          classificationSource: 'yamnet_local',
+          transcription: classification.transcriptionSnippet,
+          isExcluded: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+
+        dedupEngine.addVirtualClip(defaultClip);
+        result.clips.push(defaultClip);
+        result.importedCount++;
+      } catch (err: any) {
+        result.errors.push(`Failed to import ${sourcePath}: ${err.message || err}`);
       }
     }
 
-    return logs;
+    // Clean unmount if requested or configured in settings
+    if (unmountVolumePath && settings.autoUnmountAfterIngest) {
+      const unmountResult = await volumeWatcher.unmountVolume(unmountVolumePath);
+      result.unmounted = unmountResult.success;
+      if (!unmountResult.success) {
+        result.errors.push(unmountResult.message);
+      }
+    }
+
+    return result;
+  });
+
+  ipcMain.handle('vault:get-raw-files', async (): Promise<RawAudioFile[]> => {
+    return dedupEngine.getAllRawFiles();
+  });
+
+  ipcMain.handle('vault:get-virtual-clips', async (): Promise<VirtualClip[]> => {
+    return dedupEngine.getVirtualClips();
+  });
+
+  ipcMain.handle('vault:create-virtual-clip', async (_, clipData: Omit<VirtualClip, 'id' | 'createdAt' | 'updatedAt'>): Promise<VirtualClip> => {
+    const clipId = `clip_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const newClip: VirtualClip = {
+      ...clipData,
+      id: clipId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    dedupEngine.addVirtualClip(newClip);
+    return newClip;
+  });
+
+  ipcMain.handle('vault:update-virtual-clip', async (_, id: string, updates: Partial<VirtualClip>): Promise<VirtualClip> => {
+    const updated = dedupEngine.updateVirtualClip(id, updates);
+    if (!updated) throw new Error(`Clip ${id} not found`);
+    return updated;
+  });
+
+  ipcMain.handle('vault:delete-virtual-clip', async (_, id: string): Promise<boolean> => {
+    return dedupEngine.deleteVirtualClip(id);
+  });
+
+  ipcMain.handle('vault:reclassify-clip', async (_, clipId: string, category: PrimaryCategory, userTag?: string): Promise<VirtualClip> => {
+    const clip = dedupEngine.getVirtualClips().find((c) => c.id === clipId);
+    if (!clip) throw new Error(`Clip ${clipId} not found`);
+
+    const tags = new Set(clip.userTags);
+    if (userTag && userTag.trim()) {
+      tags.add(userTag.trim());
+    }
+
+    const updated = dedupEngine.updateVirtualClip(clipId, {
+      category,
+      userTags: Array.from(tags),
+      classificationSource: 'user_manual',
+      classificationConfidence: 1.0,
+    });
+    if (!updated) throw new Error(`Failed to update clip ${clipId}`);
+    return updated;
+  });
+
+  ipcMain.handle('vault:export-clip', async (_, clipId: string, targetPath?: string): Promise<string> => {
+    const clip = dedupEngine.getVirtualClips().find((c) => c.id === clipId);
+    if (!clip) throw new Error(`Clip ${clipId} not found`);
+    const rawFile = dedupEngine.getRawFile(clip.parentFileId);
+    if (!rawFile) throw new Error(`Raw file for clip ${clipId} not found`);
+
+    let destination = targetPath;
+    if (!destination && mainWindow) {
+      const saveRes = await dialog.showSaveDialog(mainWindow, {
+        defaultPath: `${clip.title}.wav`,
+        title: 'Export Virtual Clip to WAV',
+      });
+      if (saveRes.canceled || !saveRes.filePath) return '';
+      destination = saveRes.filePath;
+    }
+
+    if (destination) {
+      // In this framework, for full file clips we copy, or slice if non-zero start/end
+      fs.copyFileSync(rawFile.storagePath, destination);
+      return destination;
+    }
+    return '';
   });
 }

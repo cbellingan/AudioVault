@@ -1,23 +1,40 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { ChannelType, ChannelStatus, InventoryItem, Order, SyncLog, MakerHubAPI } from '../shared/types';
+import {
+  AudioVaultAPI,
+  VaultSettings,
+  VolumeDetectedEvent,
+  IngestResult,
+  RawAudioFile,
+  VirtualClip,
+  PrimaryCategory,
+} from '../shared/types';
 
-const api: MakerHubAPI = {
-  getAppVersion: () => ipcRenderer.invoke('app:get-version'),
-  getChannelStatuses: () => ipcRenderer.invoke('channels:get-statuses'),
-  toggleChannelConnection: (channelId: ChannelType) =>
-    ipcRenderer.invoke('channels:toggle-connection', channelId),
-  getInventory: () => ipcRenderer.invoke('inventory:get-items'),
-  updateStock: (sku: string, totalStock: number) =>
-    ipcRenderer.invoke('inventory:update-stock', sku, totalStock),
-  getOrders: () => ipcRenderer.invoke('orders:get-orders'),
-  triggerSync: (channelId?: ChannelType) => ipcRenderer.invoke('sync:trigger', channelId),
-  onSyncUpdate: (callback: (log: SyncLog) => void) => {
-    const handler = (_: unknown, log: SyncLog) => callback(log);
-    ipcRenderer.on('sync:update', handler);
+const audioVaultApi: AudioVaultAPI = {
+  getVaultSettings: () => ipcRenderer.invoke('vault:get-settings'),
+  updateVaultSettings: (settings: Partial<VaultSettings>) =>
+    ipcRenderer.invoke('vault:update-settings', settings),
+  selectVaultDirectory: () => ipcRenderer.invoke('vault:select-directory'),
+  scanVolumes: () => ipcRenderer.invoke('vault:scan-volumes'),
+  importFiles: (filePaths: string[], unmountVolumePath?: string) =>
+    ipcRenderer.invoke('vault:import-files', filePaths, unmountVolumePath),
+  onVolumeDetected: (callback: (event: VolumeDetectedEvent) => void) => {
+    const handler = (_: unknown, event: VolumeDetectedEvent) => callback(event);
+    ipcRenderer.on('vault:volume-detected', handler);
     return () => {
-      ipcRenderer.removeListener('sync:update', handler);
+      ipcRenderer.removeListener('vault:volume-detected', handler);
     };
   },
+  getRawFiles: () => ipcRenderer.invoke('vault:get-raw-files'),
+  getVirtualClips: () => ipcRenderer.invoke('vault:get-virtual-clips'),
+  createVirtualClip: (clip: Omit<VirtualClip, 'id' | 'createdAt' | 'updatedAt'>) =>
+    ipcRenderer.invoke('vault:create-virtual-clip', clip),
+  updateVirtualClip: (id: string, updates: Partial<VirtualClip>) =>
+    ipcRenderer.invoke('vault:update-virtual-clip', id, updates),
+  deleteVirtualClip: (id: string) => ipcRenderer.invoke('vault:delete-virtual-clip', id),
+  reclassifyClip: (clipId: string, category: PrimaryCategory, userTag?: string) =>
+    ipcRenderer.invoke('vault:reclassify-clip', clipId, category, userTag),
+  exportClip: (clipId: string, targetPath?: string) =>
+    ipcRenderer.invoke('vault:export-clip', clipId, targetPath),
 };
 
-contextBridge.exposeInMainWorld('api', api);
+contextBridge.exposeInMainWorld('audioVault', audioVaultApi);
