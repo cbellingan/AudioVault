@@ -132,6 +132,7 @@ export default function App() {
   } | null>(null);
 
   const [isGeneratingTitleForClipId, setIsGeneratingTitleForClipId] = useState<string | null>(null);
+  const [waveformProfile, setWaveformProfile] = useState<'adaptive' | 'balanced' | 'punchy' | 'linear'>('adaptive');
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -404,8 +405,37 @@ export default function App() {
       ? activeRaw.waveformPeaks
       : mockFallbackPeaks;
 
-    // Slot spacing: 1.6px micro-bar + 1.0px gap = 2.6px total step
-    const step = 2.6;
+    // Profile tuning parameters for decimation and amplitude contour
+    let step = 2.6;
+    let gamma = 0.65;
+    let headroomFloor = 0.12;
+    let scaleHeadroom = true;
+    let peakWeight = 0.84;
+    let meanWeight = 0.16;
+
+    if (waveformProfile === 'balanced') {
+      step = 2.8;
+      gamma = 0.76;
+      headroomFloor = 0.22;
+      scaleHeadroom = true;
+      peakWeight = 0.80;
+      meanWeight = 0.20;
+    } else if (waveformProfile === 'punchy') {
+      step = 3.0;
+      gamma = 0.52;
+      headroomFloor = 0.10;
+      scaleHeadroom = true;
+      peakWeight = 0.88;
+      meanWeight = 0.12;
+    } else if (waveformProfile === 'linear') {
+      step = 2.6;
+      gamma = 1.0;
+      headroomFloor = 1.0;
+      scaleHeadroom = false;
+      peakWeight = 1.0;
+      meanWeight = 0.0;
+    }
+
     const totalBars = Math.max(80, Math.floor(displayWidth / step));
     const barWidth = Math.max(1.2, step - 1.0);
 
@@ -413,6 +443,13 @@ export default function App() {
     const baselineY = Math.round(displayHeight * 0.62);
     const maxTop = Math.max(10, baselineY - 6);
     const maxBottom = Math.max(6, (displayHeight - baselineY) - 6);
+
+    // Compute track maximum peak for adaptive headroom expansion
+    let trackMax = 0.01;
+    for (let p = 0; p < rawPeaks.length; p++) {
+      if (rawPeaks[p] > trackMax) trackMax = rawPeaks[p];
+    }
+    const effectiveCeiling = scaleHeadroom ? Math.max(headroomFloor, trackMax) : 1.0;
 
     // Subtle zero-crossing guide line
     ctx.strokeStyle = 'rgba(6, 182, 212, 0.2)';
@@ -435,16 +472,42 @@ export default function App() {
     const unplayedTopColor = 'rgba(148, 163, 184, 0.42)';
     const unplayedBottomColor = 'rgba(100, 116, 139, 0.22)';
 
-    // Smooth cosine interpolation function across rawPeaks
-    function samplePeak(peaksArr: number[], barIdx: number, total: number): number {
-      if (!peaksArr || peaksArr.length === 0) return 0.03;
-      const pos = (barIdx / (total - 1)) * (peaksArr.length - 1);
-      const low = Math.floor(pos);
-      const high = Math.min(peaksArr.length - 1, Math.ceil(pos));
-      const frac = pos - low;
-      const mu = (1 - Math.cos(frac * Math.PI)) / 2;
-      const base = peaksArr[low] * (1 - mu) + peaksArr[high] * mu;
-      return Math.min(1.0, Math.max(0.02, base));
+    // Bucket extraction across rawPeaks with transient & body preservation
+    function sampleBucketPeak(barIdx: number): number {
+      if (!rawPeaks || rawPeaks.length === 0) return 0.03;
+      const numPeaks = rawPeaks.length;
+      let rawVal = 0;
+
+      if (totalBars <= numPeaks) {
+        // When decimating (reducing): collect all points within this bar's bucket window
+        const start = Math.floor((barIdx / totalBars) * numPeaks);
+        const end = Math.min(numPeaks, Math.max(start + 1, Math.ceil(((barIdx + 1) / totalBars) * numPeaks)));
+        let bMax = 0;
+        let sum = 0;
+        let count = 0;
+        for (let j = start; j < end; j++) {
+          const v = rawPeaks[j];
+          if (v > bMax) bMax = v;
+          sum += v;
+          count++;
+        }
+        const bMean = count > 0 ? sum / count : bMax;
+        rawVal = bMax * peakWeight + bMean * meanWeight;
+      } else {
+        // When expanding: smooth cosine interpolation
+        const pos = (barIdx / (totalBars - 1)) * (numPeaks - 1);
+        const low = Math.floor(pos);
+        const high = Math.min(numPeaks - 1, Math.ceil(pos));
+        const frac = pos - low;
+        const mu = (1 - Math.cos(frac * Math.PI)) / 2;
+        rawVal = rawPeaks[low] * (1 - mu) + rawPeaks[high] * mu;
+      }
+
+      // Normalization / Headroom scaling
+      const normalized = Math.min(1.0, rawVal / effectiveCeiling);
+      // Perceptual companding curve (gamma)
+      const curved = Math.pow(Math.max(0, normalized), gamma);
+      return Math.min(1.0, Math.max(0.015, curved));
     }
 
     // Helper for rounded bar rectangles
@@ -459,12 +522,12 @@ export default function App() {
       targetCtx.fill();
     }
 
-    // Render all micro-bars
+    // Render all micro-bars with grown decimation buckets
     for (let i = 0; i < totalBars; i++) {
       const x = i * step;
       if (x + barWidth > displayWidth) break;
 
-      const peakVal = samplePeak(rawPeaks, i, totalBars);
+      const peakVal = sampleBucketPeak(i);
       const normPos = i / totalBars;
       const isPlayed = normPos <= playbackProgress;
 
@@ -548,7 +611,7 @@ export default function App() {
     }
 
     ctx.restore();
-  }, [selectedClipId, rawFiles, clips, playbackProgress]);
+  }, [selectedClipId, rawFiles, clips, playbackProgress, waveformProfile]);
 
   // Handle hardware ingest confirmation (Non-blocking pipeline)
   async function handleConfirmIngest() {
@@ -701,6 +764,8 @@ export default function App() {
   const [isExportingMp3, setIsExportingMp3] = useState<string | null>(null);
 
   async function handleExportClipMp3(clip: VirtualClip, isSelection: boolean = false) {
+    setContextMenu(null);
+    setClipContextMenu(null);
     if (!window.audioVault) {
       alert(`Exporting MP3 for "${clip.title}" (simulated)`);
       return;
@@ -726,8 +791,6 @@ export default function App() {
       alert(`Export to MP3 failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setIsExportingMp3(null);
-      setContextMenu(null);
-      setClipContextMenu(null);
     }
   }
 
@@ -1328,6 +1391,32 @@ export default function App() {
                 <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
                   [{activeClip.startTimeSeconds.toFixed(1)}s - {activeClip.endTimeSeconds.toFixed(1)}s]
                 </span>
+              </div>
+
+              {/* Waveform Profile Experiments Selector */}
+              <div className="profile-selector-group" title="Select waveform decimation & dynamic contour profile">
+                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Profile:
+                </span>
+                {(['adaptive', 'balanced', 'punchy', 'linear'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={`profile-pill-btn ${waveformProfile === mode ? 'active' : ''}`}
+                    onClick={() => setWaveformProfile(mode)}
+                    title={
+                      mode === 'adaptive'
+                        ? 'Dynamic Adaptive: Headroom scaling + perceptual companding curve (Recommended)'
+                        : mode === 'balanced'
+                        ? 'Balanced: Natural acoustic depth with moderate headroom scaling'
+                        : mode === 'punchy'
+                        ? 'Punchy: Studio companded body for speech & voice notes'
+                        : 'Linear: Raw uncompressed linear PCM amplitude'
+                    }
+                  >
+                    {mode === 'adaptive' ? '✨ Dynamic (Rec)' : mode === 'balanced' ? '🌿 Balanced' : mode === 'punchy' ? '🔥 Punchy' : '📏 Linear'}
+                  </button>
+                ))}
               </div>
 
               <div className="transport-controls">

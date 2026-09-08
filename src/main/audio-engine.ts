@@ -84,57 +84,62 @@ export class AudioEngine {
       let prevVal = 0;
       let sampledCount = 0;
 
-      // Sample evenly across the file
+      // Sample evenly across the file with distributed sub-slices per block for long takes
       const numBlocks = Math.min(maxPeaks, Math.max(1, totalSamples));
       const blockSize = Math.max(1, Math.floor(totalSamples / numBlocks));
-      const samplesPerSlice = Math.min(256, blockSize);
-      const sliceByteSize = samplesPerSlice * blockAlign;
-      const sliceBuf = Buffer.alloc(sliceByteSize);
+      const subSlicesPerBlock = blockSize > 2048 ? 8 : (blockSize > 512 ? 4 : 1);
+      const subSliceSamples = Math.min(512, Math.max(64, Math.floor(blockSize / subSlicesPerBlock)));
+      const subSliceByteSize = subSliceSamples * blockAlign;
+      const sliceBuf = Buffer.alloc(subSliceByteSize);
 
       for (let b = 0; b < numBlocks; b++) {
-        const sampleOffset = b * blockSize;
-        const fileBytePos = dataOffset + sampleOffset * blockAlign;
-        if (fileBytePos + sliceByteSize > fileSize) break;
-
-        const bytesRead = fs.readSync(fd, sliceBuf, 0, sliceByteSize, fileBytePos);
-        const samplesInSlice = Math.floor(bytesRead / blockAlign);
         let blockMax = 0;
+        const subStep = Math.floor(blockSize / subSlicesPerBlock);
 
-        for (let s = 0; s < samplesInSlice; s++) {
-          const sampleByteIdx = s * blockAlign;
-          let val = 0;
+        for (let sub = 0; sub < subSlicesPerBlock; sub++) {
+          const sampleOffset = b * blockSize + sub * subStep;
+          const fileBytePos = dataOffset + sampleOffset * blockAlign;
+          if (fileBytePos + subSliceByteSize > fileSize) break;
 
-          if (audioFormat === 3 && bitsPerSample === 32) {
-            // IEEE 32-bit float
-            val = sliceBuf.readFloatLE(sampleByteIdx);
-          } else if (bitsPerSample === 16) {
-            // 16-bit signed PCM
-            val = sliceBuf.readInt16LE(sampleByteIdx) / 32768.0;
-          } else if (bitsPerSample === 24) {
-            // 24-bit signed PCM
-            val = sliceBuf.readIntLE(sampleByteIdx, 3) / 8388608.0;
-          } else if (bitsPerSample === 32) {
-            // 32-bit signed integer PCM
-            val = sliceBuf.readInt32LE(sampleByteIdx) / 2147483648.0;
-          } else {
-            // 8-bit unsigned PCM
-            val = (sliceBuf.readUInt8(sampleByteIdx) - 128) / 128.0;
+          const bytesRead = fs.readSync(fd, sliceBuf, 0, subSliceByteSize, fileBytePos);
+          const samplesInSlice = Math.floor(bytesRead / blockAlign);
+
+          for (let s = 0; s < samplesInSlice; s++) {
+            const sampleByteIdx = s * blockAlign;
+            let val = 0;
+
+            if (audioFormat === 3 && bitsPerSample === 32) {
+              // IEEE 32-bit float
+              val = sliceBuf.readFloatLE(sampleByteIdx);
+            } else if (bitsPerSample === 16) {
+              // 16-bit signed PCM
+              val = sliceBuf.readInt16LE(sampleByteIdx) / 32768.0;
+            } else if (bitsPerSample === 24) {
+              // 24-bit signed PCM
+              val = sliceBuf.readIntLE(sampleByteIdx, 3) / 8388608.0;
+            } else if (bitsPerSample === 32) {
+              // 32-bit signed integer PCM
+              val = sliceBuf.readInt32LE(sampleByteIdx) / 2147483648.0;
+            } else {
+              // 8-bit unsigned PCM
+              val = (sliceBuf.readUInt8(sampleByteIdx) - 128) / 128.0;
+            }
+
+            if (isNaN(val) || !isFinite(val)) val = 0;
+            const absVal = Math.min(1.0, Math.abs(val));
+            if (absVal > blockMax) blockMax = absVal;
+            if (absVal > maxVal) maxVal = absVal;
+
+            sumSquares += val * val;
+            if ((val >= 0 && prevVal < 0) || (val < 0 && prevVal >= 0)) {
+              zeroCrossings++;
+            }
+            if (absVal < 0.05) {
+              silentFrames++;
+            }
+            prevVal = val;
+            sampledCount++;
           }
-
-          if (isNaN(val) || !isFinite(val)) val = 0;
-          const absVal = Math.min(1.0, Math.abs(val));
-          if (absVal > blockMax) blockMax = absVal;
-          if (absVal > maxVal) maxVal = absVal;
-
-          sumSquares += val * val;
-          if ((val >= 0 && prevVal < 0) || (val < 0 && prevVal >= 0)) {
-            zeroCrossings++;
-          }
-          if (absVal < 0.05) {
-            silentFrames++;
-          }
-          prevVal = val;
-          sampledCount++;
         }
 
         peaks.push(parseFloat(blockMax.toFixed(3)));

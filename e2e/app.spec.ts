@@ -354,6 +354,9 @@ test.describe('AudioVault Electron Integration Tests', () => {
     await expect(mp3Badge).toBeVisible({ timeout: 10000 });
     console.log('[E2E] MP3 badge visible on clip row!');
 
+    // Settle async operations
+    await window.waitForTimeout(400);
+
     // 4. Right-click on the row again
     await firstRow.click({ button: 'right' });
     await expect(contextMenu).toBeVisible();
@@ -365,7 +368,22 @@ test.describe('AudioVault Electron Integration Tests', () => {
     const reExportMp3Item = contextMenu.locator('.context-menu-item', { hasText: 'Re-export to MP3' });
     await expect(reExportMp3Item).toBeVisible();
 
-    // 5. Verify Waveform context menu has MP3 export & Show in Finder
+    // Close menu by clicking elsewhere
+    await window.keyboard.press('Escape');
+
+    // 5. Verify Waveform Profile Experiment Buttons
+    const profileGroup = window.locator('.profile-selector-group');
+    await expect(profileGroup).toBeVisible();
+
+    const punchyBtn = profileGroup.locator('.profile-pill-btn', { hasText: 'Punchy' });
+    await punchyBtn.click();
+    await expect(punchyBtn).toHaveClass(/active/);
+
+    const dynamicBtn = profileGroup.locator('.profile-pill-btn', { hasText: 'Dynamic' });
+    await dynamicBtn.click();
+    await expect(dynamicBtn).toHaveClass(/active/);
+
+    // 6. Verify Waveform context menu has MP3 export & Show in Finder
     const canvas = window.locator('.waveform-canvas');
     await canvas.click({ button: 'right', position: { x: 150, y: 40 } });
 
@@ -375,7 +393,7 @@ test.describe('AudioVault Electron Integration Tests', () => {
     const waveShowInFinder = waveformContextMenu.locator('.context-menu-item', { hasText: 'Show in Finder' });
     await expect(waveShowInFinder).toBeVisible();
 
-    console.log('[E2E] Waveform and table MP3 context actions verified successfully!');
+    console.log('[E2E] Waveform and table MP3 context actions and profile buttons verified successfully!');
     await app.close();
   });
 });
