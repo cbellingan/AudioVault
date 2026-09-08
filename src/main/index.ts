@@ -257,7 +257,7 @@ function setupIpcHandlers() {
           classificationSource: 'yamnet_local',
           transcription: classification.transcriptionSnippet,
           isExcluded: false,
-          createdAt: new Date().toISOString(),
+          createdAt: analysis.creationTimestamp || new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
 

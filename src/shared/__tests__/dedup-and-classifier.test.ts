@@ -142,4 +142,34 @@ describe('Deduplication & Classification Engine Tests', () => {
     expect(result.peaks.length).toBe(50);
     expect(result.peaks[10]).toBeGreaterThan(0.2);
   });
+
+  it('extracts creation timestamp from BWF bext chunk and Zoom filename patterns', () => {
+    // 1. Zoom filename pattern (YYMMDD-HHMMSS)
+    const zoomPath = path.join(tempDir, '260831-185613.WAV');
+    fs.writeFileSync(zoomPath, 'dummy');
+    const zoomTs = audioEngine.extractCreationTimestamp(zoomPath);
+    expect(zoomTs).toBe('2026-08-31T18:56:13.000Z');
+
+    // 2. Prefixed Zoom filename pattern (e.g. 1788833968188_260730-080728.WAV)
+    const prefixedPath = path.join(tempDir, '1788833968188_260730-080728.WAV');
+    fs.writeFileSync(prefixedPath, 'dummy');
+    const prefixedTs = audioEngine.extractCreationTimestamp(prefixedPath);
+    expect(prefixedTs).toBe('2026-07-30T08:07:28.000Z');
+
+    // 3. BWF bext chunk (OriginationDate + OriginationTime)
+    const bextBuf = Buffer.alloc(65536);
+    bextBuf.write('RIFF', 0);
+    bextBuf.writeUInt32LE(65536 - 8, 4);
+    bextBuf.write('WAVE', 8);
+    bextBuf.write('bext', 12);
+    bextBuf.writeUInt32LE(600, 16);
+    // bext data starts at 20
+    bextBuf.write('2026-09-07', 20 + 320, 'ascii');
+    bextBuf.write('10:17:14', 20 + 330, 'ascii');
+
+    const bwfPath = path.join(tempDir, 'take_bwf.wav');
+    fs.writeFileSync(bwfPath, bextBuf);
+    const bwfTs = audioEngine.extractCreationTimestamp(bwfPath, bextBuf);
+    expect(bwfTs).toBe('2026-09-07T10:17:14.000Z');
+  });
 });

@@ -311,7 +311,7 @@ export class PipelineOrchestrator extends EventEmitter {
         transcription: classification.transcriptionSnippet,
         transcriptionChunks: transcriptChunks,
         isExcluded: false,
-        createdAt: new Date().toISOString(),
+        createdAt: analysis.creationTimestamp || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
       this.dedupEngine.addVirtualClip(defaultClip);

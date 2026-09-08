@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 import { PrimaryCategory } from '../shared/types';
 import { TranscriptionService } from './transcription-service';
 
@@ -20,11 +21,13 @@ export class AudioEngine {
   }
 
   /**
-   * Reads raw PCM audio data and extracts basic header metrics and downsampled waveform peaks.
+   * Reads raw PCM audio data and extracts basic header metrics, downsampled waveform peaks,
+   * and file creation timestamp (from BWF bext, filename pattern, or filesystem stats).
    */
   public analyzeWavFile(filePath: string, maxPeaks = 600): {
     features: AcousticFeatures;
     peaks: number[];
+    creationTimestamp: string;
   } {
     const stats = fs.statSync(filePath);
     const fileSize = stats.size;
@@ -146,6 +149,8 @@ export class AudioEngine {
       const zeroCrossingRate = sampledCount > 0 ? zeroCrossings / sampledCount : 0;
       const dynamicRangeDb = maxVal > 0 && rms > 0 ? 20 * Math.log10(maxVal / Math.max(rms, 0.0001)) : 0;
 
+      const creationTimestamp = this.extractCreationTimestamp(filePath, header);
+
       return {
         features: {
           durationSeconds: parseFloat(durationSeconds.toFixed(2)),
@@ -157,10 +162,91 @@ export class AudioEngine {
           dynamicRangeDb: parseFloat(dynamicRangeDb.toFixed(1)),
         },
         peaks,
+        creationTimestamp,
       };
     } finally {
       fs.closeSync(fd);
     }
+  }
+
+  /**
+   * Extracts creation timestamp from audio file:
+   * 1. BWF (Broadcast Wave Format) 'bext' chunk (OriginationDate + OriginationTime).
+   * 2. Filename pattern (e.g. Zoom YYMMDD-HHMMSS or ISO YYYYMMDD-HHMMSS).
+   * 3. Filesystem stat birthtime or mtime.
+   * 4. Current timestamp fallback.
+   */
+  public extractCreationTimestamp(filePath: string, headerBuffer?: Buffer): string {
+    // 1. Try BWF bext chunk from header if available
+    try {
+      let buf = headerBuffer;
+      if (!buf) {
+        const fd = fs.openSync(filePath, 'r');
+        buf = Buffer.alloc(65536);
+        fs.readSync(fd, buf, 0, 65536, 0);
+        fs.closeSync(fd);
+      }
+      const bextIdx = buf.indexOf('bext');
+      if (bextIdx !== -1 && bextIdx + 8 + 338 <= buf.length) {
+        const origDate = buf.slice(bextIdx + 8 + 320, bextIdx + 8 + 330).toString('ascii').trim();
+        const origTime = buf.slice(bextIdx + 8 + 330, bextIdx + 8 + 338).toString('ascii').trim();
+        if (/^\d{4}-\d{2}-\d{2}$/.test(origDate) && /^\d{2}:\d{2}:\d{2}$/.test(origTime)) {
+          const d = new Date(`${origDate}T${origTime}.000Z`);
+          if (!isNaN(d.getTime())) {
+            return d.toISOString();
+          }
+        }
+      }
+    } catch {
+      // Ignore header read errors, proceed to next strategies
+    }
+
+    // 2. Try Filename patterns (stripping import prefix like 1788833968188_)
+    try {
+      const baseName = path.basename(filePath).replace(/^\d{13,}_/, '');
+
+      // Match Zoom recorder pattern: YYMMDD-HHMMSS (e.g. 260831-185613 or 260831_185613)
+      const zoomMatch = baseName.match(/^(\d{2})(\d{2})(\d{2})[-_](\d{2})(\d{2})(\d{2})/);
+      if (zoomMatch) {
+        const year = 2000 + parseInt(zoomMatch[1], 10);
+        const month = zoomMatch[2];
+        const day = zoomMatch[3];
+        const hour = zoomMatch[4];
+        const min = zoomMatch[5];
+        const sec = zoomMatch[6];
+        const d = new Date(`${year}-${month}-${day}T${hour}:${min}:${sec}.000Z`);
+        if (!isNaN(d.getTime())) {
+          return d.toISOString();
+        }
+      }
+
+      // Match full 4-digit year pattern: YYYYMMDD-HHMMSS or YYYY-MM-DD[-_ ]HH-MM-SS
+      const isoMatch = baseName.match(/^(\d{4})[-_]?(\d{2})[-_]?(\d{2})[-_ ]+(\d{2})[-_:]?(\d{2})[-_:]?(\d{2})/);
+      if (isoMatch) {
+        const d = new Date(`${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}T${isoMatch[4]}:${isoMatch[5]}:${isoMatch[6]}.000Z`);
+        if (!isNaN(d.getTime())) {
+          return d.toISOString();
+        }
+      }
+    } catch {
+      // Ignore filename parse errors
+    }
+
+    // 3. Try filesystem stat birthtime or mtime
+    try {
+      const stat = fs.statSync(filePath);
+      if (stat.birthtime && !isNaN(stat.birthtime.getTime()) && stat.birthtime.getTime() > 0) {
+        return stat.birthtime.toISOString();
+      }
+      if (stat.mtime && !isNaN(stat.mtime.getTime()) && stat.mtime.getTime() > 0) {
+        return stat.mtime.toISOString();
+      }
+    } catch {
+      // Ignore stat errors
+    }
+
+    // 4. Default fallback
+    return new Date().toISOString();
   }
 
   /**

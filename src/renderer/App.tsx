@@ -91,6 +91,12 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackProgress, setPlaybackProgress] = useState(0.2); // 0.0 - 1.0
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatusEvent | null>(null);
+  
+  // Table Sorting state: starts desc on creation / import time
+  type SortField = 'title' | 'category' | 'duration' | 'tags' | 'confidence' | 'createdAt';
+  type SortOrder = 'asc' | 'desc';
+  const [sortField, setSortField] = useState<SortField>('createdAt');
+  const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
 
   // Selection range on waveform
   const [selectionRange, setSelectionRange] = useState<{ start: number; end: number } | null>({
@@ -713,6 +719,69 @@ export default function App() {
     return matchesCat && matchesTag;
   });
 
+  // Sort clips by selected field and order (starts desc on createdAt / import time)
+  const sortedClips = useMemo(() => {
+    return [...filteredClips].sort((a, b) => {
+      let diff = 0;
+      if (sortField === 'title') {
+        diff = a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' });
+      } else if (sortField === 'category') {
+        diff = a.category.localeCompare(b.category);
+      } else if (sortField === 'duration') {
+        const durA = a.endTimeSeconds - a.startTimeSeconds;
+        const durB = b.endTimeSeconds - b.startTimeSeconds;
+        diff = durA - durB;
+      } else if (sortField === 'tags') {
+        const tagsA = a.userTags.join(', ');
+        const tagsB = b.userTags.join(', ');
+        diff = tagsA.localeCompare(tagsB);
+      } else if (sortField === 'confidence') {
+        diff = a.classificationConfidence - b.classificationConfidence;
+      } else if (sortField === 'createdAt') {
+        const timeA = new Date(a.createdAt).getTime() || 0;
+        const timeB = new Date(b.createdAt).getTime() || 0;
+        diff = timeA - timeB;
+      }
+      return sortOrder === 'asc' ? diff : -diff;
+    });
+  }, [filteredClips, sortField, sortOrder]);
+
+  function handleSort(field: SortField) {
+    if (sortField === field) {
+      setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      // Default to desc for createdAt, duration, and confidence; asc for text
+      setSortOrder(field === 'createdAt' || field === 'duration' || field === 'confidence' ? 'desc' : 'asc');
+    }
+  }
+
+  function renderSortIndicator(field: SortField) {
+    if (sortField === field) {
+      return (
+        <span style={{ marginLeft: '6px', color: 'var(--accent-cyan)', fontSize: '0.8rem', display: 'inline-block' }}>
+          {sortOrder === 'asc' ? '▲' : '▼'}
+        </span>
+      );
+    }
+    return (
+      <span style={{ marginLeft: '6px', color: 'var(--text-muted)', opacity: 0.35, fontSize: '0.8rem', display: 'inline-block' }}>
+        ↕
+      </span>
+    );
+  }
+
+  function formatCreationDate(dateStr: string): string {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const hours = String(d.getHours()).padStart(2, '0');
+    const mins = String(d.getMinutes()).padStart(2, '0');
+    return `${year}-${month}-${day} ${hours}:${mins}`;
+  }
+
   const allTags = Array.from(new Set(clips.flatMap((c) => c.userTags)));
 
   return (
@@ -958,16 +1027,28 @@ export default function App() {
             <table className="clips-table">
               <thead>
                 <tr>
-                  <th>Clip Title</th>
-                  <th>Category</th>
-                  <th>Duration</th>
-                  <th>Sub-Tags</th>
-                  <th>Local AI Signal</th>
-                  <th>Created</th>
+                  <th onClick={() => handleSort('title')} title="Click to sort by Clip Title">
+                    Clip Title {renderSortIndicator('title')}
+                  </th>
+                  <th onClick={() => handleSort('category')} title="Click to sort by Category">
+                    Category {renderSortIndicator('category')}
+                  </th>
+                  <th onClick={() => handleSort('duration')} title="Click to sort by Duration">
+                    Duration {renderSortIndicator('duration')}
+                  </th>
+                  <th onClick={() => handleSort('tags')} title="Click to sort by Sub-Tags">
+                    Sub-Tags {renderSortIndicator('tags')}
+                  </th>
+                  <th onClick={() => handleSort('confidence')} title="Click to sort by Local AI Signal">
+                    Local AI Signal {renderSortIndicator('confidence')}
+                  </th>
+                  <th onClick={() => handleSort('createdAt')} title="Click to sort by Creation / Import Time">
+                    Created / Recorded {renderSortIndicator('createdAt')}
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {filteredClips.map((clip) => (
+                {sortedClips.map((clip) => (
                   <tr
                     key={clip.id}
                     className={clip.id === selectedClipId ? 'selected' : ''}
@@ -1004,8 +1085,8 @@ export default function App() {
                         {Math.round(clip.classificationConfidence * 100)}%)
                       </span>
                     </td>
-                    <td style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                      {new Date(clip.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    <td style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                      {formatCreationDate(clip.createdAt)}
                     </td>
                   </tr>
                 ))}

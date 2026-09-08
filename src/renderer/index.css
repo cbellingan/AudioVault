@@ -350,6 +350,14 @@ body {
   text-transform: uppercase;
   border-bottom: 1px solid var(--border-color);
   background: #0b1120;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.clips-table th:hover {
+  color: var(--text-primary);
+  background: #151d32;
 }
 
 .clips-table td {

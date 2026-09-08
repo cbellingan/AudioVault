@@ -202,4 +202,53 @@ test.describe('AudioVault Electron Integration Tests', () => {
     console.log('[E2E] Scrolling transcript ribbon verified successfully!');
     await app.close();
   });
+
+  test('Library table starts sorted descending by Created / Recorded timestamp and supports column sorting', async () => {
+    console.log('[E2E] Testing table sorting...');
+    const app = await electron.launch({
+      args: [path.join(__dirname, '../dist-electron/main/index.js')],
+    });
+
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    // 1. Verify default sort is Created / Recorded descending (newest timestamp first)
+    const dateCells = window.locator('.clips-table tbody tr td:last-child');
+    await expect(dateCells.first()).toBeVisible();
+    const firstDateText = await dateCells.first().innerText();
+    const lastDateText = await dateCells.last().innerText();
+    console.log(`[E2E] First row date: "${firstDateText}", Last row date: "${lastDateText}"`);
+
+    // In descending order, first date should be greater than or equal to last date
+    expect(firstDateText >= lastDateText).toBe(true);
+
+    // 2. Click "Created / Recorded" header to toggle ascending
+    const createdHeader = window.locator('.clips-table th', { hasText: 'Created / Recorded' });
+    await createdHeader.click();
+    const firstDateAsc = await dateCells.first().innerText();
+    const lastDateAsc = await dateCells.last().innerText();
+    console.log(`[E2E] After ascending toggle - First: "${firstDateAsc}", Last: "${lastDateAsc}"`);
+    expect(firstDateAsc <= lastDateAsc).toBe(true);
+
+    // 3. Click "Clip Title" header to sort alphabetically
+    const titleHeader = window.locator('.clips-table th', { hasText: 'Clip Title' });
+    await titleHeader.click();
+    const titleCells = window.locator('.clips-table tbody tr td:first-child div:first-child');
+    const firstTitle = await titleCells.first().innerText();
+    const lastTitle = await titleCells.last().innerText();
+    console.log(`[E2E] Sorted by title - First: "${firstTitle}", Last: "${lastTitle}"`);
+    expect(firstTitle.localeCompare(lastTitle)).toBeLessThanOrEqual(0);
+
+    // 4. Click "Duration" header to sort by duration
+    const durationHeader = window.locator('.clips-table th', { hasText: 'Duration' });
+    await durationHeader.click();
+    const durationCells = window.locator('.clips-table tbody tr td:nth-child(3)');
+    const firstDur = parseFloat(await durationCells.first().innerText());
+    const lastDur = parseFloat(await durationCells.last().innerText());
+    console.log(`[E2E] Sorted by duration (desc) - First: ${firstDur}s, Last: ${lastDur}s`);
+    expect(firstDur).toBeGreaterThanOrEqual(lastDur);
+
+    console.log('[E2E] Table sorting verified successfully!');
+    await app.close();
+  });
 });
