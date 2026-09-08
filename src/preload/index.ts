@@ -7,6 +7,7 @@ import {
   RawAudioFile,
   VirtualClip,
   PrimaryCategory,
+  PipelineStatusEvent,
 } from '../shared/types';
 
 const audioVaultApi: AudioVaultAPI = {
@@ -22,6 +23,15 @@ const audioVaultApi: AudioVaultAPI = {
     ipcRenderer.on('vault:volume-detected', handler);
     return () => {
       ipcRenderer.removeListener('vault:volume-detected', handler);
+    };
+  },
+  enqueuePipelineBatch: (filePaths: string[], unmountVolumePath?: string) =>
+    ipcRenderer.invoke('vault:enqueue-pipeline-batch', filePaths, unmountVolumePath),
+  onPipelineStatus: (callback: (status: PipelineStatusEvent) => void) => {
+    const handler = (_: unknown, status: PipelineStatusEvent) => callback(status);
+    ipcRenderer.on('vault:pipeline-status', handler);
+    return () => {
+      ipcRenderer.removeListener('vault:pipeline-status', handler);
     };
   },
   getRawFiles: () => ipcRenderer.invoke('vault:get-raw-files'),

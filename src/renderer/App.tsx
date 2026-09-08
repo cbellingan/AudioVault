@@ -5,6 +5,8 @@ import {
   VirtualClip,
   VolumeDetectedEvent,
   VaultSettings,
+  PipelineStatusEvent,
+  IngestJobProgress,
 } from '../shared/types';
 
 // Standalone fallback mock data
@@ -81,6 +83,7 @@ export default function App() {
   const [autoUnmountPref, setAutoUnmountPref] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackProgress, setPlaybackProgress] = useState(0.2); // 0.0 - 1.0
+  const [pipelineStatus, setPipelineStatus] = useState<PipelineStatusEvent | null>(null);
 
   // Selection range on waveform
   const [selectionRange, setSelectionRange] = useState<{ start: number; end: number } | null>({
@@ -102,10 +105,19 @@ export default function App() {
   useEffect(() => {
     if (window.audioVault) {
       loadInitialVaultData();
-      const unsubscribe = window.audioVault.onVolumeDetected((event) => {
+      const unsubscribeVolume = window.audioVault.onVolumeDetected((event) => {
         setDetectedVolume(event);
       });
-      return () => unsubscribe();
+      const unsubscribePipeline = window.audioVault.onPipelineStatus((status) => {
+        setPipelineStatus(status);
+        window.audioVault.getVirtualClips().then((all) => {
+          if (all.length > 0) setClips(all);
+        });
+      });
+      return () => {
+        unsubscribeVolume();
+        unsubscribePipeline();
+      };
     }
   }, []);
 
@@ -177,20 +189,16 @@ export default function App() {
     });
   }, [selectedClipId, rawFiles, clips, playbackProgress]);
 
-  // Handle hardware ingest confirmation
+  // Handle hardware ingest confirmation (Non-blocking pipeline)
   async function handleConfirmIngest() {
     if (!detectedVolume) return;
     const pathsToImport = detectedVolume.files.filter((f) => !f.isAlreadyImported).map((f) => f.path);
 
     if (window.audioVault) {
-      const res = await window.audioVault.importFiles(
+      await window.audioVault.enqueuePipelineBatch(
         pathsToImport,
         autoUnmountPref ? detectedVolume.volumePath : undefined
       );
-      if (res.clips.length > 0) {
-        setClips((prev) => [...res.clips, ...prev]);
-        setSelectedClipId(res.clips[0].id);
-      }
     } else {
       // Simulate ingest in browser mode
       const newMockClip: VirtualClip = {
@@ -417,6 +425,64 @@ export default function App() {
               Dismiss
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Live Pipeline Progress Tray (Non-blocking background pipeline) */}
+      {pipelineStatus && (pipelineStatus.activeCopyJob || pipelineStatus.activeAnalysisJobs.length > 0 || pipelineStatus.canUnmountSdCard) && (
+        <div className="pipeline-tray">
+          <div className="pipeline-header">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <span style={{ fontWeight: 600 }}>Pipeline Activity</span>
+              {pipelineStatus.isSdCardActive ? (
+                <span className="pipeline-status-badge badge-serial">
+                  ⚡ SD Card Read (Sequential: 1 active)
+                </span>
+              ) : pipelineStatus.canUnmountSdCard ? (
+                <span className="pipeline-status-badge badge-unmounted">
+                  ✓ SD Card Read Finished — Safely Ejected!
+                </span>
+              ) : null}
+            </div>
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+              Completed: {pipelineStatus.completedJobs} / {pipelineStatus.totalJobs}
+            </div>
+          </div>
+
+          {/* Active Serial Copy Progress */}
+          {pipelineStatus.activeCopyJob && (
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '0.2rem' }}>
+                <span>Copying: {pipelineStatus.activeCopyJob.filename}</span>
+                <span>{pipelineStatus.activeCopyJob.copyPercent}% ({Math.round(pipelineStatus.activeCopyJob.bytesCopied / 1024)} KB)</span>
+              </div>
+              <div className="progress-track">
+                <div
+                  className="progress-fill"
+                  style={{ width: `${pipelineStatus.activeCopyJob.copyPercent}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Active Parallel Analysis Workers */}
+          {pipelineStatus.activeAnalysisJobs.length > 0 && (
+            <div className="worker-pills-row">
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Local SSD Workers:</span>
+              {pipelineStatus.activeAnalysisJobs.map((job: IngestJobProgress) => (
+                <div key={job.jobId} className="worker-pill">
+                  <span>🧠 {job.filename}</span>
+                  <span style={{ color: 'var(--accent-cyan)' }}>{job.analysisPercent}%</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {pipelineStatus.unmountMessage && (
+            <div style={{ fontSize: '0.75rem', color: 'var(--accent-emerald)', fontWeight: 500 }}>
+              {pipelineStatus.unmountMessage}
+            </div>
+          )}
         </div>
       )}
 

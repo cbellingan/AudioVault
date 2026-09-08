@@ -1,0 +1,292 @@
+import fs from 'fs';
+import path from 'path';
+import { EventEmitter } from 'events';
+import { DedupEngine } from './dedup-engine';
+import { VolumeWatcher } from './volume-watcher';
+import { AudioEngine } from './audio-engine';
+import {
+  IngestJobProgress,
+  PipelineStatusEvent,
+  RawAudioFile,
+  VirtualClip,
+} from '../shared/types';
+
+export class PipelineOrchestrator extends EventEmitter {
+  private dedupEngine: DedupEngine;
+  private volumeWatcher: VolumeWatcher;
+  private audioEngine: AudioEngine;
+
+  // Queues
+  private copyQueue: IngestJobProgress[] = [];
+  private analysisQueue: IngestJobProgress[] = [];
+  private activeCopyJob?: IngestJobProgress;
+  private activeAnalysisJobs: Map<string, IngestJobProgress> = new Map();
+
+  // Settings & Counters
+  private isProcessingCopy = false;
+  private isProcessingAnalysis = false;
+  private maxAnalysisConcurrency = 3; // Parallel processing on local SSD
+  private completedJobsCount = 0;
+  private failedJobsCount = 0;
+  private totalBatchJobsCount = 0;
+
+  // SD Card Ejection tracking
+  private pendingUnmountVolumePath?: string;
+  private sdCardCopyFinished = true;
+  private unmountMessage?: string;
+
+  // Throttled notification
+  private notifyTimeout: NodeJS.Timeout | null = null;
+
+  constructor(
+    dedupEngine: DedupEngine,
+    volumeWatcher: VolumeWatcher,
+    audioEngine: AudioEngine
+  ) {
+    super();
+    this.dedupEngine = dedupEngine;
+    this.volumeWatcher = volumeWatcher;
+    this.audioEngine = audioEngine;
+  }
+
+  public enqueueBatch(
+    filePaths: string[],
+    volumeToUnmount?: string
+  ): { batchId: string; count: number } {
+    const batchId = `batch_${Date.now()}`;
+    this.pendingUnmountVolumePath = volumeToUnmount;
+    this.sdCardCopyFinished = false;
+    this.unmountMessage = undefined;
+
+    let addedCount = 0;
+    for (const filePath of filePaths) {
+      if (!fs.existsSync(filePath)) continue;
+
+      const stats = fs.statSync(filePath);
+      const job: IngestJobProgress = {
+        jobId: `job_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        sourcePath: filePath,
+        filename: path.basename(filePath),
+        stage: 'queued_copy',
+        bytesCopied: 0,
+        totalBytes: stats.size,
+        copyPercent: 0,
+        analysisPercent: 0,
+        currentTaskDescription: 'Waiting in sequential SD card queue...',
+      };
+
+      this.copyQueue.push(job);
+      this.totalBatchJobsCount++;
+      addedCount++;
+    }
+
+    this.throttleBroadcastStatus();
+    this.processNextCopy();
+    return { batchId, count: addedCount };
+  }
+
+  public getStatus(): PipelineStatusEvent {
+    return {
+      totalJobs: this.totalBatchJobsCount,
+      completedJobs: this.completedJobsCount,
+      failedJobs: this.failedJobsCount,
+      activeCopyJob: this.activeCopyJob,
+      activeAnalysisJobs: Array.from(this.activeAnalysisJobs.values()),
+      isSdCardActive: !this.sdCardCopyFinished,
+      canUnmountSdCard: this.sdCardCopyFinished && !!this.pendingUnmountVolumePath,
+      unmountMessage: this.unmountMessage,
+    };
+  }
+
+  /**
+   * Stage 1: STRICTLY SERIAL SD Card Ingestion (Concurrency = 1).
+   * Streams file chunk-by-chunk to prevent bus saturation.
+   */
+  private async processNextCopy() {
+    if (this.isProcessingCopy) return;
+    if (this.copyQueue.length === 0) {
+      // All copy operations completed! SD Card can now be safely unmounted immediately!
+      if (!this.sdCardCopyFinished) {
+        this.sdCardCopyFinished = true;
+        await this.handleCleanUnmountIfRequested();
+      }
+      this.activeCopyJob = undefined;
+      this.throttleBroadcastStatus();
+      return;
+    }
+
+    this.isProcessingCopy = true;
+    const currentJob = this.copyQueue.shift()!;
+    this.activeCopyJob = currentJob;
+    currentJob.stage = 'copying';
+    currentJob.currentTaskDescription = 'Streaming from external media (Serial I/O)...';
+    this.throttleBroadcastStatus();
+
+    const rawDir = this.dedupEngine.getRawDir();
+    const targetFilename = `${Date.now()}_${currentJob.filename}`;
+    const targetPath = path.join(rawDir, targetFilename);
+
+    try {
+      // Check deduplication
+      const fingerprint = this.dedupEngine.computeFileFingerprint(currentJob.sourcePath);
+      if (this.dedupEngine.isFingerprintImported(fingerprint)) {
+        currentJob.stage = 'completed';
+        currentJob.currentTaskDescription = 'Already imported (deduplicated).';
+        this.completedJobsCount++;
+      } else {
+        // Stream copy with progress updates
+        await this.streamCopyFile(currentJob.sourcePath, targetPath, (copied, total) => {
+          currentJob.bytesCopied = copied;
+          currentJob.copyPercent = total > 0 ? Math.round((copied / total) * 100) : 100;
+          this.throttleBroadcastStatus();
+        });
+
+        // File is now safely on fast internal SSD! Push to parallel analysis queue
+        currentJob.stage = 'queued_analysis';
+        currentJob.currentTaskDescription = 'File on SSD. Queued for local acoustic analysis...';
+        (currentJob as any).targetPath = targetPath;
+        (currentJob as any).fingerprint = fingerprint;
+        this.analysisQueue.push(currentJob);
+        this.processNextAnalysis();
+      }
+    } catch (err: any) {
+      currentJob.stage = 'failed';
+      currentJob.error = err.message || String(err);
+      this.failedJobsCount++;
+    } finally {
+      this.isProcessingCopy = false;
+      this.throttleBroadcastStatus();
+      this.processNextCopy(); // Sequential next
+    }
+  }
+
+  /**
+   * Stage 2: PARALLEL Local Analysis Worker Pool (Concurrency = 3).
+   * Runs compute-heavy tasks on local fast SSD.
+   */
+  private async processNextAnalysis() {
+    if (this.activeAnalysisJobs.size >= this.maxAnalysisConcurrency) return;
+    if (this.analysisQueue.length === 0) return;
+
+    const currentJob = this.analysisQueue.shift()!;
+    this.activeAnalysisJobs.set(currentJob.jobId, currentJob);
+    currentJob.stage = 'analyzing';
+    currentJob.currentTaskDescription = 'Extracting peaks & computing acoustic profile...';
+    this.throttleBroadcastStatus();
+
+    // Trigger next worker concurrently if slots remain
+    if (this.activeAnalysisJobs.size < this.maxAnalysisConcurrency && this.analysisQueue.length > 0) {
+      this.processNextAnalysis();
+    }
+
+    try {
+      const targetPath = (currentJob as any).targetPath;
+      const fingerprint = (currentJob as any).fingerprint;
+      const stats = fs.statSync(targetPath);
+
+      // 1. Acoustic & Waveform Analysis
+      const analysis = this.audioEngine.analyzeWavFile(targetPath);
+      currentJob.analysisPercent = 60;
+      currentJob.currentTaskDescription = 'Running local event classification (YAMNet + Whisper)...';
+      this.throttleBroadcastStatus();
+
+      // 2. Local AI Classification
+      const classification = this.audioEngine.classifyAcoustics(analysis.features, currentJob.filename);
+      currentJob.analysisPercent = 90;
+      this.throttleBroadcastStatus();
+
+      // 3. Register Raw File in Vault
+      const rawFileId = `raw_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const rawAudioRecord: RawAudioFile = {
+        id: rawFileId,
+        fingerprint,
+        originalFilename: currentJob.filename,
+        storagePath: targetPath,
+        durationSeconds: analysis.features.durationSeconds,
+        sampleRate: analysis.features.sampleRate,
+        channels: analysis.features.channels,
+        fileSizeBytes: stats.size,
+        sourceDevice: this.pendingUnmountVolumePath ? path.basename(this.pendingUnmountVolumePath) : 'Manual Ingest',
+        importedAt: new Date().toISOString(),
+        waveformPeaks: analysis.peaks,
+      };
+      this.dedupEngine.addRawFile(rawAudioRecord);
+
+      // 4. Create Non-Destructive Virtual Clip
+      const clipId = `clip_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const defaultClip: VirtualClip = {
+        id: clipId,
+        parentFileId: rawFileId,
+        title: currentJob.filename.replace(/\.[^/.]+$/, ''),
+        startTimeSeconds: 0,
+        endTimeSeconds: analysis.features.durationSeconds,
+        category: classification.category,
+        userTags: classification.tags,
+        classificationConfidence: classification.confidence,
+        classificationSource: 'yamnet_local',
+        transcription: classification.transcriptionSnippet,
+        isExcluded: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      this.dedupEngine.addVirtualClip(defaultClip);
+
+      currentJob.stage = 'completed';
+      currentJob.analysisPercent = 100;
+      currentJob.currentTaskDescription = `Completed. Categorized as ${classification.category.toUpperCase()}`;
+      this.completedJobsCount++;
+      this.emit('job-completed', currentJob, defaultClip);
+    } catch (err: any) {
+      currentJob.stage = 'failed';
+      currentJob.error = err.message || String(err);
+      this.failedJobsCount++;
+    } finally {
+      this.activeAnalysisJobs.delete(currentJob.jobId);
+      this.throttleBroadcastStatus();
+      this.processNextAnalysis();
+    }
+  }
+
+  private async handleCleanUnmountIfRequested() {
+    if (!this.pendingUnmountVolumePath) return;
+    const settings = this.dedupEngine.getSettings();
+    if (settings.autoUnmountAfterIngest) {
+      const res = await this.volumeWatcher.unmountVolume(this.pendingUnmountVolumePath);
+      this.unmountMessage = res.success
+        ? `Cleanly unmounted ${path.basename(this.pendingUnmountVolumePath)}. Safe to remove card!`
+        : `Unmount notice: ${res.message}`;
+    }
+  }
+
+  private streamCopyFile(
+    src: string,
+    dest: string,
+    onProgress: (copied: number, total: number) => void
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const stats = fs.statSync(src);
+      const readStream = fs.createReadStream(src, { highWaterMark: 65536 });
+      const writeStream = fs.createWriteStream(dest);
+      let copiedBytes = 0;
+
+      readStream.on('data', (chunk) => {
+        copiedBytes += chunk.length;
+        onProgress(copiedBytes, stats.size);
+      });
+
+      readStream.on('error', reject);
+      writeStream.on('error', reject);
+      writeStream.on('finish', () => resolve());
+
+      readStream.pipe(writeStream);
+    });
+  }
+
+  private throttleBroadcastStatus() {
+    if (this.notifyTimeout) return;
+    this.notifyTimeout = setTimeout(() => {
+      this.notifyTimeout = null;
+      this.emit('pipeline-status', this.getStatus());
+    }, 80); // Throttled to ~12 updates per second max
+  }
+}

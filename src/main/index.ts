@@ -4,8 +4,10 @@ import fs from 'fs';
 import { DedupEngine } from './dedup-engine';
 import { VolumeWatcher } from './volume-watcher';
 import { AudioEngine } from './audio-engine';
+import { PipelineOrchestrator } from './pipeline-orchestrator';
 import {
   IngestResult,
+  PipelineStatusEvent,
   PrimaryCategory,
   RawAudioFile,
   VaultSettings,
@@ -17,6 +19,7 @@ let mainWindow: BrowserWindow | null = null;
 const dedupEngine = new DedupEngine();
 const volumeWatcher = new VolumeWatcher(dedupEngine);
 const audioEngine = new AudioEngine();
+const pipelineOrchestrator = new PipelineOrchestrator(dedupEngine, volumeWatcher, audioEngine);
 
 // Register custom protocol for streaming local audio to renderer
 protocol.registerSchemesAsPrivileged([
@@ -73,7 +76,20 @@ app.whenReady().then(() => {
   setupIpcHandlers();
   createWindow();
 
-  // Background check for mounted volumes
+  // Forward pipeline progress & job completion to Renderer
+  pipelineOrchestrator.on('pipeline-status', (status: PipelineStatusEvent) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('vault:pipeline-status', status);
+    }
+  });
+
+  pipelineOrchestrator.on('job-completed', (_job, clip: VirtualClip) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('vault:clip-added', clip);
+    }
+  });
+
+  // Background check for mounted external media
   setInterval(async () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       try {
@@ -125,6 +141,12 @@ function setupIpcHandlers() {
     return volumeWatcher.scanConnectedVolumes();
   });
 
+  // Non-blocking batch pipeline enqueue
+  ipcMain.handle('vault:enqueue-pipeline-batch', async (_, filePaths: string[], unmountVolumePath?: string) => {
+    return pipelineOrchestrator.enqueueBatch(filePaths, unmountVolumePath);
+  });
+
+  // Synchronous batch fallback
   ipcMain.handle('vault:import-files', async (_, filePaths: string[], unmountVolumePath?: string): Promise<IngestResult> => {
     const result: IngestResult = {
       importedCount: 0,
@@ -179,7 +201,6 @@ function setupIpcHandlers() {
 
         dedupEngine.addRawFile(rawAudioRecord);
 
-        // Create default non-destructive VirtualClip
         const clipId = `clip_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
         const defaultClip: VirtualClip = {
           id: clipId,
@@ -205,7 +226,6 @@ function setupIpcHandlers() {
       }
     }
 
-    // Clean unmount if requested or configured in settings
     if (unmountVolumePath && settings.autoUnmountAfterIngest) {
       const unmountResult = await volumeWatcher.unmountVolume(unmountVolumePath);
       result.unmounted = unmountResult.success;
@@ -283,7 +303,6 @@ function setupIpcHandlers() {
     }
 
     if (destination) {
-      // In this framework, for full file clips we copy, or slice if non-zero start/end
       fs.copyFileSync(rawFile.storagePath, destination);
       return destination;
     }

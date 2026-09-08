@@ -133,13 +133,57 @@ export interface IngestResult {
   errors: string[];
 }
 
+// ==========================================
+// 3. Non-Blocking Pipeline & Queue Types
+// ==========================================
+export type IngestJobStage = 
+  | 'queued_copy' 
+  | 'copying' 
+  | 'queued_analysis' 
+  | 'analyzing' 
+  | 'completed' 
+  | 'failed';
+
+export interface IngestJobProgress {
+  jobId: string;
+  sourcePath: string;
+  filename: string;
+  stage: IngestJobStage;
+  bytesCopied: number;
+  totalBytes: number;
+  copyPercent: number;        // 0 - 100
+  analysisPercent: number;    // 0 - 100
+  currentTaskDescription: string;
+  error?: string;
+}
+
+export interface PipelineStatusEvent {
+  totalJobs: number;
+  completedJobs: number;
+  failedJobs: number;
+  activeCopyJob?: IngestJobProgress;
+  activeAnalysisJobs: IngestJobProgress[];
+  isSdCardActive: boolean;
+  canUnmountSdCard: boolean;
+  unmountMessage?: string;
+}
+
 export interface AudioVaultAPI {
+  // Vault Settings
   getVaultSettings: () => Promise<VaultSettings>;
   updateVaultSettings: (settings: Partial<VaultSettings>) => Promise<VaultSettings>;
   selectVaultDirectory: () => Promise<string | null>;
+
+  // Volume & Ingestion
   scanVolumes: () => Promise<VolumeDetectedEvent[]>;
   importFiles: (filePaths: string[], unmountVolumePath?: string) => Promise<IngestResult>;
   onVolumeDetected: (callback: (event: VolumeDetectedEvent) => void) => () => void;
+
+  // Pipeline Queue & Non-blocking Stream
+  enqueuePipelineBatch: (filePaths: string[], unmountVolumePath?: string) => Promise<{ batchId: string; count: number }>;
+  onPipelineStatus: (callback: (status: PipelineStatusEvent) => void) => () => void;
+
+  // Audio Library & Clips
   getRawFiles: () => Promise<RawAudioFile[]>;
   getVirtualClips: () => Promise<VirtualClip[]>;
   createVirtualClip: (clip: Omit<VirtualClip, 'id' | 'createdAt' | 'updatedAt'>) => Promise<VirtualClip>;
