@@ -251,4 +251,77 @@ test.describe('AudioVault Electron Integration Tests', () => {
     console.log('[E2E] Table sorting verified successfully!');
     await app.close();
   });
+
+  test('Clip right-click context menu enables editing title, adding tags, and local AI title generation', async () => {
+    console.log('[E2E] Testing clip right-click context menu and metadata modal...');
+    const app = await electron.launch({
+      args: [path.join(__dirname, '../dist-electron/main/index.js')],
+    });
+
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    // 1. Right-click on first clip row to trigger clip context menu
+    const firstRow = window.locator('.clips-table tbody tr').first();
+    await expect(firstRow).toBeVisible();
+    await firstRow.click({ button: 'right' });
+
+    // 2. Verify clip context menu appears
+    const contextMenu = window.locator('.clip-context-menu');
+    await expect(contextMenu).toBeVisible();
+
+    const editItem = contextMenu.locator('.context-menu-item', { hasText: 'Edit Title & Metadata...' });
+    await expect(editItem).toBeVisible();
+
+    const aiTitleItem = contextMenu.locator('.context-menu-item', { hasText: 'Generate AI Title' });
+    await expect(aiTitleItem).toBeVisible();
+
+    // 3. Click "Edit Title & Metadata..." to open modal
+    await editItem.click();
+
+    const modal = window.locator('.modal-dialog');
+    await expect(modal).toBeVisible();
+
+    // Verify Title input and Auto-Generate button
+    const titleInput = modal.locator('input.form-input').first();
+    await expect(titleInput).toBeVisible();
+    const currentTitle = await titleInput.inputValue();
+    console.log(`[E2E] Current title in modal: "${currentTitle}"`);
+
+    // Modify title
+    const modifiedTitle = currentTitle + ' - Vocal Take';
+    await titleInput.fill(modifiedTitle);
+
+    // Add a custom tag
+    const tagInput = modal.locator('input[placeholder*="custom tag"]');
+    await tagInput.fill('Keeper');
+    await modal.locator('button', { hasText: '+ Add Tag' }).click();
+
+    // Save changes
+    await modal.locator('button', { hasText: 'Save Changes' }).click();
+    await expect(modal).toBeHidden();
+
+    // Verify updated title appears in table
+    const updatedRowTitle = await firstRow.locator('td:first-child span').first().innerText();
+    console.log(`[E2E] Row title after edit: "${updatedRowTitle}"`);
+    expect(updatedRowTitle).toBe(modifiedTitle);
+
+    // 4. Test "Generate AI Title" via right-click on a clip with transcription
+    const speechRow = window.locator('.clips-table tbody tr', { hasText: '260831-185613' }).first();
+    if (await speechRow.count() > 0) {
+      await speechRow.click({ button: 'right' });
+      const speechContextMenu = window.locator('.clip-context-menu');
+      await expect(speechContextMenu).toBeVisible();
+      const speechAiTitleBtn = speechContextMenu.locator('.context-menu-item', { hasText: 'Generate AI Title' });
+      await speechAiTitleBtn.click();
+      await window.waitForTimeout(600);
+      const newAiTitle = await speechRow.locator('td:first-child span').first().innerText();
+      console.log(`[E2E] Generated AI title on speech take: "${newAiTitle}"`);
+      expect(newAiTitle.includes('260831-185613')).toBe(true);
+      expect(newAiTitle.length).toBeGreaterThan('260831-185613'.length);
+    }
+
+    console.log('[E2E] Clip context menu and metadata modal verified successfully!');
+    await app.close();
+  });
 });

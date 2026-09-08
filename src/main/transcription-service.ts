@@ -17,10 +17,13 @@ export class TranscriptionService {
     if (!this.transcriberPromise) {
       this.transcriberPromise = (async () => {
         try {
-          // Dynamic ESM import to support Electron CJS runtime without ERR_REQUIRE_ESM
-          const { pipeline } = (await (new Function(
-            'return import("@xenova/transformers")'
-          )())) as typeof import('@xenova/transformers');
+          let transformersModule: any;
+          try {
+            transformersModule = await import('@xenova/transformers');
+          } catch {
+            transformersModule = await (new Function('return import("@xenova/transformers")')());
+          }
+          const { pipeline } = transformersModule as typeof import('@xenova/transformers');
 
           const p = await pipeline(
             'automatic-speech-recognition',

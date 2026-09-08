@@ -5,6 +5,7 @@ import { DedupEngine } from './dedup-engine';
 import { VolumeWatcher } from './volume-watcher';
 import { AudioEngine } from './audio-engine';
 import { PipelineOrchestrator } from './pipeline-orchestrator';
+import { TitleService } from './title-service';
 import {
   IngestResult,
   PipelineStatusEvent,
@@ -19,7 +20,8 @@ let mainWindow: BrowserWindow | null = null;
 const dedupEngine = new DedupEngine();
 const volumeWatcher = new VolumeWatcher(dedupEngine);
 const audioEngine = new AudioEngine();
-const pipelineOrchestrator = new PipelineOrchestrator(dedupEngine, volumeWatcher, audioEngine);
+const titleService = new TitleService();
+const pipelineOrchestrator = new PipelineOrchestrator(dedupEngine, volumeWatcher, audioEngine, titleService);
 
 // Register custom protocol for streaming local audio to renderer
 protocol.registerSchemesAsPrivileged([
@@ -381,5 +383,23 @@ function setupIpcHandlers() {
       transcriptionChunks: combinedChunks,
     });
     return updated || null;
+  });
+
+  ipcMain.handle('vault:generate-ai-title', async (_, clipId: string): Promise<VirtualClip> => {
+    const clips = dedupEngine.getVirtualClips();
+    const clip = clips.find((c) => c.id === clipId);
+    if (!clip) throw new Error(`Clip ${clipId} not found`);
+
+    const transcript = clip.transcription || (clip.transcriptionChunks?.map((c) => c.text).join(' ')) || '';
+    if (!transcript.trim()) {
+      throw new Error('No transcription available for this clip.');
+    }
+
+    const newTitle = await titleService.generateCompositeTitle(clip.title, transcript);
+    const updated = dedupEngine.updateVirtualClip(clipId, {
+      title: newTitle,
+    });
+    if (!updated) throw new Error(`Failed to update clip ${clipId}`);
+    return updated;
   });
 }

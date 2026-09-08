@@ -49,6 +49,8 @@ const audioVaultApi: AudioVaultAPI = {
     ipcRenderer.invoke('vault:export-clip', clipId, targetPath),
   transcribeClipRegion: (clipId: string, startSeconds?: number, durationSeconds?: number) =>
     ipcRenderer.invoke('vault:transcribe-clip-region', clipId, startSeconds, durationSeconds),
+  generateAiTitle: (clipId: string) =>
+    ipcRenderer.invoke('vault:generate-ai-title', clipId),
 };
 
 contextBridge.exposeInMainWorld('audioVault', audioVaultApi);

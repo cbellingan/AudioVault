@@ -112,6 +112,27 @@ export default function App() {
     y: number;
   } | null>(null);
 
+  // Clip row right-click context menu
+  const [clipContextMenu, setClipContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    clip: VirtualClip;
+  } | null>(null);
+
+  // Edit clip title and metadata modal dialog state
+  const [editingMetadataClip, setEditingMetadataClip] = useState<{
+    id: string;
+    title: string;
+    category: PrimaryCategory;
+    userTags: string[];
+    notes: string;
+    newTagInput: string;
+    isGeneratingAiTitle: boolean;
+  } | null>(null);
+
+  const [isGeneratingTitleForClipId, setIsGeneratingTitleForClipId] = useState<string | null>(null);
+
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
@@ -711,6 +732,110 @@ export default function App() {
     }
   }
 
+  // Open Metadata & Title Editor Modal
+  function handleOpenMetadataModal(clip: VirtualClip) {
+    setClipContextMenu(null);
+    setContextMenu(null);
+    setEditingMetadataClip({
+      id: clip.id,
+      title: clip.title,
+      category: clip.category,
+      userTags: [...clip.userTags],
+      notes: clip.notes || '',
+      newTagInput: '',
+      isGeneratingAiTitle: false,
+    });
+  }
+
+  // Run local LLM to generate composite title from transcript
+  async function handleGenerateAiTitle(clipId: string) {
+    if (!window.audioVault) return;
+    setIsGeneratingTitleForClipId(clipId);
+    try {
+      const updated = await window.audioVault.generateAiTitle(clipId);
+      if (updated) {
+        setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+      }
+    } catch (err: any) {
+      alert(err.message || 'Failed to generate AI title.');
+    } finally {
+      setIsGeneratingTitleForClipId(null);
+      setClipContextMenu(null);
+    }
+  }
+
+  // Run local LLM from within the modal
+  async function handleGenerateAiTitleInModal() {
+    if (!editingMetadataClip || !window.audioVault) return;
+    setEditingMetadataClip((prev) => (prev ? { ...prev, isGeneratingAiTitle: true } : null));
+    try {
+      const updated = await window.audioVault.generateAiTitle(editingMetadataClip.id);
+      if (updated) {
+        setEditingMetadataClip((prev) => (prev ? { ...prev, title: updated.title } : null));
+        setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+      }
+    } catch (err: any) {
+      alert(err.message || 'Failed to generate AI title from transcription.');
+    } finally {
+      setEditingMetadataClip((prev) => (prev ? { ...prev, isGeneratingAiTitle: false } : null));
+    }
+  }
+
+  // Save metadata changes to vault registry
+  async function handleSaveMetadata() {
+    if (!editingMetadataClip || !window.audioVault) {
+      setEditingMetadataClip(null);
+      return;
+    }
+    try {
+      const updated = await window.audioVault.updateVirtualClip(editingMetadataClip.id, {
+        title: editingMetadataClip.title.trim() || 'Untitled Take',
+        category: editingMetadataClip.category,
+        userTags: editingMetadataClip.userTags,
+        notes: editingMetadataClip.notes.trim(),
+      });
+      if (updated) {
+        setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+      }
+      setEditingMetadataClip(null);
+    } catch (err: any) {
+      alert(err.message || 'Failed to save clip metadata.');
+    }
+  }
+
+  // Quick category switcher from context menu
+  async function handleQuickChangeCategory(clipId: string, category: PrimaryCategory) {
+    if (!window.audioVault) return;
+    try {
+      const updated = await window.audioVault.updateVirtualClip(clipId, { category });
+      if (updated) {
+        setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+      }
+    } catch (err) {
+      console.error('Failed to update category:', err);
+    } finally {
+      setClipContextMenu(null);
+    }
+  }
+
+  // Quick tag add from context menu
+  async function handleQuickAddTag(clip: VirtualClip) {
+    setClipContextMenu(null);
+    const tag = prompt(`Add a new sub-tag to "${clip.title}":`, '');
+    if (tag && tag.trim() && window.audioVault) {
+      const cleanTag = tag.trim().replace(/^#/, '');
+      const newTags = Array.from(new Set([...clip.userTags, cleanTag]));
+      try {
+        const updated = await window.audioVault.updateVirtualClip(clip.id, { userTags: newTags });
+        if (updated) {
+          setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+        }
+      } catch (err) {
+        console.error('Failed to add tag:', err);
+      }
+    }
+  }
+
   // Filter clips by category and tag
   const filteredClips = clips.filter((c) => {
     if (c.isExcluded) return false;
@@ -785,7 +910,13 @@ export default function App() {
   const allTags = Array.from(new Set(clips.flatMap((c) => c.userTags)));
 
   return (
-    <div className="app-container" onClick={() => contextMenu && setContextMenu(null)}>
+    <div
+      className="app-container"
+      onClick={() => {
+        if (contextMenu) setContextMenu(null);
+        if (clipContextMenu) setClipContextMenu(null);
+      }}
+    >
       {/* Header */}
       <header className="app-header">
         <div className="brand-wrapper">
@@ -1053,9 +1184,41 @@ export default function App() {
                     key={clip.id}
                     className={clip.id === selectedClipId ? 'selected' : ''}
                     onClick={() => setSelectedClipId(clip.id)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setSelectedClipId(clip.id);
+                      const x = Math.min(e.clientX, window.innerWidth - 240);
+                      const y = Math.min(e.clientY, window.innerHeight - 360);
+                      setClipContextMenu({ visible: true, x, y, clip });
+                      setContextMenu(null);
+                    }}
+                    title="Right-click for options (Edit Title, Add Tags, AI Title, Category)"
                   >
                     <td>
-                      <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{clip.title}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{clip.title}</span>
+                        <button
+                          type="button"
+                          className="icon-btn-subtle"
+                          title="Edit title & metadata (or right-click row)"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenMetadataModal(clip);
+                          }}
+                          style={{
+                            opacity: 0.5,
+                            fontSize: '0.78rem',
+                            background: 'transparent',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '2px 4px',
+                            borderRadius: '3px',
+                          }}
+                        >
+                          ✏️
+                        </button>
+                      </div>
                       {clip.transcription && (
                         <div style={{ fontSize: '0.74rem', color: 'var(--accent-cyan)', fontStyle: 'italic' }}>
                           {clip.transcription}
@@ -1355,6 +1518,328 @@ export default function App() {
           <div className="context-divider" />
           <div className="context-menu-item danger" onClick={handleExcludeRegion}>
             🗑️ Exclude / Delete Region
+          </div>
+        </div>
+      )}
+
+      {/* Clip Row Right-Click Context Menu */}
+      {clipContextMenu && clipContextMenu.visible && (
+        <div
+          className="context-menu clip-context-menu"
+          style={{ top: clipContextMenu.y, left: clipContextMenu.x }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div
+            style={{
+              padding: '0.4rem 0.75rem',
+              fontSize: '0.72rem',
+              color: 'var(--text-muted)',
+              borderBottom: '1px solid var(--border-color)',
+              fontWeight: 600,
+              letterSpacing: '0.04em',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              maxWidth: '240px',
+            }}
+          >
+            {clipContextMenu.clip.title}
+          </div>
+
+          <div
+            className="context-menu-item"
+            onClick={() => handleOpenMetadataModal(clipContextMenu.clip)}
+          >
+            ✏️ Edit Title & Metadata...
+          </div>
+
+          <div
+            className="context-menu-item"
+            style={{ color: 'var(--accent-cyan)' }}
+            onClick={() => handleGenerateAiTitle(clipContextMenu.clip.id)}
+          >
+            {isGeneratingTitleForClipId === clipContextMenu.clip.id ? (
+              <span>⏳ Generating AI Title...</span>
+            ) : (
+              <span>🤖 Generate AI Title (Local LLM)</span>
+            )}
+          </div>
+
+          <div className="context-divider" />
+
+          <div
+            className="context-menu-item"
+            onClick={() => handleQuickAddTag(clipContextMenu.clip)}
+          >
+            🏷️ Add Sub-Tag...
+          </div>
+
+          <div className="context-divider" />
+
+          <div
+            style={{
+              padding: '0.2rem 0.75rem',
+              fontSize: '0.68rem',
+              color: 'var(--text-muted)',
+              fontWeight: 600,
+              textTransform: 'uppercase',
+            }}
+          >
+            Change Category:
+          </div>
+
+          <div
+            className="context-menu-item"
+            onClick={() => handleQuickChangeCategory(clipContextMenu.clip.id, 'music')}
+          >
+            🎵 Music
+          </div>
+          <div
+            className="context-menu-item"
+            onClick={() => handleQuickChangeCategory(clipContextMenu.clip.id, 'concerts')}
+          >
+            🎸 Concerts
+          </div>
+          <div
+            className="context-menu-item"
+            onClick={() => handleQuickChangeCategory(clipContextMenu.clip.id, 'dictaphone')}
+          >
+            🎙️ Dictaphone
+          </div>
+          <div
+            className="context-menu-item"
+            onClick={() => handleQuickChangeCategory(clipContextMenu.clip.id, 'meeting')}
+          >
+            👥 Meeting
+          </div>
+          <div
+            className="context-menu-item"
+            onClick={() => handleQuickChangeCategory(clipContextMenu.clip.id, 'ambient')}
+          >
+            🌲 Ambient
+          </div>
+
+          <div className="context-divider" />
+
+          <div
+            className="context-menu-item danger"
+            onClick={() => {
+              const c = clipContextMenu.clip;
+              setClips((prev) =>
+                prev.map((item) => (item.id === c.id ? { ...item, isExcluded: !item.isExcluded } : item))
+              );
+              setClipContextMenu(null);
+            }}
+          >
+            {clipContextMenu.clip.isExcluded ? '🔄 Include in Library' : '🗑️ Exclude Clip'}
+          </div>
+        </div>
+      )}
+
+      {/* Edit Clip Metadata Modal */}
+      {editingMetadataClip && (
+        <div
+          className="modal-overlay"
+          onClick={() => setEditingMetadataClip(null)}
+        >
+          <div
+            className="modal-dialog"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span style={{ fontSize: '1.2rem' }}>✏️</span>
+                <h3 style={{ fontSize: '1.05rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                  Edit Clip Title & Metadata
+                </h3>
+              </div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => setEditingMetadataClip(null)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="modal-body">
+              {/* Title Input with Auto-Generate Button */}
+              <div className="form-group">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                  <label className="form-label" style={{ margin: 0 }}>Clip Title</label>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    disabled={editingMetadataClip.isGeneratingAiTitle}
+                    onClick={handleGenerateAiTitleInModal}
+                    title="Generate short title from transcription using local LLM"
+                    style={{
+                      fontSize: '0.74rem',
+                      padding: '0.25rem 0.55rem',
+                      color: 'var(--accent-cyan)',
+                      borderColor: 'rgba(6, 182, 212, 0.3)',
+                    }}
+                  >
+                    {editingMetadataClip.isGeneratingAiTitle ? '⏳ Generating...' : '🤖 Auto-Generate AI Title'}
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={editingMetadataClip.title}
+                  onChange={(e) =>
+                    setEditingMetadataClip({ ...editingMetadataClip, title: e.target.value })
+                  }
+                  placeholder="e.g. 260831-185613 - Pushing Feel"
+                />
+                <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem', display: 'block' }}>
+                  Hardware file name prefix is preserved; descriptive summary follows.
+                </span>
+              </div>
+
+              {/* Category selector */}
+              <div className="form-group">
+                <label className="form-label">Primary Category</label>
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  {(['music', 'concerts', 'dictaphone', 'meeting', 'ambient'] as PrimaryCategory[]).map((cat) => (
+                    <button
+                      key={cat}
+                      type="button"
+                      className={`category-select-pill ${editingMetadataClip.category === cat ? 'active' : ''} cat-${cat}`}
+                      onClick={() => setEditingMetadataClip({ ...editingMetadataClip, category: cat })}
+                    >
+                      {cat.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Tags Manager */}
+              <div className="form-group">
+                <label className="form-label">Sub-Tags</label>
+                <div className="tag-chips-container">
+                  {editingMetadataClip.userTags.length === 0 && (
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                      No sub-tags added yet
+                    </span>
+                  )}
+                  {editingMetadataClip.userTags.map((tag) => (
+                    <span key={tag} className="tag-chip editable">
+                      #{tag}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setEditingMetadataClip({
+                            ...editingMetadataClip,
+                            userTags: editingMetadataClip.userTags.filter((t) => t !== tag),
+                          })
+                        }
+                        title="Remove tag"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                  <input
+                    type="text"
+                    className="form-input"
+                    style={{ flex: 1 }}
+                    value={editingMetadataClip.newTagInput}
+                    onChange={(e) =>
+                      setEditingMetadataClip({ ...editingMetadataClip, newTagInput: e.target.value })
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        const val = editingMetadataClip.newTagInput.trim().replace(/^#/, '');
+                        if (val && !editingMetadataClip.userTags.includes(val)) {
+                          setEditingMetadataClip({
+                            ...editingMetadataClip,
+                            userTags: [...editingMetadataClip.userTags, val],
+                            newTagInput: '',
+                          });
+                        }
+                      }
+                    }}
+                    placeholder="Add custom tag (press Enter)..."
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => {
+                      const val = editingMetadataClip.newTagInput.trim().replace(/^#/, '');
+                      if (val && !editingMetadataClip.userTags.includes(val)) {
+                        setEditingMetadataClip({
+                          ...editingMetadataClip,
+                          userTags: [...editingMetadataClip.userTags, val],
+                          newTagInput: '',
+                        });
+                      }
+                    }}
+                  >
+                    + Add Tag
+                  </button>
+                </div>
+
+                {/* Preset Suggestions */}
+                <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', marginTop: '0.45rem', alignItems: 'center' }}>
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Suggestions:</span>
+                  {['Idea', 'Vocal', 'Guitar', 'Drums', 'Keeper', 'Draft', 'FollowUp'].map((preset) => {
+                    const hasTag = editingMetadataClip.userTags.includes(preset);
+                    if (hasTag) return null;
+                    return (
+                      <button
+                        key={preset}
+                        type="button"
+                        className="tag-suggestion-chip"
+                        onClick={() =>
+                          setEditingMetadataClip({
+                            ...editingMetadataClip,
+                            userTags: [...editingMetadataClip.userTags, preset],
+                          })
+                        }
+                      >
+                        + #{preset}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div className="form-group">
+                <label className="form-label">Notes & Field Memo</label>
+                <textarea
+                  className="form-textarea"
+                  rows={3}
+                  value={editingMetadataClip.notes}
+                  onChange={(e) =>
+                    setEditingMetadataClip({ ...editingMetadataClip, notes: e.target.value })
+                  }
+                  placeholder="Add session notes, performer credits, gear setup, or lyrics..."
+                />
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setEditingMetadataClip(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleSaveMetadata}
+              >
+                💾 Save Changes
+              </button>
+            </div>
           </div>
         </div>
       )}

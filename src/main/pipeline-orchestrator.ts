@@ -11,10 +11,13 @@ import {
   VirtualClip,
 } from '../shared/types';
 
+import { TitleService } from './title-service';
+
 export class PipelineOrchestrator extends EventEmitter {
   private dedupEngine: DedupEngine;
   private volumeWatcher: VolumeWatcher;
   private audioEngine: AudioEngine;
+  private titleService: TitleService;
 
   // Queues
   private copyQueue: IngestJobProgress[] = [];
@@ -41,12 +44,14 @@ export class PipelineOrchestrator extends EventEmitter {
   constructor(
     dedupEngine: DedupEngine,
     volumeWatcher: VolumeWatcher,
-    audioEngine: AudioEngine
+    audioEngine: AudioEngine,
+    titleService?: TitleService
   ) {
     super();
     this.dedupEngine = dedupEngine;
     this.volumeWatcher = volumeWatcher;
     this.audioEngine = audioEngine;
+    this.titleService = titleService || new TitleService();
   }
 
   public enqueueBatch(
@@ -296,12 +301,22 @@ export class PipelineOrchestrator extends EventEmitter {
       };
       this.dedupEngine.addRawFile(rawAudioRecord);
 
-      // 4. Create Non-Destructive Virtual Clip
+      // 4. Create Non-Destructive Virtual Clip (with local LLM composite title if speech transcribed)
+      let initialTitle = currentJob.filename.replace(/\.[^/.]+$/, '');
+      const speechToSummarize = transcript || classification.transcriptionSnippet;
+      if (speechToSummarize && speechToSummarize.length > 5) {
+        try {
+          initialTitle = await this.titleService.generateCompositeTitle(initialTitle, speechToSummarize);
+        } catch (titleErr) {
+          console.warn('[AudioVault Pipeline] Title generation fallback:', titleErr);
+        }
+      }
+
       const clipId = `clip_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
       const defaultClip: VirtualClip = {
         id: clipId,
         parentFileId: rawFileId,
-        title: currentJob.filename.replace(/\.[^/.]+$/, ''),
+        title: initialTitle,
         startTimeSeconds: 0,
         endTimeSeconds: analysis.features.durationSeconds,
         category: classification.category,

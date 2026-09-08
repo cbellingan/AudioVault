@@ -5,6 +5,7 @@ import os from 'os';
 import { generateSyntheticWavBuffer } from '../../test/audio-fixture';
 import { DedupEngine } from '../../main/dedup-engine';
 import { AudioEngine } from '../../main/audio-engine';
+import { TitleService } from '../../main/title-service';
 
 describe('Deduplication & Classification Engine Tests', () => {
   let tempDir: string;
@@ -171,5 +172,33 @@ describe('Deduplication & Classification Engine Tests', () => {
     fs.writeFileSync(bwfPath, bextBuf);
     const bwfTs = audioEngine.extractCreationTimestamp(bwfPath, bextBuf);
     expect(bwfTs).toBe('2026-09-07T10:17:14.000Z');
+  });
+
+  it('generates concise titles from transcripts and preserves root file names', async () => {
+    const titleService = new TitleService();
+
+    // 1. Cleaning transcript
+    const raw = '[Whisper]: "So it is a pushing feel. I am blowing it out. ...short take detected..."';
+    const cleaned = titleService.cleanTranscript(raw);
+    expect(cleaned).not.toContain('[Whisper]');
+    expect(cleaned).not.toContain('short take detected');
+    expect(cleaned).toContain('pushing feel');
+
+    // 2. Base filename extraction
+    expect(titleService.extractBaseFileName('260831-185613.WAV')).toBe('260831-185613');
+    expect(titleService.extractBaseFileName('260831-185613 - Old Title.wav')).toBe('260831-185613');
+    expect(titleService.extractBaseFileName('/raw/1788833968188_260730-080728.WAV')).toBe('1788833968188_260730-080728');
+
+    // 3. Generating title from speech
+    const speech = 'Discussing the mobile iOS application version for the field recorder.';
+    const shortTitle = await titleService.generateShortTitle(speech);
+    expect(shortTitle.length).toBeGreaterThan(0);
+    const words = shortTitle.split(' ');
+    expect(words.length).toBeLessThanOrEqual(5);
+
+    // 4. Composite title formatting
+    const composite = await titleService.generateCompositeTitle('260907-180558', speech);
+    expect(composite.startsWith('260907-180558 - ')).toBe(true);
+    expect(composite.length).toBeGreaterThan('260907-180558 - '.length);
   });
 });
