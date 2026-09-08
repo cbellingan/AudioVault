@@ -351,4 +351,35 @@ function setupIpcHandlers() {
     }
     return '';
   });
+
+  ipcMain.handle('vault:transcribe-clip-region', async (_, clipId: string, startSeconds?: number, durationSeconds?: number): Promise<VirtualClip | null> => {
+    const clips = dedupEngine.getVirtualClips();
+    const clip = clips.find((c) => c.id === clipId);
+    if (!clip) return null;
+
+    const rawFile = dedupEngine.getRawFile(clip.parentFileId);
+    if (!rawFile || !fs.existsSync(rawFile.storagePath)) return null;
+
+    const start = typeof startSeconds === 'number' ? Math.max(0, startSeconds) : clip.startTimeSeconds;
+    const dur = typeof durationSeconds === 'number' ? Math.max(1, durationSeconds) : Math.min(60, clip.endTimeSeconds - start);
+
+    const res = await audioEngine.transcribeAudioDetails(rawFile.storagePath, dur, start);
+    if (!res || !res.text) return clip;
+
+    const newChunks = res.chunks || [{
+      text: res.text,
+      timestamp: [start, start + dur] as [number, number],
+    }];
+
+    const existingChunks = clip.transcriptionChunks || [];
+    // Filter out chunks overlapping with this window
+    const nonOverlapping = existingChunks.filter((c) => c.timestamp[1] <= start || c.timestamp[0] >= start + dur);
+    const combinedChunks = [...nonOverlapping, ...newChunks].sort((a, b) => a.timestamp[0] - b.timestamp[0]);
+
+    const updated = dedupEngine.updateVirtualClip(clipId, {
+      transcription: clip.transcription ? `${clip.transcription} | "${res.text}"` : `[Whisper]: "${res.text}"`,
+      transcriptionChunks: combinedChunks,
+    });
+    return updated || null;
+  });
 }

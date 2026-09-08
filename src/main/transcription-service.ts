@@ -41,17 +41,19 @@ export class TranscriptionService {
   }
 
   /**
-   * Reads a WAV file from disk, decodes 16-bit PCM, resamples to 16kHz mono, and runs local Whisper inference.
+   * Reads a WAV file from disk, decodes PCM/IEEE float, resamples to 16kHz mono, and runs local Whisper inference.
+   * Supports starting from any startOffsetSeconds within the file.
    */
   public async transcribeAudioFile(
     filePath: string,
-    maxDurationSeconds = 60
+    maxDurationSeconds = 60,
+    startOffsetSeconds = 0
   ): Promise<TranscriptionResult | null> {
     try {
       const transcriber = await this.getTranscriber();
       if (!transcriber) return null;
 
-      const audioData = this.decodeWavToFloat32_16k(filePath, maxDurationSeconds);
+      const audioData = this.decodeWavToFloat32_16k(filePath, maxDurationSeconds, startOffsetSeconds);
       if (!audioData || audioData.length === 0) return null;
 
       // Run local Whisper inference on Float32Array with timestamps enabled
@@ -67,8 +69,11 @@ export class TranscriptionService {
           ? output.chunks.map((c: any) => ({
               text: (c.text || '').trim(),
               timestamp: Array.isArray(c.timestamp)
-                ? [c.timestamp[0] ?? 0, c.timestamp[1] ?? 0] as [number, number]
-                : [0, 0] as [number, number],
+                ? [
+                    parseFloat(((c.timestamp[0] ?? 0) + startOffsetSeconds).toFixed(2)),
+                    parseFloat(((c.timestamp[1] ?? 0) + startOffsetSeconds).toFixed(2)),
+                  ] as [number, number]
+                : [startOffsetSeconds, startOffsetSeconds] as [number, number],
             }))
           : undefined;
 
@@ -86,9 +91,14 @@ export class TranscriptionService {
   }
 
   /**
-   * Decodes a standard PCM 16-bit WAV file into a 16kHz mono Float32Array.
+   * Decodes a PCM / IEEE float WAV file into a 16kHz mono Float32Array,
+   * starting from startOffsetSeconds.
    */
-  public decodeWavToFloat32_16k(filePath: string, maxDurationSeconds: number): Float32Array | null {
+  public decodeWavToFloat32_16k(
+    filePath: string,
+    maxDurationSeconds: number,
+    startOffsetSeconds = 0
+  ): Float32Array | null {
     if (!fs.existsSync(filePath)) return null;
     const stats = fs.statSync(filePath);
     const fileSize = stats.size;
@@ -136,18 +146,22 @@ export class TranscriptionService {
       const bytesPerSample = Math.max(1, Math.floor(bitsPerSample / 8));
       const blockAlign = bytesPerSample * numChannels;
       const totalInputSamples = blockAlign > 0 ? Math.floor(dataLength / blockAlign) : 0;
-      const maxSamplesToRead = Math.min(totalInputSamples, Math.floor(sampleRate * maxDurationSeconds));
 
-      if (maxSamplesToRead <= 0) return null;
+      const startSample = Math.min(totalInputSamples, Math.floor(sampleRate * Math.max(0, startOffsetSeconds)));
+      const samplesRemaining = Math.max(0, totalInputSamples - startSample);
+      const samplesToRead = Math.min(samplesRemaining, Math.floor(sampleRate * maxDurationSeconds));
 
-      const bytesToRead = maxSamplesToRead * blockAlign;
+      if (samplesToRead <= 0) return null;
+
+      const bytesToRead = samplesToRead * blockAlign;
+      const readByteOffset = dataOffset + startSample * blockAlign;
       const rawAudioBuffer = Buffer.alloc(bytesToRead);
-      fs.readSync(fd, rawAudioBuffer, 0, bytesToRead, dataOffset);
+      fs.readSync(fd, rawAudioBuffer, 0, bytesToRead, readByteOffset);
 
       // Linear resampling ratio to 16000 Hz
       const targetSampleRate = 16000;
       const resampleRatio = targetSampleRate / sampleRate;
-      const targetLength = Math.floor(maxSamplesToRead * resampleRatio);
+      const targetLength = Math.floor(samplesToRead * resampleRatio);
       const output = new Float32Array(targetLength);
 
       for (let i = 0; i < targetLength; i++) {

@@ -194,6 +194,7 @@ export interface AudioVaultAPI {
   deleteVirtualClip: (id: string) => Promise<boolean>;
   reclassifyClip: (clipId: string, category: PrimaryCategory, userTag?: string) => Promise<VirtualClip>;
   exportClip: (clipId: string, targetPath?: string) => Promise<string>;
+  transcribeClipRegion: (clipId: string, startSeconds?: number, durationSeconds?: number) => Promise<VirtualClip | null>;
 }
 
 declare global {

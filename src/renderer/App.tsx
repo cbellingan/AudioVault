@@ -173,23 +173,27 @@ export default function App() {
       }
     }
 
-    if (currentTimeSec >= activeWords[activeWords.length - 1].endSec) {
-      return activeWords.length - 1;
-    }
-    if (currentTimeSec <= activeWords[0].startSec) {
-      return 0;
-    }
-
-    let closestIdx = 0;
-    let minDiff = Infinity;
+    // If within 2.5 seconds of a word, highlight it
     for (let i = 0; i < activeWords.length; i++) {
-      const diff = Math.abs(activeWords[i].startSec - currentTimeSec);
-      if (diff < minDiff) {
-        minDiff = diff;
-        closestIdx = i;
+      if (Math.abs(activeWords[i].startSec - currentTimeSec) <= 2.5) {
+        return i;
       }
     }
-    return closestIdx;
+
+    // If within 3 seconds after the last word, keep it
+    const lastWord = activeWords[activeWords.length - 1];
+    if (currentTimeSec >= lastWord.endSec && currentTimeSec <= lastWord.endSec + 3.0) {
+      return activeWords.length - 1;
+    }
+
+    return -1;
+  }, [activeWords, currentTimeSec]);
+
+  // Find next upcoming speech timestamp if currently in an instrumental section
+  const nextSpeechStart = useMemo(() => {
+    if (activeWords.length === 0) return null;
+    const futureWord = activeWords.find((w) => w.startSec > currentTimeSec);
+    return futureWord ? futureWord.startSec : null;
   }, [activeWords, currentTimeSec]);
 
   // Synchronously scroll the transcript ribbon with the waveform playhead
@@ -449,6 +453,73 @@ export default function App() {
       drawBar(ctx, x, baselineY, barWidth, bottomHeight, [0, 0, 1.5, 1.5]);
     }
 
+    // Draw Speech Dialogue Regions and Overlays directly on the Waveform
+    if (activeClip && activeClip.transcriptionChunks && activeClip.transcriptionChunks.length > 0) {
+      const duration = Math.max(0.1, activeClip.endTimeSeconds - activeClip.startTimeSeconds);
+
+      // Group adjacent chunks into continuous speech dialogue regions
+      const regions: Array<{ start: number; end: number; previewText: string }> = [];
+      activeClip.transcriptionChunks.forEach((c) => {
+        const last = regions[regions.length - 1];
+        if (last && c.timestamp[0] - last.end < 8.0) {
+          last.end = Math.max(last.end, c.timestamp[1]);
+          if (last.previewText.length < 50) {
+            last.previewText += ' ' + c.text;
+          }
+        } else {
+          regions.push({
+            start: c.timestamp[0],
+            end: c.timestamp[1],
+            previewText: c.text,
+          });
+        }
+      });
+
+      regions.forEach((r) => {
+        const normStart = Math.max(0, (r.start - activeClip.startTimeSeconds) / duration);
+        const normEnd = Math.min(1, (r.end - activeClip.startTimeSeconds) / duration);
+        if (normEnd <= 0 || normStart >= 1) return;
+
+        const regX = normStart * displayWidth;
+        const regW = Math.max(28, (normEnd - normStart) * displayWidth);
+
+        // Highlight dialogue region background
+        ctx.fillStyle = 'rgba(6, 182, 212, 0.14)';
+        ctx.fillRect(regX, 0, regW, displayHeight);
+
+        // Top speech marker line
+        ctx.strokeStyle = '#22d3ee';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(regX, 1);
+        ctx.lineTo(regX + regW, 1);
+        ctx.stroke();
+
+        // Dialogue Overlaid Pill Badge
+        const pillW = Math.min(regW - 4, 180);
+        if (pillW >= 32) {
+          ctx.fillStyle = 'rgba(11, 17, 32, 0.9)';
+          drawBar(ctx, regX + 2, 5, pillW, 17, [4, 4, 4, 4]);
+
+          ctx.strokeStyle = 'rgba(34, 211, 238, 0.65)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          if (typeof (ctx as any).roundRect === 'function') {
+            (ctx as any).roundRect(regX + 2, 5, pillW, 17, [4, 4, 4, 4]);
+          } else {
+            ctx.rect(regX + 2, 5, pillW, 18);
+          }
+          ctx.stroke();
+
+          ctx.fillStyle = '#22d3ee';
+          ctx.font = 'bold 9px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+          const cleanSnippet = r.previewText.replace(/\s+/g, ' ').trim();
+          const snippet = cleanSnippet.length > 24 ? cleanSnippet.slice(0, 22) + '…' : cleanSnippet;
+          ctx.fillText(`🗣️ ${snippet}`, regX + 6, 17);
+        }
+      });
+    }
+
     ctx.restore();
   }, [selectedClipId, rawFiles, clips, playbackProgress]);
 
@@ -598,6 +669,40 @@ export default function App() {
       alert(`Exported "${activeClip?.title}" to disk (simulated).`);
     }
     setContextMenu(null);
+  }
+
+  const [isTranscribingRegion, setIsTranscribingRegion] = useState(false);
+
+  async function handleTranscribeRegion(customStartSec?: number, customEndSec?: number) {
+    if (!activeClip || !window.audioVault) return;
+    setIsTranscribingRegion(true);
+    try {
+      const clipDuration = Math.max(0.1, activeClip.endTimeSeconds - activeClip.startTimeSeconds);
+      let start = activeClip.startTimeSeconds;
+      let dur = 60;
+
+      if (typeof customStartSec === 'number') {
+        start = customStartSec;
+        dur = typeof customEndSec === 'number' ? Math.max(2, customEndSec - customStartSec) : 60;
+      } else if (selectionRange) {
+        start = activeClip.startTimeSeconds + selectionRange.start * clipDuration;
+        const end = activeClip.startTimeSeconds + selectionRange.end * clipDuration;
+        dur = Math.max(2, end - start);
+      } else {
+        start = Math.max(activeClip.startTimeSeconds, activeClip.startTimeSeconds + currentTimeSec - 15);
+        dur = Math.min(60, activeClip.endTimeSeconds - start);
+      }
+
+      const updated = await window.audioVault.transcribeClipRegion(activeClip.id, start, dur);
+      if (updated) {
+        setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+      }
+    } catch (err) {
+      console.error('Failed to transcribe region with Whisper:', err);
+    } finally {
+      setIsTranscribingRegion(false);
+      setContextMenu(null);
+    }
   }
 
   // Filter clips by category and tag
@@ -1037,7 +1142,7 @@ export default function App() {
                           ref={(el) => (wordRefs.current[idx] = el)}
                           className={`transcript-word ${statusClass}`}
                           onClick={() => handleSeekToWord(item.startSec)}
-                          title={`Click to seek to ${item.startSec.toFixed(1)}s`}
+                          title={`Click to seek to ${Math.floor(item.startSec / 60)}:${(Math.floor(item.startSec % 60)).toString().padStart(2, '0')}`}
                         >
                           {item.word}
                         </span>
@@ -1046,12 +1151,79 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="transcript-empty-notice">
-                    {activeClip.category === 'music' || activeClip.category === 'concerts'
-                      ? '🎵 Instrumental / Acoustic take — no spoken dialogue detected'
-                      : '🎙️ No speech detected for this take'}
+                    <span>
+                      {activeClip.category === 'music' || activeClip.category === 'concerts'
+                        ? '🎵 Instrumental passage — No dialogue detected in initial scan'
+                        : '🎙️ No speech indexed yet'}
+                    </span>
+                    <button
+                      className="btn btn-sm"
+                      style={{
+                        background: 'rgba(6, 182, 212, 0.2)',
+                        border: '1px solid var(--accent-cyan)',
+                        color: '#22d3ee',
+                        fontSize: '0.74rem',
+                        padding: '0.2rem 0.65rem',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        marginLeft: '0.5rem',
+                      }}
+                      onClick={() => handleTranscribeRegion()}
+                      disabled={isTranscribingRegion}
+                    >
+                      {isTranscribingRegion
+                        ? '⏳ Detecting with Whisper...'
+                        : selectionRange
+                        ? '🎙️ Detect Speech in Selection'
+                        : '🎙️ Scan for Speech Here'}
+                    </button>
                   </div>
                 )}
               </div>
+
+              {/* Jump to upcoming dialogue button when in an instrumental section */}
+              {activeWords.length > 0 && nextSpeechStart !== null && activeWordIndex === -1 && (
+                <button
+                  className="btn btn-sm"
+                  style={{
+                    background: 'rgba(6, 182, 212, 0.15)',
+                    border: '1px solid rgba(6, 182, 212, 0.4)',
+                    color: '#22d3ee',
+                    fontSize: '0.72rem',
+                    padding: '0.2rem 0.5rem',
+                    borderRadius: '4px',
+                    marginLeft: 'auto',
+                    flexShrink: 0,
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => handleSeekToWord(nextSpeechStart)}
+                  title="Jump directly to the next detected speech section"
+                >
+                  Jump to Speech ({Math.floor(nextSpeechStart / 60)}:{(Math.floor(nextSpeechStart % 60)).toString().padStart(2, '0')}) ⏩
+                </button>
+              )}
+
+              {/* Action to transcribe custom selection */}
+              {selectionRange && (
+                <button
+                  className="btn btn-sm"
+                  style={{
+                    background: 'rgba(6, 182, 212, 0.2)',
+                    border: '1px solid var(--accent-cyan)',
+                    color: '#22d3ee',
+                    fontSize: '0.72rem',
+                    padding: '0.2rem 0.6rem',
+                    borderRadius: '4px',
+                    marginLeft: activeWords.length > 0 ? '0.5rem' : 'auto',
+                    flexShrink: 0,
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => handleTranscribeRegion()}
+                  disabled={isTranscribingRegion}
+                >
+                  {isTranscribingRegion ? '⏳ Scanning...' : '🎙️ Transcribe Selection'}
+                </button>
+              )}
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
@@ -1069,6 +1241,14 @@ export default function App() {
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(e) => e.stopPropagation()}
         >
+          <div
+            className="context-menu-item"
+            style={{ color: 'var(--accent-cyan)', fontWeight: 600 }}
+            onClick={() => handleTranscribeRegion()}
+          >
+            🎙️ Transcribe Region with Whisper
+          </div>
+          <div className="context-divider" />
           <div className="context-menu-item" onClick={() => handleClassifySelection('music')}>
             🎵 Classify as Music
           </div>

@@ -193,7 +193,11 @@ export class AudioEngine {
   /**
    * Runs local Whisper transcription on the audio file with timestamp chunk metadata.
    */
-  public async transcribeAudioDetails(filePath: string): Promise<{
+  public async transcribeAudioDetails(
+    filePath: string,
+    durationSeconds = 60,
+    startOffsetSeconds = 0
+  ): Promise<{
     text: string;
     chunks?: Array<{ text: string; timestamp: [number, number] }>;
   } | null> {
@@ -202,14 +206,14 @@ export class AudioEngine {
         return {
           text: 'simulated local whisper speech transcript',
           chunks: [
-            { text: 'simulated local whisper', timestamp: [0.0, 1.5] },
-            { text: 'speech transcript', timestamp: [1.5, 3.0] },
+            { text: 'simulated local whisper', timestamp: [startOffsetSeconds, startOffsetSeconds + 1.5] },
+            { text: 'speech transcript', timestamp: [startOffsetSeconds + 1.5, startOffsetSeconds + 3.0] },
           ],
         };
       }
       return null;
     }
-    const res = await this.transcriptionService.transcribeAudioFile(filePath, 60);
+    const res = await this.transcriptionService.transcribeAudioFile(filePath, durationSeconds, startOffsetSeconds);
     if (!res || !res.text) return null;
     return {
       text: res.text,
