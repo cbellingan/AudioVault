@@ -156,6 +156,36 @@ export class PipelineOrchestrator extends EventEmitter {
     return count;
   }
 
+  /**
+   * Enqueues a single local audio file already stored in the vault raw directory for SSD analysis.
+   */
+  public enqueueLocalFile(filePath: string, customTitle?: string, sourceDevice = 'In-App Recorder'): IngestJobProgress | null {
+    if (!fs.existsSync(filePath)) return null;
+    const stats = fs.statSync(filePath);
+    const fingerprint = this.dedupEngine.computeFileFingerprint(filePath);
+    const job: IngestJobProgress = {
+      jobId: `take_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      sourcePath: filePath,
+      filename: path.basename(filePath),
+      stage: 'queued_analysis',
+      bytesCopied: stats.size,
+      totalBytes: stats.size,
+      copyPercent: 100,
+      analysisPercent: 0,
+      currentTaskDescription: 'Processing recorded take with local Whisper & acoustic engine...',
+    };
+    (job as any).targetPath = filePath;
+    (job as any).fingerprint = fingerprint;
+    (job as any).customTitle = customTitle;
+    (job as any).sourceDevice = sourceDevice;
+
+    this.analysisQueue.push(job);
+    this.totalBatchJobsCount++;
+    this.throttleBroadcastStatus();
+    this.processNextAnalysis();
+    return job;
+  }
+
   public getStatus(): PipelineStatusEvent {
     return {
       totalJobs: this.totalBatchJobsCount,
@@ -286,6 +316,7 @@ export class PipelineOrchestrator extends EventEmitter {
 
       // 3. Register Raw File in Vault
       const rawFileId = `raw_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const assignedSource = (currentJob as any).sourceDevice || (this.pendingUnmountVolumePath ? path.basename(this.pendingUnmountVolumePath) : 'Manual Ingest');
       const rawAudioRecord: RawAudioFile = {
         id: rawFileId,
         fingerprint,
@@ -295,16 +326,16 @@ export class PipelineOrchestrator extends EventEmitter {
         sampleRate: analysis.features.sampleRate,
         channels: analysis.features.channels,
         fileSizeBytes: stats.size,
-        sourceDevice: this.pendingUnmountVolumePath ? path.basename(this.pendingUnmountVolumePath) : 'Manual Ingest',
+        sourceDevice: assignedSource,
         importedAt: new Date().toISOString(),
         waveformPeaks: analysis.peaks,
       };
       this.dedupEngine.addRawFile(rawAudioRecord);
 
       // 4. Create Non-Destructive Virtual Clip (with local LLM composite title if speech transcribed)
-      let initialTitle = currentJob.filename.replace(/\.[^/.]+$/, '');
+      let initialTitle = (currentJob as any).customTitle || currentJob.filename.replace(/\.[^/.]+$/, '');
       const speechToSummarize = transcript || classification.transcriptionSnippet;
-      if (speechToSummarize && speechToSummarize.length > 5) {
+      if (speechToSummarize && speechToSummarize.length > 5 && !(currentJob as any).customTitle) {
         try {
           initialTitle = await this.titleService.generateCompositeTitle(initialTitle, speechToSummarize);
         } catch (titleErr) {

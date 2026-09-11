@@ -2,8 +2,8 @@
 
 > **Hardware Ingestion, Local-First AI Classifier, and Non-Destructive Audio Vault for Field Recorders & Creators**
 
-[![Tests](https://img.shields.io/badge/tests-22%20passed-success)](https://github.com/cbellingan/AudioVault)
-[![E2E](https://img.shields.io/badge/e2e-6%2F6%20playwright-success)](https://github.com/cbellingan/AudioVault)
+[![Tests](https://img.shields.io/badge/tests-23%20passed-success)](https://github.com/cbellingan/AudioVault)
+[![E2E](https://img.shields.io/badge/e2e-7%2F7%20playwright-success)](https://github.com/cbellingan/AudioVault)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-blue)](https://github.com/cbellingan/AudioVault)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -40,7 +40,22 @@ AudioVault is an Electron + React + TypeScript desktop application engineered fo
 - **macOS Finder Reveal**: Renders "Show in Finder" in context menus and dock toolbars to instantly reveal exported files in Finder via Electron's native `shell.showItemInFolder`.
 - **Library MP3 Badge**: Interactive cyan `MP3` pill badge in library table rows.
 
-### 5. 🛡️ Non-Destructive Virtual Clips
+### 5. 🎙️ In-App Recording & Studio Level Meter (`Option 1.2`)
+- **Direct Microphone Capture**: Record directly in the app using Web Audio (`navigator.mediaDevices.getUserMedia`) encoded to uncompressed 16-bit 48kHz WAV without third-party native addons.
+- **Collapsible Recording Strip (`recbar`)**: Features an elapsed `MM:SS` timer, live animated level meter reacting to mic input, format metadata (`48 kHz / 16-bit PCM · saving to Memos`), `Auto-transcribe on stop` toggle, Pause/Resume, and Stop.
+- **Immediate Pipeline Ingestion**: On stop, takes are automatically persisted to `~/Music/AudioVault/raw/`, cryptographically registered, and queued into the background Whisper transcription & acoustic classification engine.
+
+### 6. 🔍 Global Instant Search & Keyboard Command (`⌘K`)
+- **Unified Querying**: Filter across clip titles, transcription text, timestamped chunks, user tags, and original hardware filenames with debounced instant filtering.
+- **Keyboard Shortcut**: Press `⌘K` (or `Ctrl+K`) anywhere in the application to instantly focus the global search bar.
+
+### 7. 📁 Sources Sidebar Navigation
+- **Unified Input Triage**: Sources section in the sidebar categorizes input origin:
+  - `🎙️ In-App Recorder`: Displays active `REC` pulsing badge during live recording and filters down to voice takes.
+  - `💾 <SD Cards>`: Detects attached removable hardware storage cards and displays count of new takes ready to ingest.
+  - `📁 Import Folder`: Prompts a native directory picker to ingest local sound libraries.
+
+### 8. 🛡️ Non-Destructive Virtual Clips
 - Raw audio files in `~/Music/AudioVault/raw/` are **never modified or overwritten**.
 - All virtual clips, split regions, metadata edits, custom sub-tags, and category assignments are tracked non-destructively in `~/Music/AudioVault/registry.json`.
 
@@ -140,6 +155,7 @@ npm run test:e2e
 | **Seek to Word** | Click any word pill in the scrolling transcript ribbon |
 | **Seek Waveform** | Click anywhere on the waveform canvas |
 | **Select Region** | Click and drag across the waveform canvas |
+| **Search Library** | `⌘K` or `Ctrl+K` (focuses global search bar) |
 | **Clip Options Menu** | Right-click any row in the library table |
 | **Waveform Options Menu** | Right-click anywhere on the waveform canvas |
 | **Reveal in Finder** | Click the cyan `MP3` badge on an exported row or choose `Show in Finder` |

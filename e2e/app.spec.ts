@@ -153,9 +153,12 @@ test.describe('AudioVault Electron Integration Tests', () => {
     await window.waitForLoadState('domcontentloaded');
 
     // 1. Select a dictaphone take that has speech transcription
-    const dictaphoneRow = window.locator('.clips-table tbody tr', { hasText: 'DICTAPHONE' }).first();
-    if (await dictaphoneRow.count() > 0) {
-      await dictaphoneRow.click();
+    const takeWithSpeech = window.locator('.clips-table tbody tr', { hasText: 'Feelings' }).first();
+    if (await takeWithSpeech.count() > 0) {
+      await takeWithSpeech.click();
+    } else {
+      const fallbackRow = window.locator('.clips-table tbody tr', { hasText: 'DICTAPHONE' }).first();
+      if (await fallbackRow.count() > 0) await fallbackRow.click();
     }
 
     // 2. Verify transcript ribbon exists and has words
@@ -394,6 +397,101 @@ test.describe('AudioVault Electron Integration Tests', () => {
     await expect(waveShowInFinder).toBeVisible();
 
     console.log('[E2E] Waveform and table MP3 context actions and profile buttons verified successfully!');
+    await app.close();
+  });
+
+  test('UI Direction 1 & 2: Search bar with Cmd+K, In-App Recording bar with levels, and Sources sidebar', async () => {
+    console.log('[E2E] Testing UI Direction 1 & 2 enhancements...');
+    const app = await electron.launch({
+      args: [path.join(__dirname, '../dist-electron/main/index.js')],
+    });
+
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    // 1. Verify Header Search Bar and Cmd+K shortcut
+    const searchBar = window.locator('.header-search-bar');
+    await expect(searchBar).toBeVisible();
+
+    const searchInput = window.locator('.header-search-input');
+    await expect(searchInput).toBeVisible();
+
+    // Trigger Cmd+K / Ctrl+K
+    await window.keyboard.press('Meta+k');
+    await expect(searchInput).toBeFocused();
+
+    // Search query filtering
+    await searchInput.fill('Feelings');
+    const filteredRows = window.locator('.clips-table tbody tr');
+    await expect(filteredRows).toHaveCount(1);
+    await expect(filteredRows.first()).toContainText('Feelings');
+
+    // Clear search
+    await searchInput.fill('');
+    const allRows = window.locator('.clips-table tbody tr');
+    expect(await allRows.count()).toBeGreaterThanOrEqual(4);
+
+    // 2. Verify Sources Section in Sidebar
+    const inAppSource = window.locator('.source-item', { hasText: 'In-App Recorder' });
+    await expect(inAppSource).toBeVisible();
+
+    const sdCardSource = window.locator('.source-item', { hasText: 'SD Card' });
+    await expect(sdCardSource).toBeVisible();
+
+    const importFolderSource = window.locator('.source-item', { hasText: 'Import folder' });
+    await expect(importFolderSource).toBeVisible();
+
+    // 3. Verify Table Take Source Subtitles and Status Pills
+    const firstRowSourceSub = window.locator('.take-source-sub').first();
+    await expect(firstRowSourceSub).toBeVisible();
+
+    const statusPill = window.locator('.status-pill').first();
+    await expect(statusPill).toBeVisible();
+
+    // 4. Verify Prominent Record Button in Header
+    const recordBtn = window.locator('.btn-record');
+    await expect(recordBtn).toBeVisible();
+    await expect(recordBtn).toContainText('Record');
+
+    // 5. Test Start In-App Recording
+    await recordBtn.click();
+
+    // Recbar should appear
+    const recbar = window.locator('.recording-bar');
+    await expect(recbar).toBeVisible();
+
+    // Check timer, metadata, and live level bars
+    const timer = recbar.locator('.recbar-timer');
+    await expect(timer).toBeVisible();
+
+    const recbarMeta = recbar.locator('.recbar-meta');
+    await expect(recbarMeta).toContainText('In-App Recorder');
+
+    const levelBars = recbar.locator('.recbar-lvl-bar');
+    expect(await levelBars.count()).toBe(18);
+
+    // Check Auto-transcribe checkbox toggle
+    const toggle = recbar.locator('.recbar-toggle input');
+    await expect(toggle).toBeChecked();
+
+    // Check Pause / Resume
+    const pauseBtn = recbar.locator('button', { hasText: /Pause|Resume/ });
+    await expect(pauseBtn).toBeVisible();
+    await pauseBtn.click();
+    await expect(recbar.locator('button', { hasText: 'Resume' })).toBeVisible();
+    await pauseBtn.click();
+    await expect(recbar.locator('button', { hasText: 'Pause' })).toBeVisible();
+
+    // Check Stop recording
+    const stopBtn = recbar.locator('button', { hasText: /Stop/ });
+    await expect(stopBtn).toBeVisible();
+    await stopBtn.click();
+
+    // Recbar closes and record button returns
+    await expect(recbar).not.toBeVisible();
+    await expect(recordBtn).toBeVisible();
+
+    console.log('[E2E] UI Direction 1 & 2 verified successfully!');
     await app.close();
   });
 });

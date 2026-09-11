@@ -515,4 +515,63 @@ function setupIpcHandlers() {
     if (!updated) throw new Error(`Failed to update clip ${clipId}`);
     return updated;
   });
+
+  ipcMain.handle(
+    'vault:save-recorded-take',
+    async (_, wavBuffer: ArrayBuffer, customTitle?: string, _autoTranscribe = true): Promise<VirtualClip> => {
+      const rawDir = dedupEngine.getRawDir();
+      if (!fs.existsSync(rawDir)) {
+        fs.mkdirSync(rawDir, { recursive: true });
+      }
+
+      const timestamp = Date.now();
+      const filename = `${timestamp}_recording.WAV`;
+      const filePath = path.join(rawDir, filename);
+
+      const buffer = Buffer.from(wavBuffer);
+      fs.writeFileSync(filePath, buffer);
+      console.log(`[AudioVault Main] 🎙️ In-App take saved: ${filePath} (${buffer.length} bytes)`);
+
+      // Enqueue into Pipeline Orchestrator for SSD analysis
+      pipelineOrchestrator.enqueueLocalFile(filePath, customTitle || `Memo Take ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`, 'In-App Recorder');
+
+      // Fast synchronous fallback clip creation so renderer gets instant responsiveness
+      const analysis = audioEngine.analyzeWavFile(filePath);
+      const fingerprint = dedupEngine.computeFileFingerprint(filePath);
+      const rawFileId = `raw_${timestamp}_rec`;
+      const rawAudioRecord: RawAudioFile = {
+        id: rawFileId,
+        fingerprint,
+        originalFilename: filename,
+        storagePath: filePath,
+        durationSeconds: analysis.features.durationSeconds,
+        sampleRate: analysis.features.sampleRate,
+        channels: analysis.features.channels,
+        fileSizeBytes: buffer.length,
+        sourceDevice: 'In-App Recorder',
+        importedAt: new Date().toISOString(),
+        waveformPeaks: analysis.peaks,
+      };
+      dedupEngine.addRawFile(rawAudioRecord);
+
+      const clipId = `clip_${timestamp}_rec`;
+      const defaultClip: VirtualClip = {
+        id: clipId,
+        parentFileId: rawFileId,
+        title: customTitle || `In-App Take · ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+        startTimeSeconds: 0,
+        endTimeSeconds: Math.max(0.5, analysis.features.durationSeconds),
+        category: 'dictaphone',
+        userTags: ['In-App Take', 'Voice Memo'],
+        classificationConfidence: 0.95,
+        classificationSource: 'yamnet_local',
+        isExcluded: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      dedupEngine.addVirtualClip(defaultClip);
+
+      return defaultClip;
+    }
+  );
 }

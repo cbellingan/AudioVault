@@ -134,6 +134,26 @@ export default function App() {
   const [isGeneratingTitleForClipId, setIsGeneratingTitleForClipId] = useState<string | null>(null);
   const [waveformProfile, setWaveformProfile] = useState<'adaptive' | 'balanced' | 'punchy' | 'linear'>('adaptive');
 
+  // Direction 1 & 2: Search and In-App Recording State
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const [selectedSource, setSelectedSource] = useState<'all' | 'in-app' | 'sd-card' | 'import-folder'>('all');
+
+  const [isRecording, setIsRecording] = useState(false);
+  const [isRecordingPaused, setIsRecordingPaused] = useState(false);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [recordingLevels, setRecordingLevels] = useState<number[]>([15, 25, 45, 60, 35, 20, 10, 30, 50, 65, 40, 25, 15, 45, 70, 55, 30, 20]);
+  const [autoTranscribeOnStop, setAutoTranscribeOnStop] = useState(true);
+
+  // In-app audio capture refs
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const recordedPcmChunksRef = useRef<Float32Array[]>([]);
+  const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
@@ -318,9 +338,15 @@ export default function App() {
     }
   }, []);
 
-  // Global Keyboard Shortcuts (Space to Play/Pause, Arrow keys to Seek)
+  // Global Keyboard Shortcuts (Space to Play/Pause, Arrow keys to Seek, Cmd+K to Search)
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+
       const activeTag = (document.activeElement?.tagName || '').toLowerCase();
       if (activeTag === 'input' || activeTag === 'textarea') return;
 
@@ -353,6 +379,201 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeClip]);
+
+  // Convert Float32Array PCM samples into a valid 16-bit 48kHz WAV ArrayBuffer
+  function encodeWav(samples: Float32Array, sampleRate = 48000): ArrayBuffer {
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
+    const blockAlign = (numChannels * bitsPerSample) / 8;
+    const dataSize = samples.length * (bitsPerSample / 8);
+    const headerSize = 44;
+    const totalSize = headerSize + dataSize;
+
+    const buffer = new ArrayBuffer(totalSize);
+    const view = new DataView(buffer);
+
+    // RIFF chunk descriptor
+    view.setUint32(0, 0x52494646, false); // "RIFF"
+    view.setUint32(4, 36 + dataSize, true); // File size - 8
+    view.setUint32(8, 0x57415645, false); // "WAVE"
+
+    // fmt sub-chunk
+    view.setUint32(12, 0x666d7420, false); // "fmt "
+    view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
+    view.setUint16(20, 1, true); // AudioFormat (1 for PCM)
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitsPerSample, true);
+
+    // data sub-chunk
+    view.setUint32(36, 0x64617461, false); // "data"
+    view.setUint32(40, dataSize, true);
+
+    // PCM samples (float32 to signed int16)
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++, offset += 2) {
+      const s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+
+    return buffer;
+  }
+
+  // Start In-App Recording
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 1,
+          sampleRate: 48000,
+        },
+      });
+
+      mediaStreamRef.current = stream;
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({
+        sampleRate: 48000,
+      });
+      audioContextRef.current = audioCtx;
+
+      const sourceNode = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 64;
+      analyserRef.current = analyser;
+
+      // Collect PCM chunks with ScriptProcessor
+      const scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
+      scriptProcessorRef.current = scriptNode;
+      recordedPcmChunksRef.current = [];
+
+      scriptNode.onaudioprocess = (e) => {
+        if (isRecordingPaused) return;
+        const inputData = e.inputBuffer.getChannelData(0);
+        recordedPcmChunksRef.current.push(new Float32Array(inputData));
+      };
+
+      sourceNode.connect(analyser);
+      analyser.connect(scriptNode);
+      scriptNode.connect(audioCtx.destination);
+
+      setIsRecording(true);
+      setIsRecordingPaused(false);
+      setRecordingDuration(0);
+
+      // Duration counter
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingDuration((prev) => prev + 1);
+      }, 1000);
+
+      // Level meter visualizer loop
+      const updateMeter = () => {
+        if (analyserRef.current) {
+          const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
+          analyserRef.current.getByteFrequencyData(dataArray);
+
+          // Downsample to 18 bars
+          const bars: number[] = [];
+          const step = Math.max(1, Math.floor(dataArray.length / 18));
+          for (let i = 0; i < 18; i++) {
+            const val = dataArray[i * step] || 0;
+            bars.push(Math.max(8, Math.round((val / 255) * 100)));
+          }
+          setRecordingLevels(bars);
+        }
+        animationFrameRef.current = requestAnimationFrame(updateMeter);
+      };
+      updateMeter();
+    } catch (err: any) {
+      console.error('Failed to start recording:', err);
+      alert('Could not access microphone: ' + (err.message || String(err)));
+    }
+  }
+
+  function pauseRecording() {
+    setIsRecordingPaused((prev) => !prev);
+  }
+
+  async function stopRecording() {
+    if (!isRecording) return;
+
+    // Clean up streams & audio nodes
+    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
+    }
+    if (scriptProcessorRef.current) {
+      scriptProcessorRef.current.disconnect();
+      scriptProcessorRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+
+    setIsRecording(false);
+    setIsRecordingPaused(false);
+
+    // Merge PCM chunks
+    const chunks = recordedPcmChunksRef.current;
+    let totalLength = 0;
+    for (const c of chunks) totalLength += c.length;
+
+    if (totalLength === 0) {
+      alert('Recording was empty or too short.');
+      return;
+    }
+
+    const merged = new Float32Array(totalLength);
+    let offset = 0;
+    for (const c of chunks) {
+      merged.set(c, offset);
+      offset += c.length;
+    }
+
+    const wavBuffer = encodeWav(merged, 48000);
+    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const takeTitle = `In-App Take · ${timeStr}`;
+
+    try {
+      if (window.audioVault) {
+        const newClip = await window.audioVault.saveRecordedTake(wavBuffer, takeTitle, autoTranscribeOnStop);
+        if (newClip) {
+          setClips((prev) => [newClip, ...prev]);
+          setSelectedClipId(newClip.id);
+        }
+      } else {
+        // Mock fallback clip
+        const mockNew: VirtualClip = {
+          id: `clip_${Date.now()}`,
+          parentFileId: `raw_${Date.now()}`,
+          title: takeTitle,
+          startTimeSeconds: 0,
+          endTimeSeconds: Math.max(1, recordingDuration),
+          category: 'dictaphone',
+          userTags: ['In-App Take', 'Voice Memo'],
+          classificationConfidence: 0.95,
+          classificationSource: 'yamnet_local',
+          isExcluded: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        setClips((prev) => [mockNew, ...prev]);
+        setSelectedClipId(mockNew.id);
+      }
+    } catch (e: any) {
+      console.error('Error saving recorded take:', e);
+      alert('Failed to save recorded take: ' + (e.message || String(e)));
+    }
+  }
 
   async function loadInitialVaultData() {
     try {
@@ -947,11 +1168,36 @@ export default function App() {
     }
   }
 
-  // Filter clips by category and tag
+  // Filter clips by category, tag, source, and global search query
   const filteredClips = clips.filter((c) => {
     if (c.isExcluded) return false;
     const matchesCat = selectedCategory === 'all' || c.category === selectedCategory;
     const matchesTag = !selectedTag || c.userTags.includes(selectedTag);
+
+    // Source filtering
+    const parentRaw = rawFiles.find((r) => r.id === c.parentFileId);
+    const isLocalTake =
+      c.userTags.includes('In-App Take') ||
+      c.title.toLowerCase().includes('in-app take') ||
+      (parentRaw && parentRaw.sourceDevice === 'In-App Recorder');
+
+    if (selectedSource === 'in-app' && !isLocalTake) return false;
+    if (selectedSource === 'sd-card' && isLocalTake) return false;
+
+    // Global Search Query across Title, Transcript, Tags, and Raw Filename
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      const inTitle = c.title.toLowerCase().includes(q);
+      const inTranscript = (c.transcription || '').toLowerCase().includes(q);
+      const inChunks = c.transcriptionChunks ? c.transcriptionChunks.some((chunk) => chunk.text.toLowerCase().includes(q)) : false;
+      const inTags = c.userTags.some((tag) => tag.toLowerCase().includes(q));
+      const inFilename = parentRaw ? parentRaw.originalFilename.toLowerCase().includes(q) : false;
+
+      if (!inTitle && !inTranscript && !inChunks && !inTags && !inFilename) {
+        return false;
+      }
+    }
+
     return matchesCat && matchesTag;
   });
 
@@ -1028,7 +1274,7 @@ export default function App() {
         if (clipContextMenu) setClipContextMenu(null);
       }}
     >
-      {/* Header */}
+      {/* Header (Studio Console with Search Bar, Source Status & Record Button) */}
       <header className="app-header">
         <div className="brand-wrapper">
           <div className="brand-icon">🎙️</div>
@@ -1040,7 +1286,71 @@ export default function App() {
           </div>
         </div>
 
+        {/* Global Search Bar */}
+        <div className="header-search-bar" onClick={() => searchInputRef.current?.focus()}>
+          <span style={{ opacity: 0.6, fontSize: '0.9rem' }}>⌕</span>
+          <input
+            ref={searchInputRef}
+            type="text"
+            className="header-search-input"
+            placeholder="Search clips, transcripts, tags..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+          {searchQuery ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setSearchQuery('');
+              }}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--text-muted)',
+                cursor: 'pointer',
+                padding: '0 4px',
+              }}
+            >
+              ✕
+            </button>
+          ) : (
+            <span className="kbd-shortcut">⌘K</span>
+          )}
+        </div>
+
+        {/* Header Action Tools */}
         <div className="header-actions">
+          {detectedVolume ? (
+            <span className="status-pill ready" style={{ fontSize: '0.75rem', padding: '4px 10px' }}>
+              ◉ {detectedVolume.volumeName} · {detectedVolume.newFilesCount} new
+            </span>
+          ) : (
+            <span className="status-pill inapp" style={{ fontSize: '0.75rem', padding: '4px 10px' }}>
+              ◉ Mic Ready · In-App 48kHz
+            </span>
+          )}
+
+          {/* Record Button */}
+          {!isRecording ? (
+            <button
+              className="btn btn-record"
+              onClick={startRecording}
+              title="Start recording directly into AudioVault"
+            >
+              <span className="rec-pulse-dot"></span> Record
+            </button>
+          ) : (
+            <button
+              className="btn btn-danger"
+              style={{ background: 'linear-gradient(135deg, #f87171, #ef4444)', border: 'none', color: '#1a0505', fontWeight: 700 }}
+              onClick={stopRecording}
+              title="Stop current recording and save take"
+            >
+              ■ Stop Recording
+            </button>
+          )}
+
           <button
             className="btn btn-secondary"
             onClick={async () => {
@@ -1089,6 +1399,61 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {/* In-App Recording Strip (recbar - Option 1.2) */}
+      {isRecording && (
+        <div className="recording-bar" data-testid="recording-bar">
+          <div className="recbar-big-dot">●</div>
+          <div>
+            <div className="recbar-timer">
+              {Math.floor(recordingDuration / 60).toString().padStart(2, '0')}:{(recordingDuration % 60).toString().padStart(2, '0')}
+            </div>
+            <div className="recbar-meta">
+              <b>In-App Recorder</b> · 48 kHz / 16-bit PCM · saving to Vault → Memos
+            </div>
+          </div>
+
+          {/* Live Level Meter Bars */}
+          <div className="recbar-levels" title="Live Microphone Input Levels">
+            {recordingLevels.map((lvl, idx) => (
+              <div
+                key={idx}
+                className="recbar-lvl-bar"
+                style={{
+                  height: `${isRecordingPaused ? 8 : lvl}%`,
+                  opacity: isRecordingPaused ? 0.35 : 1,
+                }}
+              />
+            ))}
+          </div>
+
+          {/* Auto-transcribe checkbox toggle */}
+          <label className="recbar-toggle">
+            <input
+              type="checkbox"
+              checked={autoTranscribeOnStop}
+              onChange={(e) => setAutoTranscribeOnStop(e.target.checked)}
+            />
+            Auto-transcribe on stop
+          </label>
+
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={pauseRecording}
+          >
+            {isRecordingPaused ? '▶ Resume' : '⏸ Pause'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-danger btn-sm"
+            style={{ background: 'linear-gradient(135deg, #f87171, #ef4444)', border: 'none', color: '#1a0505', fontWeight: 700 }}
+            onClick={stopRecording}
+          >
+            ■ Stop
+          </button>
+        </div>
+      )}
 
       {/* Hardware Ingest Notification Banner */}
       {detectedVolume && (
@@ -1188,11 +1553,73 @@ export default function App() {
       <div className="app-body">
         {/* Sidebar Navigation */}
         <aside className="app-sidebar">
-          <div className="nav-section">
-            <div className="nav-header">Primary Taxonomy</div>
+          {/* Sources Section (Option 1 & 2) */}
+          <div className="nav-section" style={{ marginBottom: '1.1rem' }}>
+            <div className="nav-header">Sources</div>
             <div
-              className={`nav-item ${selectedCategory === 'all' && !selectedTag ? 'active' : ''}`}
-              onClick={() => { setSelectedCategory('all'); setSelectedTag(null); }}
+              className={`source-item ${selectedSource === 'in-app' ? 'active' : ''}`}
+              onClick={() => setSelectedSource(selectedSource === 'in-app' ? 'all' : 'in-app')}
+              title="View in-app recorded takes"
+            >
+              <span>🎙️ In-App Recorder</span>
+              {isRecording ? (
+                <span className="source-badge" style={{ background: '#ef4444', color: '#fff' }}>
+                  REC
+                </span>
+              ) : (
+                <span className="source-badge" style={{ background: 'rgba(255,255,255,0.06)', color: 'var(--text-muted)' }}>
+                  {clips.filter((c) => c.userTags.includes('In-App Take') || c.title.toLowerCase().includes('in-app take')).length}
+                </span>
+              )}
+            </div>
+
+            {detectedVolume ? (
+              <div
+                className={`source-item ${selectedSource === 'sd-card' ? 'active' : ''}`}
+                onClick={() => setSelectedSource(selectedSource === 'sd-card' ? 'all' : 'sd-card')}
+                title={`External Media: ${detectedVolume.volumeName}`}
+              >
+                <span>💾 {detectedVolume.volumeName.split(' ')[0]}</span>
+                <span className="source-badge" style={{ background: 'linear-gradient(135deg, var(--accent-cyan), var(--accent-indigo))', color: '#04121a', fontWeight: 600 }}>
+                  {detectedVolume.newFilesCount} new
+                </span>
+              </div>
+            ) : (
+              <div
+                className="source-item"
+                style={{ opacity: 0.6 }}
+                onClick={async () => {
+                  if (window.audioVault) {
+                    const vols = await window.audioVault.scanVolumes();
+                    if (vols.length > 0) setDetectedVolume(vols[0]);
+                  }
+                }}
+              >
+                <span>💾 SD Card</span>
+                <span className="source-badge" style={{ background: 'rgba(255,255,255,0.04)', color: 'var(--text-muted)' }}>
+                  idle
+                </span>
+              </div>
+            )}
+
+            <div
+              className="source-item"
+              onClick={async () => {
+                if (window.audioVault) {
+                  await window.audioVault.selectAndImport();
+                }
+              }}
+              title="Import folder or drag audio takes"
+            >
+              <span>📁 Import folder</span>
+            </div>
+          </div>
+
+          <div className="nav-section">
+            <div className="nav-header">Library</div>
+            <div
+              className={`nav-item ${selectedCategory === 'all' && !selectedTag && selectedSource === 'all' ? 'active' : ''}`}
+              onClick={() => { setSelectedCategory('all'); setSelectedTag(null); setSelectedSource('all'); }}
             >
               <span>Library (All)</span>
               <span className="counter-pill">{clips.filter((c) => !c.isExcluded).length}</span>
@@ -1284,98 +1711,118 @@ export default function App() {
                   <th onClick={() => handleSort('confidence')} title="Click to sort by Local AI Signal">
                     Local AI Signal {renderSortIndicator('confidence')}
                   </th>
+                  <th>Status</th>
                   <th onClick={() => handleSort('createdAt')} title="Click to sort by Creation / Import Time">
                     Created / Recorded {renderSortIndicator('createdAt')}
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {sortedClips.map((clip) => (
-                  <tr
-                    key={clip.id}
-                    className={clip.id === selectedClipId ? 'selected' : ''}
-                    onClick={() => setSelectedClipId(clip.id)}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setSelectedClipId(clip.id);
-                      const x = Math.min(e.clientX, window.innerWidth - 240);
-                      const y = Math.min(e.clientY, window.innerHeight - 360);
-                      setClipContextMenu({ visible: true, x, y, clip });
-                      setContextMenu(null);
-                    }}
-                    title="Right-click for options (Edit Title, Add Tags, AI Title, Category)"
-                  >
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
-                        <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{clip.title}</span>
-                        {clip.exportedMp3Path && (
-                          <span
-                            className="badge-mp3"
-                            title={`Exported to MP3: ${clip.exportedMp3Path}\nClick to show in Finder`}
+                {sortedClips.map((clip) => {
+                  const parentRaw = rawFiles.find((r) => r.id === clip.parentFileId);
+                  const isLocalTake =
+                    clip.userTags.includes('In-App Take') ||
+                    clip.title.toLowerCase().includes('in-app take') ||
+                    (parentRaw && parentRaw.sourceDevice === 'In-App Recorder');
+                  const sourceSub = isLocalTake
+                    ? `in-app take · ${formatCreationDate(clip.createdAt)}`
+                    : parentRaw
+                    ? `${parentRaw.originalFilename} · ${parentRaw.sourceDevice}`
+                    : `take · ${formatCreationDate(clip.createdAt)}`;
+
+                  return (
+                    <tr
+                      key={clip.id}
+                      className={clip.id === selectedClipId ? 'selected' : ''}
+                      onClick={() => setSelectedClipId(clip.id)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setSelectedClipId(clip.id);
+                        const x = Math.min(e.clientX, window.innerWidth - 240);
+                        const y = Math.min(e.clientY, window.innerHeight - 360);
+                        setClipContextMenu({ visible: true, x, y, clip });
+                        setContextMenu(null);
+                      }}
+                      title="Right-click for options (Edit Title, Add Tags, AI Title, Category)"
+                    >
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                          <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{clip.title}</span>
+                          {clip.exportedMp3Path && (
+                            <span
+                              className="badge-mp3"
+                              title={`Exported to MP3: ${clip.exportedMp3Path}\nClick to show in Finder`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleShowInFinder(clip.exportedMp3Path!);
+                              }}
+                            >
+                              MP3
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            className="icon-btn-subtle"
+                            title="Edit title & metadata (or right-click row)"
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleShowInFinder(clip.exportedMp3Path!);
+                              handleOpenMetadataModal(clip);
+                            }}
+                            style={{
+                              opacity: 0.5,
+                              fontSize: '0.78rem',
+                              background: 'transparent',
+                              border: 'none',
+                              cursor: 'pointer',
+                              padding: '2px 4px',
+                              borderRadius: '3px',
                             }}
                           >
-                            MP3
-                          </span>
-                        )}
-                        <button
-                          type="button"
-                          className="icon-btn-subtle"
-                          title="Edit title & metadata (or right-click row)"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenMetadataModal(clip);
-                          }}
-                          style={{
-                            opacity: 0.5,
-                            fontSize: '0.78rem',
-                            background: 'transparent',
-                            border: 'none',
-                            cursor: 'pointer',
-                            padding: '2px 4px',
-                            borderRadius: '3px',
-                          }}
-                        >
-                          ✏️
-                        </button>
-                      </div>
-                      {clip.transcription && (
-                        <div style={{ fontSize: '0.74rem', color: 'var(--accent-cyan)', fontStyle: 'italic' }}>
-                          {clip.transcription}
+                            ✏️
+                          </button>
                         </div>
-                      )}
-                    </td>
-                    <td>
-                      <span className={`category-pill cat-${clip.category}`}>
-                        {clip.category.toUpperCase()}
-                      </span>
-                    </td>
-                    <td style={{ fontFamily: 'var(--font-mono)' }}>
-                      {(clip.endTimeSeconds - clip.startTimeSeconds).toFixed(1)}s
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
-                        {clip.userTags.map((t, idx) => (
-                          <span key={idx} className="tag-chip" style={{ fontSize: '0.7rem' }}>
-                            #{t}
-                          </span>
-                        ))}
-                      </div>
-                    </td>
-                    <td>
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                        {clip.classificationSource === 'yamnet_local' ? 'YAMNet (' : 'Whisper ('}
-                        {Math.round(clip.classificationConfidence * 100)}%)
-                      </span>
-                    </td>
-                    <td style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                      {formatCreationDate(clip.createdAt)}
-                    </td>
-                  </tr>
-                ))}
+                        <span className="take-source-sub">{sourceSub}</span>
+                        {clip.transcription && (
+                          <div style={{ fontSize: '0.74rem', color: 'var(--accent-cyan)', fontStyle: 'italic', marginTop: '2px' }}>
+                            {clip.transcription}
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        <span className={`category-pill cat-${clip.category}`}>
+                          {clip.category.toUpperCase()}
+                        </span>
+                      </td>
+                      <td style={{ fontFamily: 'var(--font-mono)' }}>
+                        {(clip.endTimeSeconds - clip.startTimeSeconds).toFixed(1)}s
+                      </td>
+                      <td>
+                        <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
+                          {clip.userTags.map((t, idx) => (
+                            <span key={idx} className="tag-chip" style={{ fontSize: '0.7rem' }}>
+                              #{t}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                          {clip.classificationSource === 'yamnet_local' ? 'YAMNet (' : 'Whisper ('}
+                          {Math.round(clip.classificationConfidence * 100)}%)
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`status-pill ${isLocalTake ? 'inapp' : 'ready'}`}>
+                          {isLocalTake ? '● In-App' : 'Ready'}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                        {formatCreationDate(clip.createdAt)}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

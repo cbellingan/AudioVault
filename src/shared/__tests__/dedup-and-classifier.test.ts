@@ -6,6 +6,7 @@ import { generateSyntheticWavBuffer } from '../../test/audio-fixture';
 import { DedupEngine } from '../../main/dedup-engine';
 import { AudioEngine } from '../../main/audio-engine';
 import { TitleService } from '../../main/title-service';
+import { VirtualClip } from '../types';
 
 describe('Deduplication & Classification Engine Tests', () => {
   let tempDir: string;
@@ -241,6 +242,63 @@ describe('Deduplication & Classification Engine Tests', () => {
     const reloaded = dedupEngine.getVirtualClips().find((c) => c.id === clipId);
     expect(reloaded?.exportedMp3Path).toBe(exportPath);
     expect(reloaded?.exportedAt).toBe(exportedAt);
+  });
+
+  it('supports in-app recorded takes with custom titles and source tracking', () => {
+    const rawDir = dedupEngine.getRawDir();
+    const takeWav = generateSyntheticWavBuffer({ durationSeconds: 2.5, isPulsedSpeech: true });
+    const takePath = path.join(rawDir, 'recording_test_take.wav');
+    fs.writeFileSync(takePath, takeWav);
+
+    const fingerprint = dedupEngine.computeFileFingerprint(takePath);
+    const analysis = audioEngine.analyzeWavFile(takePath);
+    const rawFileId = 'raw_rec_test_1';
+
+    dedupEngine.addRawFile({
+      id: rawFileId,
+      fingerprint,
+      originalFilename: 'recording_test_take.wav',
+      storagePath: takePath,
+      durationSeconds: analysis.features.durationSeconds,
+      sampleRate: analysis.features.sampleRate,
+      channels: analysis.features.channels,
+      fileSizeBytes: takeWav.length,
+      sourceDevice: 'In-App Recorder',
+      importedAt: new Date().toISOString(),
+      waveformPeaks: analysis.peaks,
+    });
+
+    const clipId = 'clip_rec_test_1';
+    const newClip: VirtualClip = {
+      id: clipId,
+      parentFileId: rawFileId,
+      title: 'In-App Take · 07:52',
+      startTimeSeconds: 0,
+      endTimeSeconds: 2.5,
+      category: 'dictaphone',
+      userTags: ['In-App Take', 'Voice Memo'],
+      classificationConfidence: 0.95,
+      classificationSource: 'yamnet_local',
+      transcription: 'Testing mic capture in app',
+      isExcluded: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    dedupEngine.addVirtualClip(newClip);
+
+    const retrievedClip = dedupEngine.getVirtualClips().find((c) => c.id === clipId);
+    expect(retrievedClip).toBeDefined();
+    expect(retrievedClip?.id).toBe(clipId);
+    expect(retrievedClip?.userTags).toContain('In-App Take');
+
+    // Test search filtering query across title and transcription
+    const allClips = dedupEngine.getVirtualClips();
+    const query = 'mic capture';
+    const matches = allClips.filter((c) =>
+      c.title.toLowerCase().includes(query) || (c.transcription || '').toLowerCase().includes(query)
+    );
+    expect(matches.length).toBe(1);
+    expect(matches[0].id).toBe(clipId);
   });
 });
 
