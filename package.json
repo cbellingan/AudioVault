@@ -1,7 +1,7 @@
 {
-  "name": "maker-hub",
+  "name": "audiovault",
   "version": "1.0.0",
-  "description": "Multi-Channel Business Manager for Makers (Etsy, Amazon, eBay, Pinterest)",
+  "description": "Hardware Ingestion, Local-First AI Classifier, and Non-Destructive Audio Vault for Field Recorders & Creators",
   "main": "dist-electron/main/index.js",
   "scripts": {
     "dev": "vite",
@@ -11,19 +11,24 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
-    "start": "electron ."
+    "start": "electron .",
+    "relay:build": "esbuild relay/web/app.ts --bundle --outfile=relay/web/bundle.js --format=esm && esbuild relay/server/run.ts --bundle --platform=node --format=esm --outfile=relay/dist/run.mjs --packages=external",
+    "relay:start": "npm run relay:build && node relay/dist/run.mjs",
+    "relay:test": "vitest run relay/crypto/crypto.test.ts && playwright test e2e/secure-relay.spec.ts"
   },
   "keywords": [
+    "audiovault",
+    "audio",
+    "recorder",
+    "zoom",
+    "field-recorder",
+    "transcription",
+    "whisper",
+    "local-ai",
     "electron",
-    "maker",
-    "etsy",
-    "amazon",
-    "ebay",
-    "pinterest",
-    "e-commerce",
-    "inventory"
+    "react"
   ],
-  "author": "Antigravity Maker Hub",
+  "author": "Carl Bellingan",
   "license": "MIT",
   "devDependencies": {
     "@playwright/test": "^1.49.1",
