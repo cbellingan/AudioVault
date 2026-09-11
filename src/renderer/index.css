@@ -1015,6 +1015,46 @@ body {
   white-space: nowrap;
 }
 
+/* Search Query Highlighting */
+.search-matches-pill {
+  font-size: 10px;
+  font-weight: 600;
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  padding: 1px 6px;
+  border-radius: 9999px;
+  white-space: nowrap;
+}
+
+.search-highlight-mark {
+  background-color: rgba(245, 158, 11, 0.38) !important;
+  color: #fef08a !important;
+  font-weight: 700 !important;
+  padding: 1px 3px !important;
+  border-radius: 3px !important;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.3) !important;
+  border-bottom: 1.5px solid #f59e0b !important;
+  display: inline;
+  line-height: inherit;
+}
+
+mark {
+  background-color: rgba(245, 158, 11, 0.38);
+  color: #fef08a;
+  font-weight: 700;
+  border-radius: 3px;
+  padding: 1px 3px;
+}
+
+.transcript-word.search-match {
+  background: rgba(245, 158, 11, 0.25);
+  color: #fef08a;
+  border-color: rgba(245, 158, 11, 0.6);
+  font-weight: 700;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.35);
+}
+
 /* Record Button with Pulse */
 .btn-record {
   background: linear-gradient(135deg, #f87171, #ef4444);

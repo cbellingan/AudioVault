@@ -426,8 +426,19 @@ test.describe('AudioVault Electron Integration Tests', () => {
     await expect(filteredRows).toHaveCount(1);
     await expect(filteredRows.first()).toContainText('Feelings');
 
-    // Clear search
-    await searchInput.fill('');
+    // Verify search highlight mark and match counter pill
+    const highlightMark = window.locator('mark.search-highlight-mark');
+    await expect(highlightMark.first()).toBeVisible();
+    await expect(highlightMark.first()).toHaveText('Feelings');
+
+    const matchesPill = window.locator('.search-matches-pill');
+    await expect(matchesPill).toBeVisible();
+    await expect(matchesPill).toContainText('1 match');
+
+    // Clear search with Escape key
+    await searchInput.focus();
+    await window.keyboard.press('Escape');
+    await expect(searchInput).toHaveValue('');
     const allRows = window.locator('.clips-table tbody tr');
     expect(await allRows.count()).toBeGreaterThanOrEqual(4);
 

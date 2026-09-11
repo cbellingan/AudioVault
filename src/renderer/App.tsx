@@ -80,6 +80,47 @@ interface TimedWord {
   endSec: number;
 }
 
+/**
+ * Accessible, high-contrast search highlight component using semantic <mark>.
+ */
+function HighlightMatch({
+  text,
+  query,
+  className,
+}: {
+  text?: string | null;
+  query?: string;
+  className?: string;
+}) {
+  if (!text) return null;
+  if (!query || !query.trim()) {
+    return <span className={className}>{text}</span>;
+  }
+
+  const q = query.trim();
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const parts = text.split(new RegExp(`(${escaped})`, 'gi'));
+
+  if (parts.length <= 1) {
+    return <span className={className}>{text}</span>;
+  }
+
+  const qLower = q.toLowerCase();
+  return (
+    <span className={className}>
+      {parts.map((part, i) =>
+        part.toLowerCase() === qLower ? (
+          <mark key={i} className="search-highlight-mark">
+            {part}
+          </mark>
+        ) : (
+          part
+        )
+      )}
+    </span>
+  );
+}
+
 export default function App() {
   const [clips, setClips] = useState<VirtualClip[]>(mockFallbackClips);
   const [rawFiles, setRawFiles] = useState<RawAudioFile[]>([]);
@@ -1299,24 +1340,37 @@ export default function App() {
             placeholder="Search clips, transcripts, tags..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                setSearchQuery('');
+                searchInputRef.current?.blur();
+              }
+            }}
           />
           {searchQuery ? (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setSearchQuery('');
-              }}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: 'var(--text-muted)',
-                cursor: 'pointer',
-                padding: '0 4px',
-              }}
-            >
-              ✕
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span className="search-matches-pill">
+                {filteredClips.length} {filteredClips.length === 1 ? 'match' : 'matches'}
+              </span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSearchQuery('');
+                }}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer',
+                  padding: '0 4px',
+                  fontSize: '0.85rem',
+                }}
+                title="Clear search (Esc)"
+              >
+                ✕
+              </button>
+            </div>
           ) : (
             <span className="kbd-shortcut">⌘K</span>
           )}
@@ -1751,7 +1805,9 @@ export default function App() {
                     >
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
-                          <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{clip.title}</span>
+                          <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                            <HighlightMatch text={clip.title} query={searchQuery} />
+                          </span>
                           {clip.exportedMp3Path && (
                             <span
                               className="badge-mp3"
@@ -1785,10 +1841,12 @@ export default function App() {
                             ✏️
                           </button>
                         </div>
-                        <span className="take-source-sub">{sourceSub}</span>
+                        <span className="take-source-sub">
+                          <HighlightMatch text={sourceSub} query={searchQuery} />
+                        </span>
                         {clip.transcription && (
                           <div style={{ fontSize: '0.74rem', color: 'var(--accent-cyan)', fontStyle: 'italic', marginTop: '2px' }}>
-                            {clip.transcription}
+                            <HighlightMatch text={clip.transcription} query={searchQuery} />
                           </div>
                         )}
                       </td>
@@ -1804,7 +1862,7 @@ export default function App() {
                         <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
                           {clip.userTags.map((t, idx) => (
                             <span key={idx} className="tag-chip" style={{ fontSize: '0.7rem' }}>
-                              #{t}
+                              #<HighlightMatch text={t} query={searchQuery} />
                             </span>
                           ))}
                         </div>
@@ -1837,7 +1895,9 @@ export default function App() {
                 <span className={`category-pill cat-${activeClip.category}`}>
                   {activeClip.category}
                 </span>
-                <span>{activeClip.title}</span>
+                <span>
+                  <HighlightMatch text={activeClip.title} query={searchQuery} />
+                </span>
                 <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
                   [{activeClip.startTimeSeconds.toFixed(1)}s - {activeClip.endTimeSeconds.toFixed(1)}s]
                 </span>
@@ -1994,10 +2054,14 @@ export default function App() {
                     {activeWords.map((item, idx) => {
                       const isSpoken = currentTimeSec > item.endSec;
                       const isActive = idx === activeWordIndex;
+                      const isSearchMatch = searchQuery.trim()
+                        ? item.word.toLowerCase().includes(searchQuery.toLowerCase().trim())
+                        : false;
 
                       let statusClass = 'upcoming';
                       if (isActive) statusClass = 'active';
                       else if (isSpoken) statusClass = 'spoken';
+                      if (isSearchMatch) statusClass += ' search-match';
 
                       return (
                         <span
@@ -2007,7 +2071,7 @@ export default function App() {
                           onClick={() => handleSeekToWord(item.startSec)}
                           title={`Click to seek to ${Math.floor(item.startSec / 60)}:${(Math.floor(item.startSec % 60)).toString().padStart(2, '0')}`}
                         >
-                          {item.word}
+                          <HighlightMatch text={item.word} query={searchQuery} />
                         </span>
                       );
                     })}
