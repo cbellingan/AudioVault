@@ -532,10 +532,7 @@ function setupIpcHandlers() {
       fs.writeFileSync(filePath, buffer);
       console.log(`[AudioVault Main] 🎙️ In-App take saved: ${filePath} (${buffer.length} bytes)`);
 
-      // Enqueue into Pipeline Orchestrator for SSD analysis
-      pipelineOrchestrator.enqueueLocalFile(filePath, customTitle || `Memo Take ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`, 'In-App Recorder');
-
-      // Fast synchronous fallback clip creation so renderer gets instant responsiveness
+      // Fast synchronous clip creation so renderer gets instant responsiveness
       const analysis = audioEngine.analyzeWavFile(filePath);
       const fingerprint = dedupEngine.computeFileFingerprint(filePath);
       const rawFileId = `raw_${timestamp}_rec`;
@@ -555,10 +552,13 @@ function setupIpcHandlers() {
       dedupEngine.addRawFile(rawAudioRecord);
 
       const clipId = `clip_${timestamp}_rec`;
+      const clipTitle =
+        customTitle ||
+        `In-App Take · ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
       const defaultClip: VirtualClip = {
         id: clipId,
         parentFileId: rawFileId,
-        title: customTitle || `In-App Take · ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+        title: clipTitle,
         startTimeSeconds: 0,
         endTimeSeconds: Math.max(0.5, analysis.features.durationSeconds),
         category: 'dictaphone',
@@ -571,7 +571,23 @@ function setupIpcHandlers() {
       };
       dedupEngine.addVirtualClip(defaultClip);
 
-      return defaultClip;
+      const finalClip =
+        dedupEngine.getVirtualClip(clipId) ||
+        dedupEngine.getClipsForRawFile(rawFileId)[0] ||
+        defaultClip;
+      const finalRawId = finalClip.parentFileId;
+
+      // Enqueue into Pipeline Orchestrator for SSD Whisper analysis & AI categorization
+      // Passing finalClip.id and finalRawId so pipeline updates this exact clip in-place!
+      pipelineOrchestrator.enqueueLocalFile(
+        filePath,
+        finalClip.title,
+        'In-App Recorder',
+        finalClip.id,
+        finalRawId
+      );
+
+      return finalClip;
     }
   );
 }

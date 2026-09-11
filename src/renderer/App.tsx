@@ -547,7 +547,10 @@ export default function App() {
       if (window.audioVault) {
         const newClip = await window.audioVault.saveRecordedTake(wavBuffer, takeTitle, autoTranscribeOnStop);
         if (newClip) {
-          setClips((prev) => [newClip, ...prev]);
+          setClips((prev) => {
+            const exists = prev.some((c) => c.id === newClip.id);
+            return exists ? prev.map((c) => (c.id === newClip.id ? newClip : c)) : [newClip, ...prev];
+          });
           setSelectedClipId(newClip.id);
         }
       } else {

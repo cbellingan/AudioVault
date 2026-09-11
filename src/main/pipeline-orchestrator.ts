@@ -127,6 +127,8 @@ export class PipelineOrchestrator extends EventEmitter {
           const stats = fs.statSync(fullPath);
           if (stats.isFile() && stats.size > 44) {
             const fingerprint = this.dedupEngine.computeFileFingerprint(fullPath);
+            if (this.dedupEngine.isFingerprintImported(fingerprint)) continue;
+
             const job: IngestJobProgress = {
               jobId: `reconcile_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
               sourcePath: fullPath,
@@ -159,7 +161,13 @@ export class PipelineOrchestrator extends EventEmitter {
   /**
    * Enqueues a single local audio file already stored in the vault raw directory for SSD analysis.
    */
-  public enqueueLocalFile(filePath: string, customTitle?: string, sourceDevice = 'In-App Recorder'): IngestJobProgress | null {
+  public enqueueLocalFile(
+    filePath: string,
+    customTitle?: string,
+    sourceDevice = 'In-App Recorder',
+    existingClipId?: string,
+    existingRawFileId?: string
+  ): IngestJobProgress | null {
     if (!fs.existsSync(filePath)) return null;
     const stats = fs.statSync(filePath);
     const fingerprint = this.dedupEngine.computeFileFingerprint(filePath);
@@ -178,6 +186,8 @@ export class PipelineOrchestrator extends EventEmitter {
     (job as any).fingerprint = fingerprint;
     (job as any).customTitle = customTitle;
     (job as any).sourceDevice = sourceDevice;
+    (job as any).existingClipId = existingClipId;
+    (job as any).existingRawFileId = existingRawFileId;
 
     this.analysisQueue.push(job);
     this.totalBatchJobsCount++;
@@ -314,25 +324,54 @@ export class PipelineOrchestrator extends EventEmitter {
       currentJob.analysisPercent = 95;
       this.throttleBroadcastStatus();
 
-      // 3. Register Raw File in Vault
-      const rawFileId = `raw_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      const assignedSource = (currentJob as any).sourceDevice || (this.pendingUnmountVolumePath ? path.basename(this.pendingUnmountVolumePath) : 'Manual Ingest');
-      const rawAudioRecord: RawAudioFile = {
-        id: rawFileId,
-        fingerprint,
-        originalFilename: currentJob.filename,
-        storagePath: targetPath,
-        durationSeconds: analysis.features.durationSeconds,
-        sampleRate: analysis.features.sampleRate,
-        channels: analysis.features.channels,
-        fileSizeBytes: stats.size,
-        sourceDevice: assignedSource,
-        importedAt: new Date().toISOString(),
-        waveformPeaks: analysis.peaks,
-      };
-      this.dedupEngine.addRawFile(rawAudioRecord);
+      // 3. Register Raw File in Vault (or retrieve existing)
+      let rawFileId = (currentJob as any).existingRawFileId;
+      if (!rawFileId) {
+        const existingRaw = this.dedupEngine.getRawFileByFingerprint(fingerprint);
+        if (existingRaw) {
+          rawFileId = existingRaw.id;
+          if (
+            (!existingRaw.waveformPeaks || existingRaw.waveformPeaks.length === 0) &&
+            analysis.peaks &&
+            analysis.peaks.length > 0
+          ) {
+            existingRaw.waveformPeaks = analysis.peaks;
+            this.dedupEngine.addRawFile(existingRaw);
+          }
+        } else {
+          rawFileId = `raw_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+          const assignedSource =
+            (currentJob as any).sourceDevice ||
+            (this.pendingUnmountVolumePath ? path.basename(this.pendingUnmountVolumePath) : 'Manual Ingest');
+          const rawAudioRecord: RawAudioFile = {
+            id: rawFileId,
+            fingerprint,
+            originalFilename: currentJob.filename,
+            storagePath: targetPath,
+            durationSeconds: analysis.features.durationSeconds,
+            sampleRate: analysis.features.sampleRate,
+            channels: analysis.features.channels,
+            fileSizeBytes: stats.size,
+            sourceDevice: assignedSource,
+            importedAt: new Date().toISOString(),
+            waveformPeaks: analysis.peaks,
+          };
+          this.dedupEngine.addRawFile(rawAudioRecord);
+        }
+      } else {
+        const existingRaw = this.dedupEngine.getRawFile(rawFileId);
+        if (
+          existingRaw &&
+          (!existingRaw.waveformPeaks || existingRaw.waveformPeaks.length === 0) &&
+          analysis.peaks &&
+          analysis.peaks.length > 0
+        ) {
+          existingRaw.waveformPeaks = analysis.peaks;
+          this.dedupEngine.addRawFile(existingRaw);
+        }
+      }
 
-      // 4. Create Non-Destructive Virtual Clip (with local LLM composite title if speech transcribed)
+      // 4. Create or Update Non-Destructive Virtual Clip (with local LLM composite title if speech transcribed)
       let initialTitle = (currentJob as any).customTitle || currentJob.filename.replace(/\.[^/.]+$/, '');
       const speechToSummarize = transcript || classification.transcriptionSnippet;
       if (speechToSummarize && speechToSummarize.length > 5 && !(currentJob as any).customTitle) {
@@ -343,24 +382,64 @@ export class PipelineOrchestrator extends EventEmitter {
         }
       }
 
-      const clipId = `clip_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      const defaultClip: VirtualClip = {
-        id: clipId,
-        parentFileId: rawFileId,
-        title: initialTitle,
-        startTimeSeconds: 0,
-        endTimeSeconds: analysis.features.durationSeconds,
-        category: classification.category,
-        userTags: classification.tags,
-        classificationConfidence: classification.confidence,
-        classificationSource: 'yamnet_local',
-        transcription: classification.transcriptionSnippet,
-        transcriptionChunks: transcriptChunks,
-        isExcluded: false,
-        createdAt: analysis.creationTimestamp || new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      this.dedupEngine.addVirtualClip(defaultClip);
+      const existingClipId = (currentJob as any).existingClipId;
+      let defaultClip: VirtualClip;
+
+      if (existingClipId && this.dedupEngine.getVirtualClip(existingClipId)) {
+        const existing = this.dedupEngine.getVirtualClip(existingClipId)!;
+        const mergedTags = Array.from(new Set([...existing.userTags, ...classification.tags]));
+        const updated = this.dedupEngine.updateVirtualClip(existingClipId, {
+          title: (currentJob as any).customTitle ? existing.title : initialTitle,
+          category: classification.category,
+          userTags: mergedTags,
+          classificationConfidence: classification.confidence,
+          classificationSource: 'yamnet_local',
+          transcription: classification.transcriptionSnippet,
+          transcriptionChunks: transcriptChunks,
+          updatedAt: new Date().toISOString(),
+        });
+        defaultClip = updated || existing;
+      } else {
+        const existingClips = this.dedupEngine.getClipsForRawFile(rawFileId);
+        if (existingClips.length > 0) {
+          const firstClip = existingClips[0];
+          const mergedTags = Array.from(new Set([...firstClip.userTags, ...classification.tags]));
+          const updated = this.dedupEngine.updateVirtualClip(firstClip.id, {
+            title: firstClip.title || initialTitle,
+            category: classification.category,
+            userTags: mergedTags,
+            classificationConfidence: classification.confidence,
+            classificationSource: 'yamnet_local',
+            transcription: classification.transcriptionSnippet,
+            transcriptionChunks: transcriptChunks,
+            updatedAt: new Date().toISOString(),
+          });
+          defaultClip = updated || firstClip;
+        } else {
+          const clipId = `clip_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+          defaultClip = {
+            id: clipId,
+            parentFileId: rawFileId,
+            title: initialTitle,
+            startTimeSeconds: 0,
+            endTimeSeconds: analysis.features.durationSeconds,
+            category: classification.category,
+            userTags: classification.tags,
+            classificationConfidence: classification.confidence,
+            classificationSource: 'yamnet_local',
+            transcription: classification.transcriptionSnippet,
+            transcriptionChunks: transcriptChunks,
+            isExcluded: false,
+            createdAt: analysis.creationTimestamp || new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          this.dedupEngine.addVirtualClip(defaultClip);
+          const candidate = this.dedupEngine.getClipsForRawFile(rawFileId)[0];
+          if (candidate) {
+            defaultClip = candidate;
+          }
+        }
+      }
 
       currentJob.stage = 'completed';
       currentJob.analysisPercent = 100;
