@@ -40,12 +40,14 @@ export class VolumeWatcher {
 
           const discovered = this.scanDirectoryForAudio(volumePath, volName);
           if (discovered.length > 0) {
-            const newFilesCount = discovered.filter((f) => !f.isAlreadyImported).length;
+            const newFilesCount = discovered.filter((f) => !f.isAlreadyImported && !f.isDeleted).length;
+            const deletedFilesCount = discovered.filter((f) => f.isDeleted).length;
             events.push({
               volumePath,
               volumeName: volName,
               totalFilesCount: discovered.length,
               newFilesCount,
+              deletedFilesCount,
               files: discovered,
             });
           }
@@ -84,6 +86,7 @@ export class VolumeWatcher {
                 const stat = fs.statSync(fullPath);
                 const fingerprint = this.dedupEngine.computeFileFingerprint(fullPath);
                 const isAlreadyImported = this.dedupEngine.isFingerprintImported(fingerprint);
+                const isDeleted = this.dedupEngine.isDeletedFile(fingerprint, fullPath);
 
                 results.push({
                   path: fullPath,
@@ -93,6 +96,7 @@ export class VolumeWatcher {
                   volumePath: dirPath,
                   volumeName,
                   isAlreadyImported,
+                  isDeleted,
                   fingerprint,
                 });
               } catch (err) {

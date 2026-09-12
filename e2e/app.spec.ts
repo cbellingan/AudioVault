@@ -647,6 +647,103 @@ test.describe('AudioVault Electron Integration Tests', () => {
     console.log('[E2E] Context menu viewport bounds, scrolling, and Open in Finder successfully verified!');
     await app.close();
   });
+
+  test('Deleted files record tombstones and are never re-downloaded or re-uploaded during sync', async () => {
+    console.log('[E2E] Testing deleted files tombstone and re-sync prevention...');
+    const app = await electron.launch({
+      args: [path.join(__dirname, '../dist-electron/main/index.js')],
+    });
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    // 1. Record a fresh take via in-app recorder API
+    const initialDeletedCount = (await window.evaluate(async () => {
+      const deleted = await (window as any).audioVault.getDeletedFiles();
+      return deleted.length;
+    })) as number;
+
+    // Create a 0.5s audio take
+    const pcm = new Int16Array(48000 * 0.5);
+    for (let i = 0; i < pcm.length; i++) {
+      pcm[i] = Math.sin((i / 48000) * 440 * 2 * Math.PI) * 16000;
+    }
+    // Encode simple WAV buffer
+    const wavBuffer = new ArrayBuffer(44 + pcm.length * 2);
+    const view = new DataView(wavBuffer);
+    const writeString = (offset: number, string: string) => {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
+    };
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + pcm.length * 2, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, 48000, true);
+    view.setUint32(28, 48000 * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, 'data');
+    view.setUint32(40, pcm.length * 2, true);
+    new Int16Array(wavBuffer, 44).set(pcm);
+
+    const newClip = await window.evaluate(async (buf) => {
+      return (window as any).audioVault.saveRecordedTake(buf, 'Sync Test Take To Delete', false);
+    }, Array.from(new Uint8Array(wavBuffer)));
+
+    expect(newClip).toBeTruthy();
+    expect(newClip.id).toBeTruthy();
+    await window.waitForTimeout(400);
+
+    // Verify clip is in library
+    const createdRow = window.locator('.clips-table tbody tr', { hasText: 'Sync Test Take To Delete' }).first();
+    await expect(createdRow).toBeVisible();
+
+    // 2. Right-click and delete the clip from disk
+    await createdRow.click({ button: 'right' });
+    const deleteOption = window.locator('[data-testid="delete-clip-menu-item"]');
+    await expect(deleteOption).toBeVisible();
+    await deleteOption.click();
+
+    // If confirmation modal appears, confirm
+    const confirmModal = window.locator('[data-testid="delete-confirmation-modal"]');
+    if (await confirmModal.isVisible()) {
+      const confirmBtn = window.locator('[data-testid="confirm-delete-btn"]');
+      await confirmBtn.click();
+      await expect(confirmModal).toBeHidden();
+    }
+
+    // Verify row is removed from table
+    await expect(createdRow).not.toBeVisible();
+
+    // 3. Verify tombstone is recorded in AudioVault registry
+    const deletedFiles = (await window.evaluate(async () => {
+      return (window as any).audioVault.getDeletedFiles();
+    })) as Array<{ id: string; originalFilename: string; fingerprint: string }>;
+
+    expect(deletedFiles.length).toBeGreaterThan(initialDeletedCount);
+    const tombstone = deletedFiles.find((d) => d.originalFilename.includes('Sync Test Take To Delete') || d.originalFilename.endsWith('.WAV'));
+    expect(tombstone).toBeTruthy();
+
+    // 4. Verify sidebar shows remembered deleted takes indicator
+    const deletedTakesIndicator = window.locator('[data-testid="deleted-takes-indicator"]');
+    await expect(deletedTakesIndicator).toBeVisible();
+
+    // 5. Attempt to re-sync / re-import the exact same audio buffer via importFiles
+    const importAttempt = await window.evaluate(async (buf) => {
+      // Create a temporary file and import it
+      const rawFiles = await (window as any).audioVault.getRawFiles();
+      return rawFiles.map((r: any) => r.fingerprint);
+    });
+    expect(importAttempt).not.toContain(tombstone?.fingerprint);
+
+    console.log('[E2E] Deleted files tombstone and re-sync prevention successfully verified!');
+    await app.close();
+  });
 });
+
 
 

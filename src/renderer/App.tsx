@@ -132,6 +132,7 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackProgress, setPlaybackProgress] = useState(0.2); // 0.0 - 1.0
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatusEvent | null>(null);
+  const [deletedFilesCount, setDeletedFilesCount] = useState(0);
   
   // Table Sorting state: starts desc on creation / import time
   type SortField = 'title' | 'category' | 'duration' | 'tags' | 'confidence' | 'createdAt';
@@ -645,6 +646,11 @@ export default function App() {
       if (volumes.length > 0 && volumes[0].newFilesCount > 0) {
         setDetectedVolume(volumes[0]);
       }
+
+      if (window.audioVault.getDeletedFiles) {
+        const deleted = await window.audioVault.getDeletedFiles();
+        setDeletedFilesCount(deleted.length);
+      }
     } catch (e) {
       console.error('Failed to load AudioVault data:', e);
     }
@@ -888,7 +894,9 @@ export default function App() {
   // Handle hardware ingest confirmation (Non-blocking pipeline)
   async function handleConfirmIngest() {
     if (!detectedVolume) return;
-    const pathsToImport = detectedVolume.files.filter((f) => !f.isAlreadyImported).map((f) => f.path);
+    const pathsToImport = detectedVolume.files
+      .filter((f) => !f.isAlreadyImported && !f.isDeleted)
+      .map((f) => f.path);
 
     if (window.audioVault) {
       await window.audioVault.enqueuePipelineBatch(
@@ -1066,6 +1074,11 @@ export default function App() {
         if (remaining.length > 0) {
           setSelectedClipId(remaining[0].id);
         }
+      }
+
+      if (window.audioVault?.getDeletedFiles) {
+        const deleted = await window.audioVault.getDeletedFiles();
+        setDeletedFilesCount(deleted.length);
       }
     } catch (err: any) {
       console.error('Failed to delete clip:', err);
@@ -1587,7 +1600,8 @@ export default function App() {
             <div>
               <div style={{ fontWeight: 600 }}>External Audio Media Detected: {detectedVolume.volumeName}</div>
               <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-                Found {detectedVolume.newFilesCount} new takes ready to ingest ({detectedVolume.totalFilesCount} total files on media)
+                Found {detectedVolume.newFilesCount} new takes ready to ingest ({detectedVolume.totalFilesCount} total files on media
+                {detectedVolume.deletedFilesCount ? `, ${detectedVolume.deletedFilesCount} previously deleted ignored` : ''})
               </div>
             </div>
           </div>
@@ -1773,6 +1787,49 @@ export default function App() {
                   }}
                 >
                   Ask every time
+                </button>
+              </div>
+            )}
+
+            {deletedFilesCount > 0 && (
+              <div
+                data-testid="deleted-takes-indicator"
+                style={{
+                  marginTop: '0.6rem',
+                  padding: '0.45rem 0.65rem',
+                  background: 'rgba(56, 189, 248, 0.07)',
+                  border: '1px solid rgba(56, 189, 248, 0.2)',
+                  borderRadius: '6px',
+                  fontSize: '0.68rem',
+                  color: '#bae6fd',
+                  lineHeight: 1.35,
+                }}
+              >
+                <div>🛡️ {deletedFilesCount} deleted take{deletedFilesCount > 1 ? 's' : ''} remembered</div>
+                <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  Won&apos;t re-download on sync
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (window.audioVault?.clearDeletedFiles) {
+                      await window.audioVault.clearDeletedFiles();
+                      setDeletedFilesCount(0);
+                    }
+                  }}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'var(--accent-cyan)',
+                    cursor: 'pointer',
+                    padding: 0,
+                    marginTop: '4px',
+                    fontSize: '0.65rem',
+                    textDecoration: 'underline',
+                  }}
+                  title="Clear remembered tombstones so deleted files can be re-imported if needed"
+                >
+                  Clear ignore list
                 </button>
               </div>
             )}

@@ -75,6 +75,7 @@ export interface DiscoveredAudioFile {
   volumePath: string;
   volumeName: string;
   isAlreadyImported: boolean;
+  isDeleted?: boolean;
   fingerprint?: string;
 }
 
@@ -83,7 +84,19 @@ export interface VolumeDetectedEvent {
   volumeName: string;
   totalFilesCount: number;
   newFilesCount: number;
+  deletedFilesCount?: number;
   files: DiscoveredAudioFile[];
+}
+
+export interface DeletedFileRecord {
+  id: string;
+  fingerprint: string;
+  contentHash?: string;
+  originalFilename: string;
+  fileSizeBytes: number;
+  deletedAt: string;
+  title?: string;
+  reason?: string;
 }
 
 export interface RawAudioFile {
@@ -202,6 +215,11 @@ export interface AudioVaultAPI {
   transcribeClipRegion: (clipId: string, startSeconds?: number, durationSeconds?: number) => Promise<VirtualClip | null>;
   generateAiTitle: (clipId: string) => Promise<VirtualClip>;
   saveRecordedTake: (wavBuffer: ArrayBuffer, customTitle?: string, autoTranscribe?: boolean) => Promise<VirtualClip>;
+
+  // Tombstones & Sync Exclusion
+  getDeletedFiles: () => Promise<DeletedFileRecord[]>;
+  clearDeletedFiles: () => Promise<boolean>;
+  forgetDeletedFile: (idOrFingerprint: string) => Promise<boolean>;
 }
 
 declare global {

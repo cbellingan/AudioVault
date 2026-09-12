@@ -84,6 +84,15 @@ export class PipelineOrchestrator extends EventEmitter {
     for (const filePath of resolvedPaths) {
       if (!fs.existsSync(filePath)) continue;
 
+      const fingerprint = this.dedupEngine.computeFileFingerprint(filePath);
+      if (
+        this.dedupEngine.isFingerprintImported(fingerprint) ||
+        this.dedupEngine.isDeletedFile(fingerprint, filePath)
+      ) {
+        console.log(`[AudioVault Pipeline] ⏭️ Skipping already imported or deleted file: ${path.basename(filePath)}`);
+        continue;
+      }
+
       const stats = fs.statSync(filePath);
       const job: IngestJobProgress = {
         jobId: `job_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -127,7 +136,12 @@ export class PipelineOrchestrator extends EventEmitter {
           const stats = fs.statSync(fullPath);
           if (stats.isFile() && stats.size > 44) {
             const fingerprint = this.dedupEngine.computeFileFingerprint(fullPath);
-            if (this.dedupEngine.isFingerprintImported(fingerprint)) continue;
+            if (
+              this.dedupEngine.isFingerprintImported(fingerprint) ||
+              this.dedupEngine.isDeletedFile(fingerprint, fullPath)
+            ) {
+              continue;
+            }
 
             const job: IngestJobProgress = {
               jobId: `reconcile_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -238,12 +252,17 @@ export class PipelineOrchestrator extends EventEmitter {
     const targetPath = path.join(rawDir, targetFilename);
 
     try {
-      // Check deduplication
+      // Check deduplication and tombstone (previously deleted file)
       const fingerprint = this.dedupEngine.computeFileFingerprint(currentJob.sourcePath);
       if (this.dedupEngine.isFingerprintImported(fingerprint)) {
         currentJob.stage = 'completed';
         currentJob.currentTaskDescription = 'Already imported (deduplicated).';
         this.completedJobsCount++;
+      } else if (this.dedupEngine.isDeletedFile(fingerprint, currentJob.sourcePath)) {
+        currentJob.stage = 'completed';
+        currentJob.currentTaskDescription = 'Skipped (previously deleted by user).';
+        this.completedJobsCount++;
+        console.log(`[AudioVault Pipeline] 🛡️ Ignored re-download of previously deleted take: ${currentJob.filename}`);
       } else {
         // Stream copy with progress updates
         await this.streamCopyFile(currentJob.sourcePath, targetPath, (copied, total) => {

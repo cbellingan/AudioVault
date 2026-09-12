@@ -28,6 +28,7 @@ import {
   VaultSettings,
   VirtualClip,
   VolumeDetectedEvent,
+  DeletedFileRecord,
 } from '../shared/types';
 
 let mainWindow: BrowserWindow | null = null;
@@ -226,7 +227,7 @@ function setupIpcHandlers() {
         }
 
         const fingerprint = dedupEngine.computeFileFingerprint(sourcePath);
-        if (dedupEngine.isFingerprintImported(fingerprint)) {
+        if (dedupEngine.isFingerprintImported(fingerprint) || dedupEngine.isDeletedFile(fingerprint, sourcePath)) {
           result.skippedCount++;
           continue;
         }
@@ -593,4 +594,17 @@ function setupIpcHandlers() {
       return finalClip;
     }
   );
+
+  ipcMain.handle('vault:get-deleted-files', async (): Promise<DeletedFileRecord[]> => {
+    return dedupEngine.getDeletedFiles();
+  });
+
+  ipcMain.handle('vault:clear-deleted-files', async (): Promise<boolean> => {
+    dedupEngine.clearDeletedFiles();
+    return true;
+  });
+
+  ipcMain.handle('vault:forget-deleted-file', async (_, idOrFingerprint: string): Promise<boolean> => {
+    return dedupEngine.forgetDeletedFile(idOrFingerprint);
+  });
 }

@@ -1,13 +1,14 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { RawAudioFile, VirtualClip, VaultSettings } from '../shared/types';
+import { RawAudioFile, VirtualClip, VaultSettings, DeletedFileRecord } from '../shared/types';
 
 export class DedupEngine {
   private vaultDir: string;
   private registryFile: string;
   private rawFiles: Map<string, RawAudioFile> = new Map();
   private virtualClips: Map<string, VirtualClip> = new Map();
+  private deletedFiles: Map<string, DeletedFileRecord> = new Map();
   private settings: VaultSettings;
 
   constructor(customVaultDir?: string) {
@@ -165,6 +166,14 @@ export class DedupEngine {
           }
         }
 
+        if (data.deletedFiles && Array.isArray(data.deletedFiles)) {
+          for (const item of data.deletedFiles) {
+            if (item && item.fingerprint) {
+              this.deletedFiles.set(item.fingerprint, item);
+            }
+          }
+        }
+
         if (data.settings) {
           this.settings = { ...this.settings, ...data.settings };
         }
@@ -186,6 +195,7 @@ export class DedupEngine {
         settings: this.settings,
         rawFiles: Array.from(this.rawFiles.values()),
         virtualClips: Array.from(this.virtualClips.values()),
+        deletedFiles: Array.from(this.deletedFiles.values()),
       };
       fs.writeFileSync(this.registryFile, JSON.stringify(payload, null, 2), 'utf-8');
     } catch (err) {
@@ -213,6 +223,90 @@ export class DedupEngine {
   public isFingerprintImported(fingerprint: string): boolean {
     for (const file of this.rawFiles.values()) {
       if (file.fingerprint === fingerprint) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Computes a content-only cryptographic hash using the first 64KB header + file size.
+   * Unlike computeFileFingerprint, this does not depend on mtimeMs, making it robust against filesystem copy timestamp shifts.
+   */
+  public computeContentHash(filePath: string): string {
+    const stats = fs.statSync(filePath);
+    const fd = fs.openSync(filePath, 'r');
+    const headerBuffer = Buffer.alloc(Math.min(65536, stats.size));
+    fs.readSync(fd, headerBuffer, 0, headerBuffer.length, 0);
+    fs.closeSync(fd);
+
+    const hash = crypto.createHash('sha256');
+    hash.update(headerBuffer);
+    hash.update(stats.size.toString());
+    return hash.digest('hex');
+  }
+
+  /**
+   * Checks if a file was previously deleted by the user so it won't be re-downloaded or re-uploaded during sync.
+   */
+  public isDeletedFile(fingerprint: string, filePath?: string): boolean {
+    if (this.deletedFiles.has(fingerprint)) return true;
+
+    // Secondary checks if file path is provided and exists on disk
+    if (filePath && fs.existsSync(filePath)) {
+      try {
+        const stats = fs.statSync(filePath);
+        const fileName = path.basename(filePath);
+        const contentHash = this.computeContentHash(filePath);
+
+        for (const record of this.deletedFiles.values()) {
+          // 1. Content hash matches
+          if (record.contentHash && record.contentHash === contentHash) {
+            return true;
+          }
+          // 2. Exact original filename and byte size matches (for audio takes > 1KB)
+          if (
+            stats.size > 1024 &&
+            record.fileSizeBytes === stats.size &&
+            (record.originalFilename === fileName || fileName.endsWith(record.originalFilename))
+          ) {
+            return true;
+          }
+        }
+      } catch (err) {
+        // file stat error
+      }
+    }
+    return false;
+  }
+
+  public recordDeletedFile(record: DeletedFileRecord): void {
+    this.deletedFiles.set(record.fingerprint, record);
+    this.saveRegistry();
+    console.log(`[AudioVault Dedup] 🛡️ Tombstone recorded for deleted take: ${record.originalFilename} (${record.fingerprint.substring(0, 10)}...)`);
+  }
+
+  public getDeletedFiles(): DeletedFileRecord[] {
+    return Array.from(this.deletedFiles.values());
+  }
+
+  public clearDeletedFiles(): void {
+    this.deletedFiles.clear();
+    this.saveRegistry();
+    console.log('[AudioVault Dedup] 🧹 Cleared all deleted file tombstones.');
+  }
+
+  public forgetDeletedFile(idOrFingerprint: string): boolean {
+    let deletedKey: string | null = null;
+    for (const [fp, record] of this.deletedFiles.entries()) {
+      if (fp === idOrFingerprint || record.id === idOrFingerprint) {
+        deletedKey = fp;
+        break;
+      }
+    }
+    if (deletedKey) {
+      this.deletedFiles.delete(deletedKey);
+      this.saveRegistry();
+      console.log(`[AudioVault Dedup] 🔓 Removed tombstone for: ${idOrFingerprint}`);
+      return true;
     }
     return false;
   }
@@ -311,6 +405,35 @@ export class DedupEngine {
     const clip = this.virtualClips.get(id);
     if (!clip) return false;
 
+    const rawFileId = clip.parentFileId;
+    const rawFile = this.rawFiles.get(rawFileId);
+
+    if (rawFile) {
+      // Compute content hash before potentially removing file from disk
+      let contentHash: string | undefined;
+      if (rawFile.storagePath && fs.existsSync(rawFile.storagePath)) {
+        try {
+          contentHash = this.computeContentHash(rawFile.storagePath);
+        } catch (err) {
+          // ignore
+        }
+      }
+
+      // Record tombstone so this take will never be re-downloaded/re-uploaded during sync
+      const tombstone: DeletedFileRecord = {
+        id: `del_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        fingerprint: rawFile.fingerprint,
+        contentHash,
+        originalFilename: rawFile.originalFilename,
+        fileSizeBytes: rawFile.fileSizeBytes,
+        deletedAt: new Date().toISOString(),
+        title: clip.title,
+        reason: 'user_deleted',
+      };
+      this.deletedFiles.set(rawFile.fingerprint, tombstone);
+      console.log(`[AudioVault Dedup] 🛡️ Tombstone recorded for deleted take: ${rawFile.originalFilename} (${rawFile.fingerprint.substring(0, 10)}...)`);
+    }
+
     if (deleteFromDisk) {
       // 1. Remove exported MP3 if it exists on disk
       if (clip.exportedMp3Path && fs.existsSync(clip.exportedMp3Path)) {
@@ -323,15 +446,13 @@ export class DedupEngine {
       }
 
       // 2. Check if any other clips in the registry still reference this parent raw audio file
-      const rawFileId = clip.parentFileId;
       const otherClips = Array.from(this.virtualClips.values()).filter(
         (c) => c.id !== id && c.parentFileId === rawFileId
       );
 
       // If no other clips reference this raw file, delete the raw audio file from disk & registry
-      if (otherClips.length === 0) {
-        const rawFile = this.rawFiles.get(rawFileId);
-        if (rawFile && rawFile.storagePath && fs.existsSync(rawFile.storagePath)) {
+      if (otherClips.length === 0 && rawFile) {
+        if (rawFile.storagePath && fs.existsSync(rawFile.storagePath)) {
           try {
             fs.unlinkSync(rawFile.storagePath);
             console.log(`[AudioVault Dedup] 🗑️ Deleted raw audio file from disk: ${rawFile.storagePath}`);

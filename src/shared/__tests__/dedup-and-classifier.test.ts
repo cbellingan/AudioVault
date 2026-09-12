@@ -6,6 +6,8 @@ import { generateSyntheticWavBuffer } from '../../test/audio-fixture';
 import { DedupEngine } from '../../main/dedup-engine';
 import { AudioEngine } from '../../main/audio-engine';
 import { TitleService } from '../../main/title-service';
+import { VolumeWatcher } from '../../main/volume-watcher';
+import { PipelineOrchestrator } from '../../main/pipeline-orchestrator';
 import { VirtualClip } from '../types';
 
 describe('Deduplication & Classification Engine Tests', () => {
@@ -300,5 +302,97 @@ describe('Deduplication & Classification Engine Tests', () => {
     expect(matches.length).toBe(1);
     expect(matches[0].id).toBe(clipId);
   });
+
+  it('records tombstone when a clip is deleted from disk and prevents re-importing on subsequent sync', () => {
+    // 1. Create a dummy audio file on "SD Card"
+    const sdCardDir = path.join(tempDir, 'sd_card_mock');
+    fs.mkdirSync(sdCardDir, { recursive: true });
+    const sdFile = path.join(sdCardDir, 'ZOOM_TAKE_DELETE_TEST.WAV');
+    const wavBuffer = generateSyntheticWavBuffer({ durationSeconds: 2.0, frequency: 520 });
+    fs.writeFileSync(sdFile, wavBuffer);
+
+    const fingerprint = dedupEngine.computeFileFingerprint(sdFile);
+
+    // Initially not imported and not deleted
+    expect(dedupEngine.isFingerprintImported(fingerprint)).toBe(false);
+    expect(dedupEngine.isDeletedFile(fingerprint, sdFile)).toBe(false);
+
+    // 2. Import into vault
+    const vaultRawPath = path.join(dedupEngine.getRawDir(), 'test_delete_take.wav');
+    fs.copyFileSync(sdFile, vaultRawPath);
+
+    const rawFileId = 'raw_delete_test_1';
+    dedupEngine.addRawFile({
+      id: rawFileId,
+      fingerprint,
+      originalFilename: 'ZOOM_TAKE_DELETE_TEST.WAV',
+      storagePath: vaultRawPath,
+      durationSeconds: 2.0,
+      sampleRate: 44100,
+      channels: 1,
+      fileSizeBytes: wavBuffer.length,
+      sourceDevice: 'SD Card',
+      importedAt: new Date().toISOString(),
+      waveformPeaks: [0.1, 0.5, 0.9, 0.2],
+    });
+
+    const clipId = 'clip_delete_test_1';
+    dedupEngine.addVirtualClip({
+      id: clipId,
+      parentFileId: rawFileId,
+      title: 'Take to Delete',
+      startTimeSeconds: 0,
+      endTimeSeconds: 2.0,
+      category: 'dictaphone',
+      userTags: ['Mistake Take'],
+      classificationConfidence: 0.9,
+      classificationSource: 'yamnet_local',
+      isExcluded: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    expect(dedupEngine.isFingerprintImported(fingerprint)).toBe(true);
+
+    // 3. User deletes the clip from disk
+    const deleted = dedupEngine.deleteVirtualClip(clipId, true);
+    expect(deleted).toBe(true);
+    expect(fs.existsSync(vaultRawPath)).toBe(false); // Removed from disk
+    expect(dedupEngine.getVirtualClip(clipId)).toBeUndefined();
+    expect(dedupEngine.getRawFile(rawFileId)).toBeUndefined();
+
+    // 4. Verify tombstone is recorded!
+    expect(dedupEngine.isDeletedFile(fingerprint, sdFile)).toBe(true);
+    const deletedRecords = dedupEngine.getDeletedFiles();
+    expect(deletedRecords.some((r) => r.fingerprint === fingerprint)).toBe(true);
+
+    // 5. Simulate subsequent sync/import from the SD card
+    // The pipeline / watcher must recognize this file as deleted and skip re-upload/re-download
+    const volumeWatcher = new VolumeWatcher(dedupEngine);
+    const discovered = volumeWatcher.scanDirectoryForAudio(sdCardDir, 'SD_CARD');
+    const matchedDiscovered = discovered.find((f) => f.name === 'ZOOM_TAKE_DELETE_TEST.WAV');
+
+    expect(matchedDiscovered).toBeDefined();
+    expect(matchedDiscovered?.isDeleted).toBe(true);
+
+    // Pipeline orchestrator must skip it
+    const pipelineOrchestrator = new PipelineOrchestrator(
+      dedupEngine,
+      volumeWatcher,
+      audioEngine,
+      new TitleService()
+    );
+    const batchResult = pipelineOrchestrator.enqueueBatch([sdFile]);
+    expect(batchResult.count).toBe(0); // 0 added, skipped because previously deleted!
+
+    // 6. Test tombstone reload across fresh engine instances
+    const freshEngine = new DedupEngine(tempDir);
+    expect(freshEngine.isDeletedFile(fingerprint, sdFile)).toBe(true);
+
+    // 7. Test forgetting/clearing deleted files allows re-sync if user requests
+    freshEngine.forgetDeletedFile(fingerprint);
+    expect(freshEngine.isDeletedFile(fingerprint, sdFile)).toBe(false);
+  });
 });
+
 

@@ -2,8 +2,8 @@
 
 > **Hardware Ingestion, Local-First AI Classifier, and Non-Destructive Audio Vault for Field Recorders & Creators**
 
-[![Tests](https://img.shields.io/badge/tests-23%20passed-success)](https://github.com/cbellingan/AudioVault)
-[![E2E](https://img.shields.io/badge/e2e-7%2F7%20playwright-success)](https://github.com/cbellingan/AudioVault)
+[![Tests](https://img.shields.io/badge/tests-24%20passed-success)](https://github.com/cbellingan/AudioVault)
+[![E2E](https://img.shields.io/badge/e2e-10%2F10%20playwright-success)](https://github.com/cbellingan/AudioVault)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-blue)](https://github.com/cbellingan/AudioVault)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -54,9 +54,12 @@ AudioVault is an Electron + React + TypeScript desktop application engineered fo
   - `💾 <SD Cards>`: Detects attached removable hardware storage cards and displays count of new takes ready to ingest.
   - `📁 Import Folder`: Prompts a native directory picker to ingest local sound libraries.
 
-### 8. 🛡️ Non-Destructive Virtual Clips
+### 8. 🛡️ Non-Destructive Virtual Clips & Tombstone Sync Protection
 - Raw audio files in `~/Music/AudioVault/raw/` are **never modified or overwritten**.
 - All virtual clips, split regions, metadata edits, custom sub-tags, and category assignments are tracked non-destructively in `~/Music/AudioVault/registry.json`.
+- **Persistent Tombstones (`DeletedFileRecord`)**: When a clip is deleted from disk, AudioVault records a cryptographic tombstone (SHA256 fingerprint, content hash, and byte length).
+- **Zero Re-Download / Re-Ingest Guarantee**: Subsequent SD card scans, directory syncs, or import passes cross-reference incoming files against the tombstone registry. Deleted takes are completely excluded from new file counts and never re-downloaded or re-uploaded.
+- **Tombstone Manager**: The sidebar visibly monitors active tombstones (`🛡️ X deleted takes remembered`) with quick controls to inspect or clear ignored takes whenever needed.
 
 ---
 
@@ -136,10 +139,10 @@ AudioVault maintains rigorous test coverage spanning unit tests, audio parsing l
 # Typecheck
 npm run typecheck
 
-# Run Vitest unit & integration suites (22 tests)
+# Run Vitest unit & integration suites (24 tests)
 npm test
 
-# Run full Playwright Electron E2E integration test suite (6 tests)
+# Run full Playwright Electron E2E integration test suite (10 tests)
 npm run test:e2e
 ```
 

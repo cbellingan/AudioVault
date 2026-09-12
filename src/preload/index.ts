@@ -58,6 +58,10 @@ const audioVaultApi: AudioVaultAPI = {
     ipcRenderer.invoke('vault:generate-ai-title', clipId),
   saveRecordedTake: (wavBuffer: ArrayBuffer, customTitle?: string, autoTranscribe?: boolean) =>
     ipcRenderer.invoke('vault:save-recorded-take', wavBuffer, customTitle, autoTranscribe),
+  getDeletedFiles: () => ipcRenderer.invoke('vault:get-deleted-files'),
+  clearDeletedFiles: () => ipcRenderer.invoke('vault:clear-deleted-files'),
+  forgetDeletedFile: (idOrFingerprint: string) =>
+    ipcRenderer.invoke('vault:forget-deleted-file', idOrFingerprint),
 };
 
 contextBridge.exposeInMainWorld('audioVault', audioVaultApi);
