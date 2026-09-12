@@ -126,6 +126,7 @@ export interface VaultSettings {
   useLocalModelsDefault: boolean;
   enableCloudFallback: boolean;
   whisperLanguage: string;
+  rememberDeleteChoice?: boolean;
 }
 
 export interface IngestResult {
@@ -193,7 +194,7 @@ export interface AudioVaultAPI {
   getVirtualClips: () => Promise<VirtualClip[]>;
   createVirtualClip: (clip: Omit<VirtualClip, 'id' | 'createdAt' | 'updatedAt'>) => Promise<VirtualClip>;
   updateVirtualClip: (id: string, updates: Partial<VirtualClip>) => Promise<VirtualClip>;
-  deleteVirtualClip: (id: string) => Promise<boolean>;
+  deleteVirtualClip: (id: string, deleteFromDisk?: boolean) => Promise<boolean>;
   reclassifyClip: (clipId: string, category: PrimaryCategory, userTag?: string) => Promise<VirtualClip>;
   exportClip: (clipId: string, targetPath?: string) => Promise<string>;
   exportClipMp3: (clipId: string, startSeconds?: number, durationSeconds?: number, targetPath?: string) => Promise<{ filePath: string; clip: VirtualClip }>;

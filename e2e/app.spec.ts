@@ -505,5 +505,61 @@ test.describe('AudioVault Electron Integration Tests', () => {
     console.log('[E2E] UI Direction 1 & 2 verified successfully!');
     await app.close();
   });
+
+  test('Right-click context menu enables deleting a clip from disk with confirmation dialog and Remember My Choice', async () => {
+    console.log('[E2E] Testing delete clip with confirmation dialog and Remember my choice...');
+    const app = await electron.launch({
+      args: [path.join(__dirname, '../dist-electron/main/index.js')],
+    });
+
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    // 1. Right click on first row
+    const firstRow = window.locator('.clips-table tbody tr').first();
+    const clipTitle = await firstRow.locator('td').first().locator('span').first().innerText();
+    const initialRowCount = await window.locator('.clips-table tbody tr').count();
+
+    await firstRow.click({ button: 'right' });
+    const deleteOption = window.locator('[data-testid="delete-clip-menu-item"]');
+    await expect(deleteOption).toBeVisible();
+    await expect(deleteOption).toContainText('Delete Clip from Disk');
+
+    // 2. Click delete option - confirmation modal must pop up
+    await deleteOption.click();
+    const confirmModal = window.locator('[data-testid="delete-confirmation-modal"]');
+    await expect(confirmModal).toBeVisible();
+    await expect(confirmModal).toContainText('Delete Clip & Audio File');
+    await expect(confirmModal).toContainText(clipTitle.split('\n')[0]);
+
+    // Checkbox "Remember my choice" must be present
+    const rememberCheckbox = window.locator('[data-testid="remember-choice-checkbox"]');
+    await expect(rememberCheckbox).toBeVisible();
+    await expect(rememberCheckbox).not.toBeChecked();
+
+    // 3. Test Cancel button dismisses modal without deleting
+    const cancelBtn = confirmModal.locator('button', { hasText: 'Cancel' });
+    await cancelBtn.click();
+    await expect(confirmModal).not.toBeVisible();
+    expect(await window.locator('.clips-table tbody tr').count()).toBe(initialRowCount);
+
+    // 4. Re-open delete modal, check "Remember my choice", and confirm deletion
+    await firstRow.click({ button: 'right' });
+    await deleteOption.click();
+    await expect(confirmModal).toBeVisible();
+
+    await rememberCheckbox.check();
+    await expect(rememberCheckbox).toBeChecked();
+
+    const confirmDeleteBtn = window.locator('[data-testid="confirm-delete-btn"]');
+    await confirmDeleteBtn.click();
+
+    // Modal disappears and row is removed
+    await expect(confirmModal).not.toBeVisible();
+    await expect(window.locator('.clips-table tbody tr')).toHaveCount(initialRowCount - 1);
+
+    console.log('[E2E] Delete confirmation dialog and Remember My Choice verified successfully!');
+    await app.close();
+  });
 });
 

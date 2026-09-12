@@ -175,6 +175,13 @@ export default function App() {
   const [isGeneratingTitleForClipId, setIsGeneratingTitleForClipId] = useState<string | null>(null);
   const [waveformProfile, setWaveformProfile] = useState<'adaptive' | 'balanced' | 'punchy' | 'linear'>('adaptive');
 
+  // Delete clip confirmation modal state
+  const [clipToDelete, setClipToDelete] = useState<VirtualClip | null>(null);
+  const [rememberDeleteChoice, setRememberDeleteChoice] = useState<boolean>(() => {
+    return localStorage.getItem('audiovault_remember_delete_choice') === 'true';
+  });
+  const [rememberDeleteCheckbox, setRememberDeleteCheckbox] = useState<boolean>(false);
+
   // Direction 1 & 2: Search and In-App Recording State
   const [searchQuery, setSearchQuery] = useState('');
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -1026,6 +1033,53 @@ export default function App() {
     setContextMenu(null);
   }
 
+  function handlePromptDeleteClip(clip: VirtualClip) {
+    if (rememberDeleteChoice) {
+      executeDeleteClip(clip);
+    } else {
+      setRememberDeleteCheckbox(false);
+      setClipToDelete(clip);
+    }
+  }
+
+  async function executeDeleteClip(clip: VirtualClip) {
+    try {
+      if (window.audioVault) {
+        await window.audioVault.deleteVirtualClip(clip.id, true);
+      }
+      setClips((prev) => prev.filter((c) => c.id !== clip.id));
+
+      if (selectedClipId === clip.id) {
+        if (audioRef.current) {
+          audioRef.current.pause();
+          audioRef.current.currentTime = 0;
+        }
+        setIsPlaying(false);
+        const remaining = clips.filter((c) => c.id !== clip.id);
+        if (remaining.length > 0) {
+          setSelectedClipId(remaining[0].id);
+        }
+      }
+    } catch (err: any) {
+      console.error('Failed to delete clip:', err);
+      alert('Failed to delete clip: ' + (err.message || String(err)));
+    }
+  }
+
+  async function handleConfirmDelete() {
+    if (!clipToDelete) return;
+    const clip = clipToDelete;
+    if (rememberDeleteCheckbox) {
+      localStorage.setItem('audiovault_remember_delete_choice', 'true');
+      setRememberDeleteChoice(true);
+      if (window.audioVault) {
+        window.audioVault.updateVaultSettings({ rememberDeleteChoice: true });
+      }
+    }
+    setClipToDelete(null);
+    await executeDeleteClip(clip);
+  }
+
   const [isExportingMp3, setIsExportingMp3] = useState<string | null>(null);
 
   async function handleExportClipMp3(clip: VirtualClip, isSelection: boolean = false) {
@@ -1670,6 +1724,45 @@ export default function App() {
             >
               <span>📁 Import folder</span>
             </div>
+
+            {rememberDeleteChoice && (
+              <div
+                style={{
+                  marginTop: '0.6rem',
+                  padding: '0.45rem 0.65rem',
+                  background: 'rgba(239, 68, 68, 0.07)',
+                  border: '1px solid rgba(239, 68, 68, 0.2)',
+                  borderRadius: '6px',
+                  fontSize: '0.68rem',
+                  color: '#fca5a5',
+                  lineHeight: 1.35,
+                }}
+              >
+                <div>⚠️ Delete confirmation skipped</div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    localStorage.removeItem('audiovault_remember_delete_choice');
+                    setRememberDeleteChoice(false);
+                    if (window.audioVault) {
+                      window.audioVault.updateVaultSettings({ rememberDeleteChoice: false });
+                    }
+                  }}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'var(--accent-cyan)',
+                    cursor: 'pointer',
+                    padding: 0,
+                    marginTop: '3px',
+                    fontSize: '0.68rem',
+                    textDecoration: 'underline',
+                  }}
+                >
+                  Ask every time
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="nav-section">
@@ -2224,9 +2317,22 @@ export default function App() {
             </>
           )}
           <div className="context-divider" />
-          <div className="context-menu-item danger" onClick={handleExcludeRegion}>
-            🗑️ Exclude / Delete Region
+          <div className="context-menu-item" onClick={handleExcludeRegion}>
+            👁️ Exclude Region
           </div>
+          {activeClip && (
+            <div
+              className="context-menu-item danger"
+              style={{ color: '#ef4444', fontWeight: 600 }}
+              onClick={() => {
+                const c = activeClip;
+                setContextMenu(null);
+                handlePromptDeleteClip(c);
+              }}
+            >
+              🗑️ Delete Clip from Disk...
+            </div>
+          )}
         </div>
       )}
 
@@ -2353,7 +2459,7 @@ export default function App() {
           <div className="context-divider" />
 
           <div
-            className="context-menu-item danger"
+            className="context-menu-item"
             onClick={() => {
               const c = clipContextMenu.clip;
               setClips((prev) =>
@@ -2362,7 +2468,20 @@ export default function App() {
               setClipContextMenu(null);
             }}
           >
-            {clipContextMenu.clip.isExcluded ? '🔄 Include in Library' : '🗑️ Exclude Clip'}
+            {clipContextMenu.clip.isExcluded ? '🔄 Include in Library' : '👁️ Hide from Library'}
+          </div>
+
+          <div
+            className="context-menu-item danger"
+            data-testid="delete-clip-menu-item"
+            style={{ color: '#ef4444', fontWeight: 600 }}
+            onClick={() => {
+              const c = clipContextMenu.clip;
+              setClipContextMenu(null);
+              handlePromptDeleteClip(c);
+            }}
+          >
+            🗑️ Delete Clip from Disk...
           </div>
         </div>
       )}
@@ -2569,6 +2688,114 @@ export default function App() {
                 onClick={handleSaveMetadata}
               >
                 💾 Save Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Clip Confirmation Modal */}
+      {clipToDelete && (
+        <div
+          className="modal-overlay"
+          onClick={() => setClipToDelete(null)}
+          data-testid="delete-confirmation-modal"
+        >
+          <div
+            className="modal-dialog"
+            style={{ maxWidth: '480px' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header" style={{ borderBottomColor: 'rgba(239, 68, 68, 0.25)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <span style={{ fontSize: '1.2rem' }}>⚠️</span>
+                <h3 style={{ margin: 0, fontSize: '1.02rem', color: '#ef4444', fontWeight: 600 }}>
+                  Delete Clip & Audio File
+                </h3>
+              </div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => setClipToDelete(null)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="modal-body" style={{ gap: '0.9rem' }}>
+              <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '0.92rem', lineHeight: 1.5 }}>
+                Are you sure you want to permanently delete{' '}
+                <strong style={{ color: '#fff' }}>"{clipToDelete.title}"</strong>?
+              </p>
+
+              <div
+                style={{
+                  background: 'rgba(239, 68, 68, 0.08)',
+                  border: '1px solid rgba(239, 68, 68, 0.25)',
+                  borderRadius: '6px',
+                  padding: '0.75rem',
+                  fontSize: '0.82rem',
+                  color: '#fca5a5',
+                  lineHeight: 1.4,
+                }}
+              >
+                <div>⚠️ <strong>Permanent Action:</strong></div>
+                <div style={{ marginTop: '4px' }}>
+                  This will remove the clip from your library and delete the audio file from disk.
+                  {clipToDelete.exportedMp3Path && ' Any exported MP3 file will also be deleted.'}
+                </div>
+              </div>
+
+              <div style={{ paddingTop: '0.25rem' }}>
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.55rem',
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                    fontSize: '0.85rem',
+                    color: 'var(--text-secondary)',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    data-testid="remember-choice-checkbox"
+                    checked={rememberDeleteCheckbox}
+                    onChange={(e) => setRememberDeleteCheckbox(e.target.checked)}
+                    style={{
+                      width: '16px',
+                      height: '16px',
+                      accentColor: '#ef4444',
+                      cursor: 'pointer',
+                    }}
+                  />
+                  <span>Remember my choice</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setClipToDelete(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                data-testid="confirm-delete-btn"
+                style={{
+                  background: '#ef4444',
+                  borderColor: '#dc2626',
+                  color: '#fff',
+                  fontWeight: 600,
+                }}
+                onClick={handleConfirmDelete}
+              >
+                Delete from Disk
               </button>
             </div>
           </div>

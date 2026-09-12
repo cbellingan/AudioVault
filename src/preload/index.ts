@@ -42,7 +42,8 @@ const audioVaultApi: AudioVaultAPI = {
     ipcRenderer.invoke('vault:create-virtual-clip', clip),
   updateVirtualClip: (id: string, updates: Partial<VirtualClip>) =>
     ipcRenderer.invoke('vault:update-virtual-clip', id, updates),
-  deleteVirtualClip: (id: string) => ipcRenderer.invoke('vault:delete-virtual-clip', id),
+  deleteVirtualClip: (id: string, deleteFromDisk: boolean = true) =>
+    ipcRenderer.invoke('vault:delete-virtual-clip', id, deleteFromDisk),
   reclassifyClip: (clipId: string, category: PrimaryCategory, userTag?: string) =>
     ipcRenderer.invoke('vault:reclassify-clip', clipId, category, userTag),
   exportClip: (clipId: string, targetPath?: string) =>

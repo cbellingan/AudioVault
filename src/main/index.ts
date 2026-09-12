@@ -322,9 +322,12 @@ function setupIpcHandlers() {
     return updated;
   });
 
-  ipcMain.handle('vault:delete-virtual-clip', async (_, id: string): Promise<boolean> => {
-    return dedupEngine.deleteVirtualClip(id);
-  });
+  ipcMain.handle(
+    'vault:delete-virtual-clip',
+    async (_, id: string, deleteFromDisk: boolean = true): Promise<boolean> => {
+      return dedupEngine.deleteVirtualClip(id, deleteFromDisk);
+    }
+  );
 
   ipcMain.handle('vault:reclassify-clip', async (_, clipId: string, category: PrimaryCategory, userTag?: string): Promise<VirtualClip> => {
     const clip = dedupEngine.getVirtualClips().find((c) => c.id === clipId);

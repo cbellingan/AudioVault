@@ -20,6 +20,7 @@ export class DedupEngine {
       useLocalModelsDefault: true,
       enableCloudFallback: false,
       whisperLanguage: 'en',
+      rememberDeleteChoice: false,
     };
     this.ensureDirectories();
     this.loadRegistry();
@@ -306,7 +307,42 @@ export class DedupEngine {
     return updated;
   }
 
-  public deleteVirtualClip(id: string): boolean {
+  public deleteVirtualClip(id: string, deleteFromDisk: boolean = true): boolean {
+    const clip = this.virtualClips.get(id);
+    if (!clip) return false;
+
+    if (deleteFromDisk) {
+      // 1. Remove exported MP3 if it exists on disk
+      if (clip.exportedMp3Path && fs.existsSync(clip.exportedMp3Path)) {
+        try {
+          fs.unlinkSync(clip.exportedMp3Path);
+          console.log(`[AudioVault Dedup] 🗑️ Deleted exported file from disk: ${clip.exportedMp3Path}`);
+        } catch (err) {
+          console.warn(`[AudioVault Dedup] Failed to delete exported file: ${clip.exportedMp3Path}`, err);
+        }
+      }
+
+      // 2. Check if any other clips in the registry still reference this parent raw audio file
+      const rawFileId = clip.parentFileId;
+      const otherClips = Array.from(this.virtualClips.values()).filter(
+        (c) => c.id !== id && c.parentFileId === rawFileId
+      );
+
+      // If no other clips reference this raw file, delete the raw audio file from disk & registry
+      if (otherClips.length === 0) {
+        const rawFile = this.rawFiles.get(rawFileId);
+        if (rawFile && rawFile.storagePath && fs.existsSync(rawFile.storagePath)) {
+          try {
+            fs.unlinkSync(rawFile.storagePath);
+            console.log(`[AudioVault Dedup] 🗑️ Deleted raw audio file from disk: ${rawFile.storagePath}`);
+          } catch (err) {
+            console.warn(`[AudioVault Dedup] Failed to delete raw audio file: ${rawFile.storagePath}`, err);
+          }
+        }
+        this.rawFiles.delete(rawFileId);
+      }
+    }
+
     const existed = this.virtualClips.delete(id);
     if (existed) this.saveRegistry();
     return existed;
