@@ -954,11 +954,18 @@ export default function App() {
 
   function handleWaveformContextMenu(e: React.MouseEvent) {
     e.preventDefault();
+    const estimatedMenuWidth = 240;
+    const estimatedMenuHeight = 440;
+    const x = Math.max(12, Math.min(e.clientX, window.innerWidth - estimatedMenuWidth - 12));
+    const y = e.clientY + estimatedMenuHeight > window.innerHeight
+      ? Math.max(12, window.innerHeight - estimatedMenuHeight - 12)
+      : Math.max(12, e.clientY);
     setContextMenu({
       visible: true,
-      x: e.clientX,
-      y: e.clientY,
+      x,
+      y,
     });
+    setClipContextMenu(null);
   }
 
   // Context Menu Actions
@@ -1113,12 +1120,18 @@ export default function App() {
     }
   }
 
+  function getClipStoragePath(clip: VirtualClip): string | undefined {
+    if (clip.exportedMp3Path) return clip.exportedMp3Path;
+    const parentRaw = rawFiles.find((r) => r.id === clip.parentFileId);
+    return parentRaw?.storagePath;
+  }
+
   async function handleShowInFinder(filePath: string) {
     if (!window.audioVault) return;
     try {
       const opened = await window.audioVault.showInFinder(filePath);
       if (!opened) {
-        alert(`Could not find exported MP3 file on disk:\n${filePath}`);
+        alert(`Could not find audio file on disk:\n${filePath}`);
       }
     } catch (err) {
       console.error('Failed to show item in Finder:', err);
@@ -1889,8 +1902,12 @@ export default function App() {
                         e.preventDefault();
                         e.stopPropagation();
                         setSelectedClipId(clip.id);
-                        const x = Math.min(e.clientX, window.innerWidth - 240);
-                        const y = Math.min(e.clientY, window.innerHeight - 360);
+                        const estimatedMenuWidth = 260;
+                        const estimatedMenuHeight = 520;
+                        const x = Math.max(12, Math.min(e.clientX, window.innerWidth - estimatedMenuWidth - 12));
+                        const y = e.clientY + estimatedMenuHeight > window.innerHeight
+                          ? Math.max(12, window.innerHeight - estimatedMenuHeight - 12)
+                          : Math.max(12, e.clientY);
                         setClipContextMenu({ visible: true, x, y, clip });
                         setContextMenu(null);
                       }}
@@ -2070,13 +2087,17 @@ export default function App() {
                     ? '🎵 Export Selection MP3'
                     : '🎵 Export MP3'}
                 </button>
-                {activeClip.exportedMp3Path && (
+                {activeClip && getClipStoragePath(activeClip) && (
                   <button
                     className="btn btn-secondary btn-sm"
-                    onClick={() => handleShowInFinder(activeClip.exportedMp3Path!)}
-                    title="Show exported MP3 in Finder"
+                    onClick={() => handleShowInFinder(getClipStoragePath(activeClip)!)}
+                    title={
+                      activeClip.exportedMp3Path
+                        ? `Open exported MP3 in Finder:\n${activeClip.exportedMp3Path}`
+                        : `Open audio file in Finder:\n${getClipStoragePath(activeClip)}`
+                    }
                   >
-                    📂 Show in Finder
+                    📂 Open in Finder
                   </button>
                 )}
               </div>
@@ -2257,6 +2278,22 @@ export default function App() {
       {/* Floating Right-Click Context Menu */}
       {contextMenu && contextMenu.visible && (
         <div
+          ref={(el) => {
+            if (!el) return;
+            const rect = el.getBoundingClientRect();
+            if (rect.bottom > window.innerHeight - 8) {
+              const newTop = Math.max(8, window.innerHeight - rect.height - 8);
+              if (Math.abs(el.offsetTop - newTop) > 2) {
+                el.style.top = `${newTop}px`;
+              }
+            }
+            if (rect.right > window.innerWidth - 8) {
+              const newLeft = Math.max(8, window.innerWidth - rect.width - 8);
+              if (Math.abs(el.offsetLeft - newLeft) > 2) {
+                el.style.left = `${newLeft}px`;
+              }
+            }
+          }}
           className="context-menu"
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(e) => e.stopPropagation()}
@@ -2305,13 +2342,18 @@ export default function App() {
                   ? '🔄 Re-export to MP3'
                   : '🎵 Export Track to MP3'}
               </div>
-              {activeClip.exportedMp3Path && (
+              {getClipStoragePath(activeClip) && (
                 <div
                   className="context-menu-item"
                   style={{ color: 'var(--accent-amber, #fbbf24)', fontWeight: 500 }}
-                  onClick={() => handleShowInFinder(activeClip.exportedMp3Path!)}
+                  onClick={() => handleShowInFinder(getClipStoragePath(activeClip)!)}
+                  title={
+                    activeClip.exportedMp3Path
+                      ? `Open MP3 in Finder:\n${activeClip.exportedMp3Path}`
+                      : `Open audio file in Finder:\n${getClipStoragePath(activeClip)}`
+                  }
                 >
-                  📂 Show in Finder
+                  📂 Open in Finder
                 </div>
               )}
             </>
@@ -2339,6 +2381,22 @@ export default function App() {
       {/* Clip Row Right-Click Context Menu */}
       {clipContextMenu && clipContextMenu.visible && (
         <div
+          ref={(el) => {
+            if (!el) return;
+            const rect = el.getBoundingClientRect();
+            if (rect.bottom > window.innerHeight - 8) {
+              const newTop = Math.max(8, window.innerHeight - rect.height - 8);
+              if (Math.abs(el.offsetTop - newTop) > 2) {
+                el.style.top = `${newTop}px`;
+              }
+            }
+            if (rect.right > window.innerWidth - 8) {
+              const newLeft = Math.max(8, window.innerWidth - rect.width - 8);
+              if (Math.abs(el.offsetLeft - newLeft) > 2) {
+                el.style.left = `${newLeft}px`;
+              }
+            }
+          }}
           className="context-menu clip-context-menu"
           style={{ top: clipContextMenu.y, left: clipContextMenu.x }}
           onClick={(e) => e.stopPropagation()}
@@ -2381,13 +2439,18 @@ export default function App() {
 
           <div className="context-divider" />
 
-          {clipContextMenu.clip.exportedMp3Path && (
+          {getClipStoragePath(clipContextMenu.clip) && (
             <div
               className="context-menu-item"
               style={{ color: 'var(--accent-amber, #fbbf24)', fontWeight: 500 }}
-              onClick={() => handleShowInFinder(clipContextMenu.clip.exportedMp3Path!)}
+              onClick={() => handleShowInFinder(getClipStoragePath(clipContextMenu.clip)!)}
+              title={
+                clipContextMenu.clip.exportedMp3Path
+                  ? `Open MP3 in Finder:\n${clipContextMenu.clip.exportedMp3Path}`
+                  : `Open audio file in Finder:\n${getClipStoragePath(clipContextMenu.clip)}`
+              }
             >
-              📂 Show in Finder
+              📂 Open in Finder
             </div>
           )}
 

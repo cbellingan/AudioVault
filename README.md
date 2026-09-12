@@ -36,8 +36,7 @@ AudioVault is an Electron + React + TypeScript desktop application engineered fo
 
 ### 4. 🎵 High-Fidelity MP3 Export with ID3 Metadata & Finder Reveal
 - **Broadcast-Grade MP3 Transcoding**: Encodes via local system `ffmpeg` (`libmp3lame` at 320 kbps) with arbitrary region timestamp slicing (`-ss`, `-t`).
-- **Embedded ID3v2 & ID3v1 Tags**: Automatically encodes `title`, `artist`, `album`, `genre`, `comment` (Whisper transcript or notes), and `date`.
-- **macOS Finder Reveal**: Renders "Show in Finder" in context menus and dock toolbars to instantly reveal exported files in Finder via Electron's native `shell.showItemInFolder`.
+- **macOS Finder Reveal**: Provides "Open in Finder" buttons in the waveform dock toolbar and right-click context menus to instantly reveal any audio take or exported MP3 in Finder via Electron's native `shell.showItemInFolder`.
 - **Library MP3 Badge**: Interactive cyan `MP3` pill badge in library table rows.
 
 ### 5. 🎙️ In-App Recording & Studio Level Meter (`Option 1.2`)
@@ -158,7 +157,7 @@ npm run test:e2e
 | **Search Library** | `⌘K` or `Ctrl+K` (focuses global search bar) |
 | **Clip Options Menu** | Right-click any row in the library table |
 | **Waveform Options Menu** | Right-click anywhere on the waveform canvas |
-| **Reveal in Finder** | Click the cyan `MP3` badge on an exported row or choose `Show in Finder` |
+| **Open in Finder** | Click `📂 Open in Finder` in the dock toolbar/context menu, or click the cyan `MP3` badge |
 
 ---
 

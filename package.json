@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test",
+    "test:e2e": "npm run build && playwright test",
     "typecheck": "tsc --noEmit",
     "start": "electron .",
     "relay:build": "esbuild relay/web/app.ts --bundle --outfile=relay/web/bundle.js --format=esm && esbuild relay/server/run.ts --bundle --platform=node --format=esm --outfile=relay/dist/run.mjs --packages=external",

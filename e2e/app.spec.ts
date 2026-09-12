@@ -152,12 +152,12 @@ test.describe('AudioVault Electron Integration Tests', () => {
     const window = await app.firstWindow();
     await window.waitForLoadState('domcontentloaded');
 
-    // 1. Select a dictaphone take that has speech transcription
-    const takeWithSpeech = window.locator('.clips-table tbody tr', { hasText: 'Feelings' }).first();
+    // 1. Select a take that has speech transcription
+    const takeWithSpeech = window.locator('.clips-table tbody tr', { hasText: '260831-185613' }).first();
     if (await takeWithSpeech.count() > 0) {
       await takeWithSpeech.click();
     } else {
-      const fallbackRow = window.locator('.clips-table tbody tr', { hasText: 'DICTAPHONE' }).first();
+      const fallbackRow = window.locator('.clips-table tbody tr', { hasText: 'Product Standup' }).first();
       if (await fallbackRow.count() > 0) await fallbackRow.click();
     }
 
@@ -364,9 +364,17 @@ test.describe('AudioVault Electron Integration Tests', () => {
     await firstRow.click({ button: 'right' });
     await expect(contextMenu).toBeVisible();
 
-    // Now "Show in Finder" and "Re-export to MP3" should be present
-    const showInFinderItem = contextMenu.locator('.context-menu-item', { hasText: 'Show in Finder' });
+    // Now "Open in Finder" and "Re-export to MP3" should be present
+    const showInFinderItem = contextMenu.locator('.context-menu-item', { hasText: /Finder/ });
     await expect(showInFinderItem).toBeVisible();
+
+    // Verify context menu is scrollable and constrained within viewport
+    const menuBox = await contextMenu.boundingBox();
+    expect(menuBox).toBeTruthy();
+    if (menuBox) {
+      const windowHeight = await window.evaluate(() => globalThis.innerHeight);
+      expect(menuBox.y + menuBox.height).toBeLessThanOrEqual(windowHeight);
+    }
 
     const reExportMp3Item = contextMenu.locator('.context-menu-item', { hasText: 'Re-export to MP3' });
     await expect(reExportMp3Item).toBeVisible();
@@ -374,7 +382,7 @@ test.describe('AudioVault Electron Integration Tests', () => {
     // Close menu by clicking elsewhere
     await window.keyboard.press('Escape');
 
-    // 5. Verify Waveform Profile Experiment Buttons
+    // 5. Verify Waveform Profile Experiment Buttons and Dock "Open in Finder" Button
     const profileGroup = window.locator('.profile-selector-group');
     await expect(profileGroup).toBeVisible();
 
@@ -386,14 +394,18 @@ test.describe('AudioVault Electron Integration Tests', () => {
     await dynamicBtn.click();
     await expect(dynamicBtn).toHaveClass(/active/);
 
-    // 6. Verify Waveform context menu has MP3 export & Show in Finder
+    // Verify dock "Open in Finder" button is visible
+    const dockOpenInFinder = window.locator('.dock-header button', { hasText: /Finder/ });
+    await expect(dockOpenInFinder).toBeVisible();
+
+    // 6. Verify Waveform context menu has MP3 export & Open in Finder
     const canvas = window.locator('.waveform-canvas');
     await canvas.click({ button: 'right', position: { x: 150, y: 40 } });
 
     const waveformContextMenu = window.locator('.context-menu:not(.clip-context-menu)');
     await expect(waveformContextMenu).toBeVisible();
 
-    const waveShowInFinder = waveformContextMenu.locator('.context-menu-item', { hasText: 'Show in Finder' });
+    const waveShowInFinder = waveformContextMenu.locator('.context-menu-item', { hasText: /Finder/ });
     await expect(waveShowInFinder).toBeVisible();
 
     console.log('[E2E] Waveform and table MP3 context actions and profile buttons verified successfully!');
@@ -515,6 +527,19 @@ test.describe('AudioVault Electron Integration Tests', () => {
     const window = await app.firstWindow();
     await window.waitForLoadState('domcontentloaded');
 
+    // Ensure clean state for delete confirmation dialog
+    await window.evaluate(async () => {
+      localStorage.removeItem('audiovault_remember_delete_choice');
+      if ((window as any).audioVault) {
+        await (window as any).audioVault.updateVaultSettings({ rememberDeleteChoice: false });
+      }
+    });
+    // Wait briefly for react state if needed
+    const resetReminderBtn = window.locator('button', { hasText: 'Ask every time' });
+    if (await resetReminderBtn.isVisible()) {
+      await resetReminderBtn.click();
+    }
+
     // 1. Right click on first row
     const firstRow = window.locator('.clips-table tbody tr').first();
     const clipTitle = await firstRow.locator('td').first().locator('span').first().innerText();
@@ -554,12 +579,74 @@ test.describe('AudioVault Electron Integration Tests', () => {
     const confirmDeleteBtn = window.locator('[data-testid="confirm-delete-btn"]');
     await confirmDeleteBtn.click();
 
-    // Modal disappears and row is removed
     await expect(confirmModal).not.toBeVisible();
     await expect(window.locator('.clips-table tbody tr')).toHaveCount(initialRowCount - 1);
+
+    // Clean up settings for subsequent runs
+    await window.evaluate(async () => {
+      localStorage.removeItem('audiovault_remember_delete_choice');
+      if ((window as any).audioVault) {
+        await (window as any).audioVault.updateVaultSettings({ rememberDeleteChoice: false });
+      }
+    });
 
     console.log('[E2E] Delete confirmation dialog and Remember My Choice verified successfully!');
     await app.close();
   });
+
+  test('Context menu remains within viewport, scrolls when near bottom, and Open in Finder is accessible for all clips', async () => {
+    console.log('[E2E] Testing context menu viewport bounds, scrolling, and Open in Finder availability...');
+    const app = await electron.launch({
+      args: [path.join(__dirname, '../dist-electron/main/index.js')],
+    });
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+
+    // 1. Select a row that has not been exported to MP3
+    const rows = window.locator('.clips-table tbody tr');
+    const rowCount = await rows.count();
+    expect(rowCount).toBeGreaterThan(3);
+
+    // Scroll clips pane down to test clicking a row further down the screen
+    const clipsPane = window.locator('.clips-pane');
+    await clipsPane.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+    await window.waitForTimeout(300);
+
+    // Right-click the last visible row at the bottom
+    const lastRow = rows.last();
+    await lastRow.scrollIntoViewIfNeeded();
+    await lastRow.click({ button: 'right' });
+
+    const contextMenu = window.locator('.context-menu.clip-context-menu');
+    await expect(contextMenu).toBeVisible();
+
+    // Verify context menu is completely within the viewport bounds
+    const menuBox = await contextMenu.boundingBox();
+    expect(menuBox).toBeTruthy();
+    if (menuBox) {
+      const windowHeight = await window.evaluate(() => globalThis.innerHeight);
+      expect(menuBox.y).toBeGreaterThanOrEqual(0);
+      expect(menuBox.y + menuBox.height).toBeLessThanOrEqual(windowHeight + 2);
+    }
+
+    // Verify lowest item (Delete Clip from Disk...) is visible
+    const deleteItem = contextMenu.locator('[data-testid="delete-clip-menu-item"]');
+    await expect(deleteItem).toBeVisible();
+
+    // Verify "Open in Finder" is present in context menu even if clip is not yet exported to MP3
+    const finderMenuItem = contextMenu.locator('.context-menu-item', { hasText: /Finder/ });
+    await expect(finderMenuItem).toBeVisible();
+
+    // Close menu
+    await window.keyboard.press('Escape');
+
+    // Verify dock header has "Open in Finder" button visible for active clip
+    const dockOpenInFinder = window.locator('.dock-header button', { hasText: /Finder/ });
+    await expect(dockOpenInFinder).toBeVisible();
+
+    console.log('[E2E] Context menu viewport bounds, scrolling, and Open in Finder successfully verified!');
+    await app.close();
+  });
 });
+
 
