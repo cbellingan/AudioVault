@@ -54,6 +54,8 @@ const audioVaultApi: AudioVaultAPI = {
     ipcRenderer.invoke('vault:show-in-finder', filePath),
   transcribeClipRegion: (clipId: string, startSeconds?: number, durationSeconds?: number) =>
     ipcRenderer.invoke('vault:transcribe-clip-region', clipId, startSeconds, durationSeconds),
+  getClipTranscript: (clipId: string) =>
+    ipcRenderer.invoke('vault:get-clip-transcript', clipId),
   generateAiTitle: (clipId: string) =>
     ipcRenderer.invoke('vault:generate-ai-title', clipId),
   saveRecordedTake: (wavBuffer: ArrayBuffer, customTitle?: string, autoTranscribe?: boolean) =>

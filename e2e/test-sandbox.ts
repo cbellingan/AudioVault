@@ -123,6 +123,13 @@ export function setupTestSandbox(): SandboxContext {
       waveformPeaks: Array.from({ length: 60 }, () => Math.random() * 0.6 + 0.2),
     });
 
+    let transcriptPath: string | undefined;
+    if (tf.transcript) {
+      const txtPath = filePath.replace(/\.[^/.]+$/, "") + ".txt";
+      fs.writeFileSync(txtPath, tf.transcript, "utf-8");
+      transcriptPath = txtPath;
+    }
+
     virtualClips.push({
       id: `clip_0${i + 1}`,
       parentFileId: tf.id,
@@ -134,6 +141,8 @@ export function setupTestSandbox(): SandboxContext {
       classificationConfidence: 0.9,
       classificationSource: "yamnet_local",
       transcription: tf.transcript,
+      fullTranscription: tf.transcript,
+      transcriptPath,
       isExcluded: false,
       createdAt: new Date(Date.now() - (i + 1) * 3600000).toISOString(),
       updatedAt: new Date().toISOString(),

@@ -131,6 +131,8 @@ export class PipelineOrchestrator extends EventEmitter {
 
     for (const name of entries) {
       if (name.startsWith('.')) continue;
+      // Only process recognized audio files; skip .txt sidecars, .json, etc.
+      if (!/\.(wav|aif|aiff|flac|mp3|m4a|aac|ogg)$/i.test(name)) continue;
       const fullPath = path.join(rawDir, name);
       if (!registeredPaths.has(fullPath) && fs.existsSync(fullPath)) {
         try {
@@ -340,16 +342,32 @@ export class PipelineOrchestrator extends EventEmitter {
       currentJob.currentTaskDescription = 'Running local Whisper speech transcription...';
       this.throttleBroadcastStatus();
 
-      // 2. Local Whisper Transcription
-      const transcriptRes = await this.audioEngine.transcribeAudioDetails(targetPath);
+      // 2. Local Whisper Transcription (transcribing full audio duration)
+      const transcriptRes = await this.audioEngine.transcribeAudioDetails(
+        targetPath,
+        analysis.features.durationSeconds,
+        0
+      );
       const transcript = transcriptRes?.text || null;
       const transcriptChunks = transcriptRes?.chunks;
       if (transcript) {
-        console.log(`[AudioVault Pipeline] 🗣️ Whisper transcript for ${currentJob.filename}: "${transcript.slice(0, 60)}..."`);
+        console.log(`[AudioVault Pipeline] 🗣️ Whisper transcript for ${currentJob.filename} (${transcript.length} chars): "${transcript.slice(0, 80)}..."`);
       }
       currentJob.analysisPercent = 85;
       currentJob.currentTaskDescription = 'Classifying audio events & generating metadata...';
       this.throttleBroadcastStatus();
+
+      // Save full transcript to .txt file alongside the imported file
+      const ext = path.extname(targetPath);
+      const transcriptPath = targetPath.slice(0, -ext.length) + '.txt';
+      if (transcript && transcript.trim().length > 0) {
+        try {
+          fs.writeFileSync(transcriptPath, transcript.trim(), 'utf-8');
+          console.log(`[AudioVault Pipeline] 📝 Full transcript saved alongside audio: ${transcriptPath}`);
+        } catch (fileErr) {
+          console.warn(`[AudioVault Pipeline] Failed writing transcript file: ${transcriptPath}`, fileErr);
+        }
+      }
 
       // 3. Local AI Classification
       const classification = this.audioEngine.classifyAcoustics(
@@ -432,6 +450,8 @@ export class PipelineOrchestrator extends EventEmitter {
           classificationConfidence: classification.confidence,
           classificationSource: 'yamnet_local',
           transcription: classification.transcriptionSnippet,
+          fullTranscription: transcript || undefined,
+          transcriptPath: (transcript && fs.existsSync(transcriptPath)) ? transcriptPath : undefined,
           transcriptionChunks: transcriptChunks,
           updatedAt: new Date().toISOString(),
         });
@@ -448,6 +468,8 @@ export class PipelineOrchestrator extends EventEmitter {
             classificationConfidence: classification.confidence,
             classificationSource: 'yamnet_local',
             transcription: classification.transcriptionSnippet,
+            fullTranscription: transcript || undefined,
+            transcriptPath: (transcript && fs.existsSync(transcriptPath)) ? transcriptPath : undefined,
             transcriptionChunks: transcriptChunks,
             updatedAt: new Date().toISOString(),
           });
@@ -465,6 +487,8 @@ export class PipelineOrchestrator extends EventEmitter {
             classificationConfidence: classification.confidence,
             classificationSource: 'yamnet_local',
             transcription: classification.transcriptionSnippet,
+            fullTranscription: transcript || undefined,
+            transcriptPath: (transcript && fs.existsSync(transcriptPath)) ? transcriptPath : undefined,
             transcriptionChunks: transcriptChunks,
             isExcluded: false,
             createdAt: analysis.creationTimestamp || new Date().toISOString(),

@@ -49,7 +49,7 @@ export class TranscriptionService {
    */
   public async transcribeAudioFile(
     filePath: string,
-    maxDurationSeconds = 60,
+    maxDurationSeconds?: number,
     startOffsetSeconds = 0
   ): Promise<TranscriptionResult | null> {
     try {
@@ -99,7 +99,7 @@ export class TranscriptionService {
    */
   public decodeWavToFloat32_16k(
     filePath: string,
-    maxDurationSeconds: number,
+    maxDurationSeconds?: number,
     startOffsetSeconds = 0
   ): Float32Array | null {
     if (!fs.existsSync(filePath)) return null;
@@ -152,7 +152,9 @@ export class TranscriptionService {
 
       const startSample = Math.min(totalInputSamples, Math.floor(sampleRate * Math.max(0, startOffsetSeconds)));
       const samplesRemaining = Math.max(0, totalInputSamples - startSample);
-      const samplesToRead = Math.min(samplesRemaining, Math.floor(sampleRate * maxDurationSeconds));
+      const samplesToRead = typeof maxDurationSeconds === 'number' && maxDurationSeconds > 0
+        ? Math.min(samplesRemaining, Math.floor(sampleRate * maxDurationSeconds))
+        : samplesRemaining;
 
       if (samplesToRead <= 0) return null;
 

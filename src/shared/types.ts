@@ -123,7 +123,9 @@ export interface VirtualClip {
   userTags: string[];
   classificationConfidence: number;
   classificationSource: 'yamnet_local' | 'whisper_local' | 'user_manual' | 'cloud_ai';
-  transcription?: string;
+  transcription?: string; // UI preview / snippet
+  fullTranscription?: string; // Complete unabbreviated transcript
+  transcriptPath?: string; // File path to .txt sidecar stored with audio file
   transcriptionChunks?: Array<{ text: string; timestamp: [number, number] }>;
   notes?: string;
   isExcluded: boolean;
@@ -213,6 +215,7 @@ export interface AudioVaultAPI {
   exportClipMp3: (clipId: string, startSeconds?: number, durationSeconds?: number, targetPath?: string) => Promise<{ filePath: string; clip: VirtualClip }>;
   showInFinder: (filePath: string) => Promise<boolean>;
   transcribeClipRegion: (clipId: string, startSeconds?: number, durationSeconds?: number) => Promise<VirtualClip | null>;
+  getClipTranscript: (clipId: string) => Promise<string | null>;
   generateAiTitle: (clipId: string) => Promise<VirtualClip>;
   saveRecordedTake: (wavBuffer: ArrayBuffer, customTitle?: string, autoTranscribe?: boolean) => Promise<VirtualClip>;
 

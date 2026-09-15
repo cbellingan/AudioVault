@@ -282,11 +282,11 @@ export class AudioEngine {
   }
 
   /**
-   * Runs local Whisper transcription on the audio file with timestamp chunk metadata.
+    * Runs local Whisper transcription on the audio file with timestamp chunk metadata.
    */
   public async transcribeAudioDetails(
     filePath: string,
-    durationSeconds = 60,
+    durationSeconds?: number,
     startOffsetSeconds = 0
   ): Promise<{
     text: string;
@@ -313,10 +313,10 @@ export class AudioEngine {
   }
 
   /**
-   * Runs local Whisper transcription on the audio file (up to first 60 seconds).
+   * Runs local Whisper transcription on the audio file.
    */
-  public async transcribeAudio(filePath: string): Promise<string | null> {
-    const details = await this.transcribeAudioDetails(filePath);
+  public async transcribeAudio(filePath: string, durationSeconds?: number): Promise<string | null> {
+    const details = await this.transcribeAudioDetails(filePath, durationSeconds);
     return details?.text || null;
   }
 
@@ -338,11 +338,13 @@ export class AudioEngine {
     // If local Whisper recognized spoken words
     if (transcript && transcript.length > 5) {
       const isShortMemo = features.durationSeconds <= 60 || features.silenceRatio > 0.4;
+      const clean = transcript.replace(/^\[(?:Local )?Whisper\]:\s*"?/i, '').replace(/"?$/, '').trim();
+      const snippetText = clean.length > 220 ? `${clean.slice(0, 220).trim()}...` : clean;
       return {
         category: isShortMemo ? 'dictaphone' : 'meeting',
         confidence: 0.95,
         tags: isShortMemo ? ['Spoken Memo', 'Voice Note'] : ['Spoken Discussion', 'Meeting'],
-        transcriptionSnippet: `[Whisper]: "${transcript}"`,
+        transcriptionSnippet: `[Whisper]: "${snippetText}"`,
       };
     }
 

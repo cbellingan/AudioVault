@@ -151,6 +151,33 @@ describe('Pipeline Orchestrator (Serial SD Reader & Parallel Worker Pool)', () =
       expect(rawFiles.length).toBe(2);
       expect(clips.length).toBe(2);
       expect(rawFiles.every((r) => r.durationSeconds > 0)).toBe(true);
+
+      // Verify sidecar .txt transcript file persistence alongside imported file
+      const speechFile = path.join(rawDir, 'SANDBOX_SPEECH_TAKE.WAV');
+      fs.writeFileSync(speechFile, generateSyntheticWavBuffer({ durationSeconds: 0.8, isPulsedSpeech: true }));
+      sandboxOrchestrator.enqueueLocalFile(speechFile);
+
+      await new Promise<void>((resolve) => {
+        sandboxOrchestrator.on('pipeline-status', (status) => {
+          if (status.completedJobs >= pendingCount + 1) resolve();
+        });
+        setTimeout(resolve, 3000);
+      });
+
+      const speechTxt = path.join(rawDir, 'SANDBOX_SPEECH_TAKE.txt');
+      expect(fs.existsSync(speechTxt)).toBe(true);
+      expect(fs.readFileSync(speechTxt, 'utf-8')).toContain('simulated local whisper');
+
+      const speechClips = sandboxDedup.getVirtualClips();
+      const targetClip = speechClips.find((c) => c.fullTranscription?.includes('simulated local whisper'));
+      expect(targetClip).toBeDefined();
+      expect(targetClip!.fullTranscription).toBe('simulated local whisper speech transcript');
+      expect(targetClip!.transcriptPath).toBe(speechTxt);
+
+      // Delete clip and verify sidecar .txt is removed
+      sandboxDedup.deleteVirtualClip(targetClip!.id, true);
+      expect(fs.existsSync(speechFile)).toBe(false);
+      expect(fs.existsSync(speechTxt)).toBe(false);
     } finally {
       try {
         fs.rmSync(sandboxVaultDir, { recursive: true, force: true });

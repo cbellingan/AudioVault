@@ -456,6 +456,12 @@ export class DedupEngine {
           try {
             fs.unlinkSync(rawFile.storagePath);
             console.log(`[AudioVault Dedup] 🗑️ Deleted raw audio file from disk: ${rawFile.storagePath}`);
+            const ext = path.extname(rawFile.storagePath);
+            const transcriptPath = rawFile.storagePath.slice(0, -ext.length) + '.txt';
+            if (fs.existsSync(transcriptPath)) {
+              fs.unlinkSync(transcriptPath);
+              console.log(`[AudioVault Dedup] 🗑️ Deleted transcript file from disk: ${transcriptPath}`);
+            }
           } catch (err) {
             console.warn(`[AudioVault Dedup] Failed to delete raw audio file: ${rawFile.storagePath}`, err);
           }

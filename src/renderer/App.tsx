@@ -1312,14 +1312,29 @@ export default function App() {
     }
   }
 
-  // Copy transcription to clipboard
+  // Copy transcription to clipboard (always copies the FULL unabbreviated transcript)
   async function handleCopyTranscript(clip: VirtualClip) {
-    if (!clip.transcription || !clip.transcription.trim()) return;
-    const cleanText = clip.transcription
-      .replace(/^\[Local Whisper\]:\s*"?/, '')
+    let fullText = clip.fullTranscription;
+    if (!fullText) {
+      try {
+        const fetched = await window.audioVault.getClipTranscript(clip.id);
+        if (fetched && fetched.trim().length > 0) {
+          fullText = fetched;
+        }
+      } catch (err) {
+        console.warn('Failed fetching full transcript via IPC:', err);
+      }
+    }
+    if (!fullText) {
+      fullText = clip.transcription;
+    }
+    if (!fullText || !fullText.trim()) return;
+
+    const cleanText = fullText
+      .replace(/^\[(?:Local )?Whisper\]:\s*"?/i, '')
       .replace(/"?$/, '')
       .trim();
-    const textToCopy = cleanText || clip.transcription.trim();
+    const textToCopy = cleanText || fullText.trim();
 
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1334,7 +1349,7 @@ export default function App() {
         document.execCommand('copy');
         document.body.removeChild(textarea);
       }
-      setToastMessage('📋 Transcript copied to clipboard!');
+      setToastMessage('📋 Full transcript copied to clipboard!');
       setTimeout(() => setToastMessage(null), 2500);
     } catch (err) {
       console.error('Failed to copy transcript to clipboard:', err);
@@ -1364,7 +1379,7 @@ export default function App() {
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
       const inTitle = c.title.toLowerCase().includes(q);
-      const inTranscript = (c.transcription || '').toLowerCase().includes(q);
+      const inTranscript = (c.fullTranscription || c.transcription || '').toLowerCase().includes(q);
       const inChunks = c.transcriptionChunks ? c.transcriptionChunks.some((chunk) => chunk.text.toLowerCase().includes(q)) : false;
       const inTags = c.userTags.some((tag) => tag.toLowerCase().includes(q));
       const inFilename = parentRaw ? parentRaw.originalFilename.toLowerCase().includes(q) : false;
@@ -2065,9 +2080,25 @@ export default function App() {
                         <span className="take-source-sub">
                           <HighlightMatch text={sourceSub} query={searchQuery} />
                         </span>
-                        {clip.transcription && (
-                          <div style={{ fontSize: '0.74rem', color: 'var(--accent-cyan)', fontStyle: 'italic', marginTop: '2px' }}>
-                            <HighlightMatch text={clip.transcription} query={searchQuery} />
+                        {(clip.transcription || clip.fullTranscription) && (
+                          <div
+                            className="transcript-snippet"
+                            title={clip.fullTranscription || clip.transcription}
+                            style={{
+                              fontSize: '0.74rem',
+                              color: 'var(--accent-cyan)',
+                              fontStyle: 'italic',
+                              marginTop: '2px',
+                              lineHeight: '1.3',
+                              maxHeight: '3.9em',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              display: '-webkit-box',
+                              WebkitLineClamp: 3,
+                              WebkitBoxOrient: 'vertical',
+                            }}
+                          >
+                            <HighlightMatch text={clip.transcription || clip.fullTranscription || ''} query={searchQuery} />
                           </div>
                         )}
                       </td>
@@ -2426,7 +2457,11 @@ export default function App() {
                 pipelineStatus.activeAnalysisJobs?.some((j) => j.sourcePath === parentRaw?.storagePath)
               )
             );
-            const hasTranscript = Boolean(clip.transcription && clip.transcription.trim().length > 0 && !isTranscribing);
+            const hasTranscript = Boolean(
+              (clip.fullTranscription || clip.transcription) &&
+              (clip.fullTranscription || clip.transcription)!.trim().length > 0 &&
+              !isTranscribing
+            );
 
             return (
               <div
@@ -2437,7 +2472,7 @@ export default function App() {
                   isTranscribing
                     ? 'Transcription is currently being processed...'
                     : hasTranscript
-                    ? 'Copy transcript to clipboard'
+                    ? 'Copy full transcript text to clipboard'
                     : 'No transcript available or still being processed'
                 }
               >
@@ -2587,6 +2622,47 @@ export default function App() {
             )}
           </div>
 
+          {/* Transcribe / Re-transcribe Full Audio Option */}
+          {(() => {
+            const clip = clipContextMenu.clip;
+            const parentRaw = rawFiles.find((r) => r.id === clip.parentFileId);
+            const isTranscribing = Boolean(
+              pipelineStatus && (
+                pipelineStatus.activeCopyJob?.sourcePath === parentRaw?.storagePath ||
+                pipelineStatus.activeAnalysisJobs?.some((j) => j.sourcePath === parentRaw?.storagePath)
+              )
+            );
+
+            return (
+              <div
+                className={`context-menu-item ${isTranscribing ? 'disabled' : ''}`}
+                data-testid="ctx-transcribe-full"
+                aria-disabled={isTranscribing}
+                style={{ color: 'var(--accent-cyan)' }}
+                onClick={!isTranscribing ? async () => {
+                  setClipContextMenu(null);
+                  setToastMessage('🎙️ Transcribing full audio in background...');
+                  try {
+                    const updated = await window.audioVault.transcribeClipRegion(clip.id);
+                    if (updated) {
+                      setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+                      setToastMessage('✅ Full transcript generated and saved to file!');
+                      setTimeout(() => setToastMessage(null), 3000);
+                    }
+                  } catch (err) {
+                    console.error('Failed to transcribe full audio:', err);
+                    setToastMessage('❌ Transcription failed');
+                    setTimeout(() => setToastMessage(null), 3000);
+                  }
+                } : undefined}
+                title="Transcribe full audio with Whisper and save .txt transcript alongside audio file"
+              >
+                <span>🎙️</span>
+                <span>{clip.fullTranscription || clip.transcription ? 'Re-transcribe Full Audio' : 'Transcribe Full Audio'}</span>
+              </div>
+            );
+          })()}
+
           {/* Copy Transcript Option */}
           {(() => {
             const clip = clipContextMenu.clip;
@@ -2597,7 +2673,11 @@ export default function App() {
                 pipelineStatus.activeAnalysisJobs?.some((j) => j.sourcePath === parentRaw?.storagePath)
               )
             );
-            const hasTranscript = Boolean(clip.transcription && clip.transcription.trim().length > 0 && !isTranscribing);
+            const hasTranscript = Boolean(
+              (clip.fullTranscription || clip.transcription) &&
+              (clip.fullTranscription || clip.transcription)!.trim().length > 0 &&
+              !isTranscribing
+            );
 
             return (
               <div
@@ -2618,8 +2698,8 @@ export default function App() {
                   {isTranscribing
                     ? 'Copy Transcript (Processing...)'
                     : hasTranscript
-                    ? 'Copy Transcript'
-                    : 'Copy Transcript'}
+                    ? 'Copy Full Transcript'
+                    : 'Copy Full Transcript'}
                 </span>
               </div>
             );

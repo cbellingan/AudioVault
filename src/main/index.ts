@@ -294,6 +294,13 @@ function setupIpcHandlers() {
         };
 
         dedupEngine.addVirtualClip(defaultClip);
+        pipelineOrchestrator.enqueueLocalFile(
+          targetPath,
+          defaultClip.title,
+          unmountVolumePath ? path.basename(unmountVolumePath) : 'Manual Import',
+          defaultClip.id,
+          rawFileId
+        );
         result.clips.push(defaultClip);
         result.importedCount++;
       } catch (err: any) {
@@ -505,7 +512,8 @@ function setupIpcHandlers() {
     if (!rawFile || !fs.existsSync(rawFile.storagePath)) return null;
 
     const start = typeof startSeconds === 'number' ? Math.max(0, startSeconds) : clip.startTimeSeconds;
-    const dur = typeof durationSeconds === 'number' ? Math.max(1, durationSeconds) : Math.min(60, clip.endTimeSeconds - start);
+    // Transcribe full duration if durationSeconds is not specified
+    const dur = typeof durationSeconds === 'number' ? Math.max(1, durationSeconds) : Math.max(1, clip.endTimeSeconds - start);
 
     const res = await audioEngine.transcribeAudioDetails(rawFile.storagePath, dur, start);
     if (!res || !res.text) return clip;
@@ -515,16 +523,67 @@ function setupIpcHandlers() {
       timestamp: [start, start + dur] as [number, number],
     }];
 
-    const existingChunks = clip.transcriptionChunks || [];
+    const isFullFile = start === 0 && dur >= (clip.endTimeSeconds - clip.startTimeSeconds - 0.5);
+    const existingFull = clip.fullTranscription || (clip.transcription ? clip.transcription.replace(/^\[(?:Local )?Whisper\]:\s*"?/i, '').replace(/"?$/, '').trim() : '');
+    const fullText = isFullFile || !existingFull ? res.text.trim() : `${existingFull} ${res.text.trim()}`;
+
+    // Save full transcript to .txt file alongside raw audio file
+    const ext = path.extname(rawFile.storagePath);
+    const transcriptPath = rawFile.storagePath.slice(0, -ext.length) + '.txt';
+    try {
+      fs.writeFileSync(transcriptPath, fullText, 'utf-8');
+      console.log(`[AudioVault IPC] 📝 Saved full transcript to: ${transcriptPath}`);
+    } catch (err) {
+      console.warn(`[AudioVault IPC] Failed to write transcript file: ${transcriptPath}`, err);
+    }
+
+    const snippet = fullText.length > 220 ? `${fullText.slice(0, 220).trim()}...` : fullText;
+    const existingChunks = isFullFile ? [] : (clip.transcriptionChunks || []);
     // Filter out chunks overlapping with this window
     const nonOverlapping = existingChunks.filter((c) => c.timestamp[1] <= start || c.timestamp[0] >= start + dur);
     const combinedChunks = [...nonOverlapping, ...newChunks].sort((a, b) => a.timestamp[0] - b.timestamp[0]);
 
     const updated = dedupEngine.updateVirtualClip(clipId, {
-      transcription: clip.transcription ? `${clip.transcription} | "${res.text}"` : `[Whisper]: "${res.text}"`,
+      transcription: `[Whisper]: "${snippet}"`,
+      fullTranscription: fullText,
+      transcriptPath,
       transcriptionChunks: combinedChunks,
+      updatedAt: new Date().toISOString(),
     });
     return updated || null;
+  });
+
+  ipcMain.handle('vault:get-clip-transcript', async (_, clipId: string): Promise<string | null> => {
+    const clips = dedupEngine.getVirtualClips();
+    const clip = clips.find((c) => c.id === clipId);
+    if (!clip) return null;
+
+    if (clip.fullTranscription && clip.fullTranscription.trim()) {
+      return clip.fullTranscription;
+    }
+
+    if (clip.transcriptPath && fs.existsSync(clip.transcriptPath)) {
+      try {
+        return fs.readFileSync(clip.transcriptPath, 'utf-8');
+      } catch {}
+    }
+
+    // Check next to raw file
+    const rawFile = dedupEngine.getRawFile(clip.parentFileId);
+    if (rawFile && rawFile.storagePath) {
+      const ext = path.extname(rawFile.storagePath);
+      const txtPath = rawFile.storagePath.slice(0, -ext.length) + '.txt';
+      if (fs.existsSync(txtPath)) {
+        try {
+          return fs.readFileSync(txtPath, 'utf-8');
+        } catch {}
+      }
+    }
+
+    if (clip.transcription) {
+      return clip.transcription.replace(/^\[(?:Local )?Whisper\]:\s*"?/i, '').replace(/"?$/, '').trim();
+    }
+    return null;
   });
 
   ipcMain.handle('vault:generate-ai-title', async (_, clipId: string): Promise<VirtualClip> => {

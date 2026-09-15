@@ -192,8 +192,8 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
     const window = await app.firstWindow();
     await window.waitForLoadState("domcontentloaded");
 
-    const firstRow = window.locator(".clips-table tbody tr").first();
-    await firstRow.click({ button: "right" });
+    const targetRow = window.locator(".clips-table tbody tr", { hasText: "Harmony Warmups" }).first();
+    await targetRow.click({ button: "right" });
 
     const contextMenu = window.locator(".clip-context-menu");
     await expect(contextMenu).toBeVisible();
@@ -219,21 +219,21 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
     // Save
     await modal.locator("button", { hasText: "Save Changes" }).click();
     await expect(modal).toBeHidden();
-    await expect(firstRow.locator("td:first-child")).toContainText(newTitle);
-    await expect(firstRow.locator(".tag-chip", { hasText: "StudioMaster" })).toBeVisible();
+    await expect(targetRow.locator("td:first-child")).toContainText(newTitle);
+    await expect(targetRow.locator(".tag-chip", { hasText: "StudioMaster" })).toBeVisible();
 
     // B. MP3 Export & Re-Export (ctx-export-mp3)
-    await firstRow.click({ button: "right" });
+    await targetRow.click({ button: "right" });
     const exportMp3 = window.locator("[data-testid=\"ctx-export-mp3\"]");
     await expect(exportMp3).toBeVisible();
     await exportMp3.click();
 
     // Wait for MP3 badge to appear
-    const mp3Badge = firstRow.locator(".badge-mp3");
+    const mp3Badge = targetRow.locator(".badge-mp3");
     await expect(mp3Badge).toBeVisible({ timeout: 10000 });
 
     // Right-click again: option should now read "Re-export to MP3"
-    await firstRow.click({ button: "right" });
+    await targetRow.click({ button: "right" });
     const reExportMp3 = window.locator("[data-testid=\"ctx-export-mp3\"]");
     await expect(reExportMp3).toContainText("Re-export to MP3");
 
@@ -250,33 +250,33 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
       (window as any).prompt = () => "LiveAcoustic";
     });
     await addTagItem.click();
-    await expect(firstRow.locator(".tag-chip", { hasText: "LiveAcoustic" })).toBeVisible({ timeout: 5000 });
+    await expect(targetRow.locator(".tag-chip", { hasText: "LiveAcoustic" })).toBeVisible({ timeout: 5000 });
 
     // E. Category Switcher: Test ALL 5 Categories on the same clip
     // 1. Concerts
-    await firstRow.click({ button: "right" });
+    await targetRow.click({ button: "right" });
     await window.locator("[data-testid=\"ctx-category-concerts\"]").click();
-    await expect(firstRow.locator(".cat-concerts")).toBeVisible();
+    await expect(targetRow.locator(".cat-concerts")).toBeVisible();
 
     // 2. Dictaphone
-    await firstRow.click({ button: "right" });
+    await targetRow.click({ button: "right" });
     await window.locator("[data-testid=\"ctx-category-dictaphone\"]").click();
-    await expect(firstRow.locator(".cat-dictaphone")).toBeVisible();
+    await expect(targetRow.locator(".cat-dictaphone")).toBeVisible();
 
     // 3. Meeting
-    await firstRow.click({ button: "right" });
+    await targetRow.click({ button: "right" });
     await window.locator("[data-testid=\"ctx-category-meeting\"]").click();
-    await expect(firstRow.locator(".cat-meeting")).toBeVisible();
+    await expect(targetRow.locator(".cat-meeting")).toBeVisible();
 
     // 4. Ambient
-    await firstRow.click({ button: "right" });
+    await targetRow.click({ button: "right" });
     await window.locator("[data-testid=\"ctx-category-ambient\"]").click();
-    await expect(firstRow.locator(".cat-ambient")).toBeVisible();
+    await expect(targetRow.locator(".cat-ambient")).toBeVisible();
 
     // 5. Back to Music
-    await firstRow.click({ button: "right" });
+    await targetRow.click({ button: "right" });
     await window.locator("[data-testid=\"ctx-category-music\"]").click();
-    await expect(firstRow.locator(".cat-music")).toBeVisible();
+    await expect(targetRow.locator(".cat-music")).toBeVisible();
 
     // F. AI Titling (ctx-generate-ai-title)
     const speechRow = window.locator(".clips-table tbody tr", { hasText: "260831-185613" }).first();
@@ -290,7 +290,7 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
 
     // G. Hide / Include in Library Toggle (ctx-toggle-hide)
     const totalRowsBeforeHide = await window.locator(".clips-table tbody tr").count();
-    await firstRow.click({ button: "right" });
+    await targetRow.click({ button: "right" });
     const hideToggle = window.locator("[data-testid=\"ctx-toggle-hide\"]");
     await expect(hideToggle).toContainText("Hide from Library");
     await hideToggle.click();
@@ -608,6 +608,10 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
     const speechRow = window.locator(".clips-table tbody tr", { hasText: "260831-185613" }).first();
     await speechRow.click({ button: "right" });
 
+    // Also verify Transcribe Full Audio option is present in context menu
+    const transcribeFullItem = window.locator("[data-testid=\"ctx-transcribe-full\"]");
+    await expect(transcribeFullItem).toBeVisible();
+
     const enabledCopyItem = window.locator("[data-testid=\"ctx-copy-transcript\"]");
     await expect(enabledCopyItem).toBeVisible();
     await expect(enabledCopyItem).not.toHaveClass(/disabled/);
@@ -616,7 +620,13 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
     await enabledCopyItem.click();
     const copyToast = window.locator("[data-testid=\"copy-toast\"]");
     await expect(copyToast).toBeVisible();
-    await expect(copyToast).toContainText("Transcript copied to clipboard");
+    await expect(copyToast).toContainText("transcript copied to clipboard");
+
+    // Verify sidecar .txt file exists on disk alongside the audio file
+    const sidecarTxtPath = path.join(sandbox.rawDir, "260831-185613.txt");
+    expect(fs.existsSync(sidecarTxtPath)).toBe(true);
+    const sidecarContent = fs.readFileSync(sidecarTxtPath, "utf-8");
+    expect(sidecarContent).toContain("Testing one two three local transcription works beautifully");
 
     await app.close();
   });
