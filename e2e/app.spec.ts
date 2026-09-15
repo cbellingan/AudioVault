@@ -585,4 +585,39 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
 
     await app.close();
   });
+
+  test("12. Clip Context Menu: Copy Transcript is greyed out when no transcript and copies text when ready", async () => {
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+
+    // 1. Right-click clip without transcript: Option is visible, but disabled / greyed out
+    const clipWithoutTranscript = window.locator(".clips-table tbody tr", { hasText: "ZOOM0001 - Harmony Warmups" }).first();
+    await clipWithoutTranscript.click({ button: "right" });
+
+    const disabledCopyItem = window.locator("[data-testid=\"ctx-copy-transcript\"]");
+    await expect(disabledCopyItem).toBeVisible();
+    await expect(disabledCopyItem).toHaveClass(/disabled/);
+    await expect(disabledCopyItem).toHaveAttribute("aria-disabled", "true");
+
+    // Click outside to dismiss context menu
+    await window.click("body", { position: { x: 10, y: 10 } });
+    await expect(window.locator(".clip-context-menu")).toBeHidden();
+
+    // 2. Right-click speech clip that HAS transcript: Option is enabled and copies text
+    const speechRow = window.locator(".clips-table tbody tr", { hasText: "260831-185613" }).first();
+    await speechRow.click({ button: "right" });
+
+    const enabledCopyItem = window.locator("[data-testid=\"ctx-copy-transcript\"]");
+    await expect(enabledCopyItem).toBeVisible();
+    await expect(enabledCopyItem).not.toHaveClass(/disabled/);
+    await expect(enabledCopyItem).toHaveAttribute("aria-disabled", "false");
+
+    await enabledCopyItem.click();
+    const copyToast = window.locator("[data-testid=\"copy-toast\"]");
+    await expect(copyToast).toBeVisible();
+    await expect(copyToast).toContainText("Transcript copied to clipboard");
+
+    await app.close();
+  });
 });

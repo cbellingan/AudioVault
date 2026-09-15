@@ -604,6 +604,43 @@ body {
   color: var(--accent-rose);
 }
 
+.context-menu-item.disabled {
+  opacity: 0.4;
+  cursor: not-allowed !important;
+  color: var(--text-muted) !important;
+  pointer-events: none;
+}
+
+.context-menu-item.disabled:hover {
+  background: transparent !important;
+  color: var(--text-muted) !important;
+}
+
+.copy-toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: rgba(15, 23, 42, 0.95);
+  backdrop-filter: blur(12px);
+  color: var(--accent-cyan);
+  border: 1px solid rgba(34, 211, 238, 0.4);
+  padding: 0.65rem 1.1rem;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  animation: fadeInToast 0.2s ease-out;
+}
+
+@keyframes fadeInToast {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .context-divider {
   height: 1px;
   background: var(--border-color);

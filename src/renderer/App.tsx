@@ -133,6 +133,7 @@ export default function App() {
   const [playbackProgress, setPlaybackProgress] = useState(0.2); // 0.0 - 1.0
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatusEvent | null>(null);
   const [deletedFilesCount, setDeletedFilesCount] = useState(0);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const activeIngestingVolumePathRef = useRef<string | null>(null);
   
   // Table Sorting state: starts desc on creation / import time
@@ -1311,6 +1312,38 @@ export default function App() {
     }
   }
 
+  // Copy transcription to clipboard
+  async function handleCopyTranscript(clip: VirtualClip) {
+    if (!clip.transcription || !clip.transcription.trim()) return;
+    const cleanText = clip.transcription
+      .replace(/^\[Local Whisper\]:\s*"?/, '')
+      .replace(/"?$/, '')
+      .trim();
+    const textToCopy = cleanText || clip.transcription.trim();
+
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(textToCopy);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = textToCopy;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setToastMessage('📋 Transcript copied to clipboard!');
+      setTimeout(() => setToastMessage(null), 2500);
+    } catch (err) {
+      console.error('Failed to copy transcript to clipboard:', err);
+    } finally {
+      setClipContextMenu(null);
+      setContextMenu(null);
+    }
+  }
+
   // Filter clips by category, tag, source, and global search query
   const filteredClips = clips.filter((c) => {
     if (c.isExcluded) return false;
@@ -2383,6 +2416,43 @@ export default function App() {
           >
             🎙️ Transcribe Region with Whisper
           </div>
+
+          {activeClip && (() => {
+            const clip = activeClip;
+            const parentRaw = rawFiles.find((r) => r.id === clip.parentFileId);
+            const isTranscribing = Boolean(
+              pipelineStatus && (
+                pipelineStatus.activeCopyJob?.sourcePath === parentRaw?.storagePath ||
+                pipelineStatus.activeAnalysisJobs?.some((j) => j.sourcePath === parentRaw?.storagePath)
+              )
+            );
+            const hasTranscript = Boolean(clip.transcription && clip.transcription.trim().length > 0 && !isTranscribing);
+
+            return (
+              <div
+                className={`context-menu-item ${hasTranscript ? '' : 'disabled'}`}
+                aria-disabled={!hasTranscript}
+                onClick={hasTranscript ? () => handleCopyTranscript(clip) : undefined}
+                title={
+                  isTranscribing
+                    ? 'Transcription is currently being processed...'
+                    : hasTranscript
+                    ? 'Copy transcript to clipboard'
+                    : 'No transcript available or still being processed'
+                }
+              >
+                <span>📋</span>
+                <span>
+                  {isTranscribing
+                    ? 'Copy Transcript (Processing...)'
+                    : hasTranscript
+                    ? 'Copy Transcript'
+                    : 'Copy Transcript'}
+                </span>
+              </div>
+            );
+          })()}
+
           <div className="context-divider" />
           <div className="context-menu-item" onClick={() => handleClassifySelection('music')}>
             🎵 Classify as Music
@@ -2516,6 +2586,44 @@ export default function App() {
               <span>🤖 Generate AI Title (Local LLM)</span>
             )}
           </div>
+
+          {/* Copy Transcript Option */}
+          {(() => {
+            const clip = clipContextMenu.clip;
+            const parentRaw = rawFiles.find((r) => r.id === clip.parentFileId);
+            const isTranscribing = Boolean(
+              pipelineStatus && (
+                pipelineStatus.activeCopyJob?.sourcePath === parentRaw?.storagePath ||
+                pipelineStatus.activeAnalysisJobs?.some((j) => j.sourcePath === parentRaw?.storagePath)
+              )
+            );
+            const hasTranscript = Boolean(clip.transcription && clip.transcription.trim().length > 0 && !isTranscribing);
+
+            return (
+              <div
+                className={`context-menu-item ${hasTranscript ? '' : 'disabled'}`}
+                data-testid="ctx-copy-transcript"
+                aria-disabled={!hasTranscript}
+                onClick={hasTranscript ? () => handleCopyTranscript(clip) : undefined}
+                title={
+                  isTranscribing
+                    ? 'Transcription is currently being processed...'
+                    : hasTranscript
+                    ? 'Copy full transcript text to clipboard'
+                    : 'No transcript available or still being processed'
+                }
+              >
+                <span>📋</span>
+                <span>
+                  {isTranscribing
+                    ? 'Copy Transcript (Processing...)'
+                    : hasTranscript
+                    ? 'Copy Transcript'
+                    : 'Copy Transcript'}
+                </span>
+              </div>
+            );
+          })()}
 
           <div className="context-divider" />
 
@@ -2951,6 +3059,13 @@ export default function App() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div className="copy-toast" data-testid="copy-toast">
+          <span>{toastMessage}</span>
         </div>
       )}
     </div>
