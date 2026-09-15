@@ -87,9 +87,10 @@ export class PipelineOrchestrator extends EventEmitter {
       const fingerprint = this.dedupEngine.computeFileFingerprint(filePath);
       if (
         this.dedupEngine.isFingerprintImported(fingerprint) ||
-        this.dedupEngine.isDeletedFile(fingerprint, filePath)
+        this.dedupEngine.isDeletedFile(fingerprint, filePath) ||
+        this.isFileInProgress(filePath)
       ) {
-        console.log(`[AudioVault Pipeline] ⏭️ Skipping already imported or deleted file: ${path.basename(filePath)}`);
+        console.log(`[AudioVault Pipeline] ⏭️ Skipping already imported, in-progress, or deleted file: ${path.basename(filePath)}`);
         continue;
       }
 
@@ -221,6 +222,23 @@ export class PipelineOrchestrator extends EventEmitter {
       canUnmountSdCard: this.sdCardCopyFinished && !!this.pendingUnmountVolumePath,
       unmountMessage: this.unmountMessage,
     };
+  }
+
+  public isFileInProgress(filePath: string): boolean {
+    if (this.activeCopyJob && this.activeCopyJob.sourcePath === filePath) return true;
+    if (this.copyQueue.some((j) => j.sourcePath === filePath)) return true;
+    if (this.analysisQueue.some((j) => j.sourcePath === filePath)) return true;
+    if (Array.from(this.activeAnalysisJobs.values()).some((j) => j.sourcePath === filePath)) return true;
+    return false;
+  }
+
+  public isVolumeInProgress(volumePath: string): boolean {
+    if (this.pendingUnmountVolumePath && this.pendingUnmountVolumePath === volumePath && !this.sdCardCopyFinished) {
+      return true;
+    }
+    if (this.activeCopyJob && this.activeCopyJob.sourcePath.startsWith(volumePath)) return true;
+    if (this.copyQueue.some((j) => j.sourcePath.startsWith(volumePath))) return true;
+    return false;
   }
 
   /**

@@ -48,6 +48,10 @@ const volumeWatcher = new VolumeWatcher(dedupEngine);
 const audioEngine = new AudioEngine();
 const titleService = new TitleService();
 const pipelineOrchestrator = new PipelineOrchestrator(dedupEngine, volumeWatcher, audioEngine, titleService);
+volumeWatcher.setInProgressCheckers(
+  (filePath) => pipelineOrchestrator.isFileInProgress(filePath),
+  (volumePath) => pipelineOrchestrator.isVolumeInProgress(volumePath)
+);
 
 // Register custom protocol for streaming local audio to renderer
 protocol.registerSchemesAsPrivileged([
@@ -135,7 +139,7 @@ app.whenReady().then(() => {
         const events = await volumeWatcher.scanConnectedVolumes();
         if (events.length > 0 && events.some((e) => e.newFilesCount > 0)) {
           for (const ev of events) {
-            if (ev.newFilesCount > 0) {
+            if (ev.newFilesCount > 0 && !pipelineOrchestrator.isVolumeInProgress(ev.volumePath)) {
               mainWindow.webContents.send('vault:volume-detected', ev);
             }
           }

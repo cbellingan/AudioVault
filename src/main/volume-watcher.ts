@@ -11,9 +11,19 @@ const AUDIO_EXTENSIONS = new Set(['.wav', '.mp3', '.m4a', '.aif', '.aiff', '.fla
 
 export class VolumeWatcher {
   private dedupEngine: DedupEngine;
+  private isPathInProgressFn?: (filePath: string) => boolean;
+  private isVolumeInProgressFn?: (volumePath: string) => boolean;
 
   constructor(dedupEngine: DedupEngine) {
     this.dedupEngine = dedupEngine;
+  }
+
+  public setInProgressCheckers(
+    isFileInProgress: (filePath: string) => boolean,
+    isVolumeInProgress: (volumePath: string) => boolean
+  ) {
+    this.isPathInProgressFn = isFileInProgress;
+    this.isVolumeInProgressFn = isVolumeInProgress;
   }
 
   /**
@@ -34,6 +44,11 @@ export class VolumeWatcher {
         if (volName === 'Macintosh HD' || volName.startsWith('.')) continue;
 
         const volumePath = path.join(volumesDir, volName);
+        if (this.isVolumeInProgressFn && this.isVolumeInProgressFn(volumePath)) {
+          // Volume is actively being ingested in the background pipeline
+          continue;
+        }
+
         try {
           const stats = fs.statSync(volumePath);
           if (!stats.isDirectory()) continue;
@@ -85,7 +100,8 @@ export class VolumeWatcher {
               try {
                 const stat = fs.statSync(fullPath);
                 const fingerprint = this.dedupEngine.computeFileFingerprint(fullPath);
-                const isAlreadyImported = this.dedupEngine.isFingerprintImported(fingerprint);
+                const isInProgress = this.isPathInProgressFn ? this.isPathInProgressFn(fullPath) : false;
+                const isAlreadyImported = this.dedupEngine.isFingerprintImported(fingerprint) || isInProgress;
                 const isDeleted = this.dedupEngine.isDeletedFile(fingerprint, fullPath);
 
                 results.push({

@@ -133,6 +133,7 @@ export default function App() {
   const [playbackProgress, setPlaybackProgress] = useState(0.2); // 0.0 - 1.0
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatusEvent | null>(null);
   const [deletedFilesCount, setDeletedFilesCount] = useState(0);
+  const activeIngestingVolumePathRef = useRef<string | null>(null);
   
   // Table Sorting state: starts desc on creation / import time
   type SortField = 'title' | 'category' | 'duration' | 'tags' | 'confidence' | 'createdAt';
@@ -372,10 +373,25 @@ export default function App() {
     if (window.audioVault) {
       loadInitialVaultData();
       const unsubscribeVolume = window.audioVault.onVolumeDetected((event) => {
+        // Skip popup if this volume is already being actively ingested
+        if (
+          activeIngestingVolumePathRef.current &&
+          event.volumePath === activeIngestingVolumePathRef.current
+        ) {
+          return;
+        }
         setDetectedVolume(event);
       });
       const unsubscribePipeline = window.audioVault.onPipelineStatus((status) => {
         setPipelineStatus(status);
+        if (
+          status &&
+          !status.isSdCardActive &&
+          !status.activeCopyJob &&
+          (!status.activeAnalysisJobs || status.activeAnalysisJobs.length === 0)
+        ) {
+          activeIngestingVolumePathRef.current = null;
+        }
         window.audioVault.getVirtualClips().then((all) => {
           if (all.length > 0) setClips(all);
         });
@@ -894,6 +910,9 @@ export default function App() {
   // Handle hardware ingest confirmation (Non-blocking pipeline)
   async function handleConfirmIngest() {
     if (!detectedVolume) return;
+    const volPath = detectedVolume.volumePath;
+    activeIngestingVolumePathRef.current = volPath;
+
     const pathsToImport = detectedVolume.files
       .filter((f) => !f.isAlreadyImported && !f.isDeleted)
       .map((f) => f.path);
@@ -1592,8 +1611,10 @@ export default function App() {
         </div>
       )}
 
-      {/* Hardware Ingest Notification Banner */}
-      {detectedVolume && (
+      {/* Hardware Ingest Notification Banner (Suppressed if volume is actively copying/analyzing) */}
+      {detectedVolume &&
+        (!activeIngestingVolumePathRef.current || detectedVolume.volumePath !== activeIngestingVolumePathRef.current) &&
+        (!pipelineStatus || !pipelineStatus.activeCopyJob || !detectedVolume.volumePath || !pipelineStatus.activeCopyJob.sourcePath.startsWith(detectedVolume.volumePath)) && (
         <div className="ingest-banner">
           <div className="banner-left">
             <span style={{ fontSize: '1.2rem' }}>⚡</span>
