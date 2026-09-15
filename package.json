@@ -6,6 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "icons": "bash scripts/generate-icons.sh",
+    "package:mac": "npm run build && electron-builder --mac --arm64 --dir",
+    "dist:mac": "npm run build && electron-builder --mac --arm64",
+    "dist:mas": "npm run build && electron-builder --mac mas --arm64",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -37,6 +41,7 @@
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^33.2.1",
+    "electron-builder": "^26.15.3",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
     "vite-plugin-electron": "^0.29.0",
@@ -47,5 +52,72 @@
     "@xenova/transformers": "^2.17.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
+  },
+  "build": {
+    "appId": "com.audiovault.app",
+    "productName": "AudioVault",
+    "copyright": "Copyright © 2026 Carl Bellingan",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/node_modules/@xenova/transformers/**",
+      "**/node_modules/onnxruntime-node/**"
+    ],
+    "mac": {
+      "category": "public.app-category.music",
+      "icon": "build/icon.icns",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["arm64"]
+        }
+      ],
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "AudioVault requires access to your microphone for in-app voice, acoustic, and memo recording.",
+        "NSDocumentsFolderUsageDescription": "AudioVault stores and organizes your audio recordings safely.",
+        "NSDesktopFolderUsageDescription": "AudioVault allows importing audio files directly from your desktop.",
+        "NSDownloadsFolderUsageDescription": "AudioVault allows exporting studio-quality MP3s to your Downloads folder."
+      }
+    },
+    "mas": {
+      "category": "public.app-category.music",
+      "icon": "build/icon.icns",
+      "entitlements": "build/entitlements.mas.plist",
+      "entitlementsInherit": "build/entitlements.mas.plist",
+      "hardenedRuntime": false
+    },
+    "dmg": {
+      "title": "AudioVault ${version}",
+      "icon": "build/icon.icns",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
+      "window": {
+        "width": 540,
+        "height": 380
+      }
+    }
   }
 }

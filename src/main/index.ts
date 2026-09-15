@@ -31,6 +31,17 @@ import {
   DeletedFileRecord,
 } from '../shared/types';
 
+// Configure isolated test sandbox if running in automated test mode
+if (process.env.AUDIOVAULT_USER_DATA_DIR) {
+  app.setPath('userData', process.env.AUDIOVAULT_USER_DATA_DIR);
+}
+
+// Parse CLI flags for vault directory if provided (e.g. --vault-dir=/path/to/vault)
+const customVaultArg = process.argv.find((arg) => arg.startsWith('--vault-dir='));
+if (customVaultArg) {
+  process.env.AUDIOVAULT_VAULT_DIR = customVaultArg.replace('--vault-dir=', '');
+}
+
 let mainWindow: BrowserWindow | null = null;
 const dedupEngine = new DedupEngine();
 const volumeWatcher = new VolumeWatcher(dedupEngine);
@@ -292,6 +303,16 @@ function setupIpcHandlers() {
       if (!unmountResult.success) {
         result.errors.push(unmountResult.message);
       }
+    }
+
+    if (mainWindow && !mainWindow.isDestroyed() && result.importedCount > 0) {
+      mainWindow.webContents.send('vault:pipeline-status', {
+        stage: 'idle',
+        message: `Imported ${result.importedCount} takes`,
+        processedFiles: result.importedCount,
+        totalFiles: result.importedCount,
+        progressPercent: 100,
+      });
     }
 
     return result;

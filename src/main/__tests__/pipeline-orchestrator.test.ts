@@ -88,74 +88,73 @@ describe('Pipeline Orchestrator (Serial SD Reader & Parallel Worker Pool)', () =
     expect(status.failedJobs).toBe(0);
   });
 
-  it('verifies live user vault takes (including large 500MB BWF files) parse with 0 errors', () => {
-    const liveVaultDir = path.join(process.env.HOME || '', 'Music', 'AudioVault');
-    const liveRawDir = path.join(liveVaultDir, 'raw');
+  it('processes and validates acoustic features across audio formats with 0 errors', () => {
+    // Generate synthetic files covering multiple channel configurations and sample rates
+    const filesToTest = [
+      { name: 'TEST_44K_MONO.WAV', sr: 44100, ch: 1, dur: 1.0 },
+      { name: 'TEST_48K_STEREO.WAV', sr: 48000, ch: 2, dur: 2.0 },
+      { name: 'TEST_SPEECH_BURST.WAV', sr: 48000, ch: 1, dur: 1.5, speech: true },
+    ];
 
-    if (fs.existsSync(liveRawDir)) {
-      const files = fs.readdirSync(liveRawDir).filter((f) => f.endsWith('.WAV') || f.endsWith('.wav'));
-      console.log(`[Test] Auditing ${files.length} real files in live vault...`);
+    for (const spec of filesToTest) {
+      const fullPath = path.join(tempVaultDir, spec.name);
+      fs.writeFileSync(
+        fullPath,
+        generateSyntheticWavBuffer({
+          sampleRate: spec.sr,
+          channels: spec.ch,
+          durationSeconds: spec.dur,
+          isPulsedSpeech: spec.speech,
+        })
+      );
 
-      for (const f of files) {
-        const fullPath = path.join(liveRawDir, f);
-        const stats = fs.statSync(fullPath);
-        console.log(`[Test] Auditing: ${f} (${(stats.size / 1024 / 1024).toFixed(1)} MB)...`);
-
-        const result = audioEngine.analyzeWavFile(fullPath, 100);
-        expect(result.features.sampleRate).toBeGreaterThanOrEqual(8000);
-        expect(result.features.channels).toBeGreaterThanOrEqual(1);
-        expect(result.features.durationSeconds).toBeGreaterThan(0);
-        expect(result.peaks.length).toBe(100);
-        expect(Number.isFinite(result.features.rms)).toBe(true);
-        expect(Number.isFinite(result.features.dynamicRangeDb)).toBe(true);
-        console.log(`[Test] ✅ Validated: ${f} -> ${result.features.durationSeconds}s, ${result.features.sampleRate}Hz, ${result.features.channels}ch`);
-      }
+      const result = audioEngine.analyzeWavFile(fullPath, 100);
+      expect(result.features.sampleRate).toBe(spec.sr);
+      expect(result.features.channels).toBe(spec.ch);
+      expect(result.features.durationSeconds).toBeCloseTo(spec.dur, 1);
+      expect(result.peaks.length).toBe(100);
+      expect(Number.isFinite(result.features.rms)).toBe(true);
+      expect(Number.isFinite(result.features.dynamicRangeDb)).toBe(true);
     }
   });
 
-  it('registers all pending takes directly into the live AudioVault registry', async () => {
-    const liveDedup = new DedupEngine();
-    const liveWatcher = new VolumeWatcher(liveDedup);
-    const liveAudio = new AudioEngine();
-    const liveOrchestrator = new PipelineOrchestrator(liveDedup, liveWatcher, liveAudio);
+  it('registers pending takes into an isolated test vault without affecting production', async () => {
+    const sandboxVaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sandbox-live-ingest-'));
+    try {
+      const sandboxDedup = new DedupEngine(sandboxVaultDir);
+      const sandboxWatcher = new VolumeWatcher(sandboxDedup);
+      const sandboxAudio = new AudioEngine();
+      const sandboxOrchestrator = new PipelineOrchestrator(sandboxDedup, sandboxWatcher, sandboxAudio);
 
-    const pendingCount = liveOrchestrator.enqueueUnprocessedRawFiles();
-    console.log(`[Live Ingest] Queued ${pendingCount} pending files into SSD analysis pool...`);
+      // Pre-seed 3 raw files in sandbox raw folder
+      const rawDir = sandboxDedup.getRawDir();
+      const file1 = path.join(rawDir, 'SANDBOX_TAKE_1.WAV');
+      const file2 = path.join(rawDir, 'SANDBOX_TAKE_2.WAV');
+      fs.writeFileSync(file1, generateSyntheticWavBuffer({ durationSeconds: 0.5 }));
+      fs.writeFileSync(file2, generateSyntheticWavBuffer({ durationSeconds: 0.8, isPulsedSpeech: true }));
 
-    if (pendingCount > 0) {
+      const pendingCount = sandboxOrchestrator.enqueueUnprocessedRawFiles();
+      expect(pendingCount).toBe(2);
+
       await new Promise<void>((resolve) => {
-        liveOrchestrator.on('pipeline-status', (status) => {
-          if (status.completedJobs >= pendingCount || (status.completedJobs + status.failedJobs >= pendingCount)) {
+        sandboxOrchestrator.on('pipeline-status', (status) => {
+          if (status.completedJobs >= pendingCount || status.completedJobs + status.failedJobs >= pendingCount) {
             resolve();
           }
         });
-        setTimeout(resolve, 15000);
+        setTimeout(resolve, 3000);
       });
+
+      const rawFiles = sandboxDedup.getAllRawFiles();
+      const clips = sandboxDedup.getVirtualClips();
+
+      expect(rawFiles.length).toBe(2);
+      expect(clips.length).toBe(2);
+      expect(rawFiles.every((r) => r.durationSeconds > 0)).toBe(true);
+    } finally {
+      try {
+        fs.rmSync(sandboxVaultDir, { recursive: true, force: true });
+      } catch {}
     }
-
-    const rawFiles = liveDedup.getAllRawFiles();
-    const clips = liveDedup.getVirtualClips();
-
-    // Backfill any takes that were recorded with duration 0 prior to BWF chunk parser
-    for (const f of rawFiles) {
-      if (f.durationSeconds === 0 && fs.existsSync(f.storagePath)) {
-        const analysis = liveAudio.analyzeWavFile(f.storagePath, 100);
-        f.durationSeconds = analysis.features.durationSeconds;
-        f.sampleRate = analysis.features.sampleRate;
-        f.channels = analysis.features.channels;
-        f.waveformPeaks = analysis.peaks;
-
-        const clip = clips.find((c) => c.parentFileId === f.id);
-        if (clip) {
-          clip.endTimeSeconds = analysis.features.durationSeconds;
-        }
-      }
-    }
-    liveDedup.saveRegistry();
-
-    console.log(`[Live Ingest] Final registered files count: ${rawFiles.length}, clips count: ${clips.length}`);
-    expect(rawFiles.length).toBeGreaterThanOrEqual(16);
-    expect(clips.length).toBeGreaterThanOrEqual(16);
-    expect(rawFiles.every((r) => r.durationSeconds > 0)).toBe(true);
   });
 });

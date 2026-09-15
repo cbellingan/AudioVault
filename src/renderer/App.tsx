@@ -2477,6 +2477,7 @@ export default function App() {
 
           <div
             className="context-menu-item"
+            data-testid="ctx-edit-title"
             onClick={() => handleOpenMetadataModal(clipContextMenu.clip)}
           >
             ✏️ Edit Title & Metadata...
@@ -2484,6 +2485,7 @@ export default function App() {
 
           <div
             className="context-menu-item"
+            data-testid="ctx-generate-ai-title"
             style={{ color: 'var(--accent-cyan)' }}
             onClick={() => handleGenerateAiTitle(clipContextMenu.clip.id)}
           >
@@ -2499,6 +2501,7 @@ export default function App() {
           {getClipStoragePath(clipContextMenu.clip) && (
             <div
               className="context-menu-item"
+              data-testid="ctx-open-in-finder"
               style={{ color: 'var(--accent-amber, #fbbf24)', fontWeight: 500 }}
               onClick={() => handleShowInFinder(getClipStoragePath(clipContextMenu.clip)!)}
               title={
@@ -2513,6 +2516,7 @@ export default function App() {
 
           <div
             className="context-menu-item"
+            data-testid="ctx-export-mp3"
             onClick={() => handleExportClipMp3(clipContextMenu.clip, false)}
           >
             {isExportingMp3 === clipContextMenu.clip.id
@@ -2526,6 +2530,7 @@ export default function App() {
 
           <div
             className="context-menu-item"
+            data-testid="ctx-add-tag"
             onClick={() => handleQuickAddTag(clipContextMenu.clip)}
           >
             🏷️ Add Sub-Tag...
@@ -2547,30 +2552,35 @@ export default function App() {
 
           <div
             className="context-menu-item"
+            data-testid="ctx-category-music"
             onClick={() => handleQuickChangeCategory(clipContextMenu.clip.id, 'music')}
           >
             🎵 Music
           </div>
           <div
             className="context-menu-item"
+            data-testid="ctx-category-concerts"
             onClick={() => handleQuickChangeCategory(clipContextMenu.clip.id, 'concerts')}
           >
             🎸 Concerts
           </div>
           <div
             className="context-menu-item"
+            data-testid="ctx-category-dictaphone"
             onClick={() => handleQuickChangeCategory(clipContextMenu.clip.id, 'dictaphone')}
           >
             🎙️ Dictaphone
           </div>
           <div
             className="context-menu-item"
+            data-testid="ctx-category-meeting"
             onClick={() => handleQuickChangeCategory(clipContextMenu.clip.id, 'meeting')}
           >
             👥 Meeting
           </div>
           <div
             className="context-menu-item"
+            data-testid="ctx-category-ambient"
             onClick={() => handleQuickChangeCategory(clipContextMenu.clip.id, 'ambient')}
           >
             🌲 Ambient
@@ -2580,6 +2590,7 @@ export default function App() {
 
           <div
             className="context-menu-item"
+            data-testid="ctx-toggle-hide"
             onClick={() => {
               const c = clipContextMenu.clip;
               setClips((prev) =>

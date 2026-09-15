@@ -3,8 +3,8 @@
 > **Hardware Ingestion, Local-First AI Classifier, and Non-Destructive Audio Vault for Field Recorders & Creators**
 
 [![Tests](https://img.shields.io/badge/tests-24%20passed-success)](https://github.com/cbellingan/AudioVault)
-[![E2E](https://img.shields.io/badge/e2e-10%2F10%20playwright-success)](https://github.com/cbellingan/AudioVault)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-blue)](https://github.com/cbellingan/AudioVault)
+[![E2E](https://img.shields.io/badge/e2e-11%2F11%20playwright-success)](https://github.com/cbellingan/AudioVault)
+[![Standalone](https://img.shields.io/badge/macOS-dmg%20%7C%20app-blue)](https://github.com/cbellingan/AudioVault)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 AudioVault is an Electron + React + TypeScript desktop application engineered for musicians, sound designers, podcasters, and field recordists using hardware recorders (Zoom H1essential/H4n/H6, Tascam, Sound Devices, Sony PCM). It automates the raw media lifecycle: lightning-fast hardware ingestion, on-device AI transcription and classification, rich waveform editing, and studio metadata export—completely offline and private.
@@ -122,18 +122,46 @@ npm install
 npm run dev
 ```
 
-### Production Build
+### Production Build & Standalone macOS Packaging
 
 ```bash
+# 1. Compile Vite frontend and Electron main processes
 npm run build
+
+# 2. Generate studio squircle multi-resolution Apple iconset (.icns & PNGs)
+npm run icons
+
+# 3. Package standalone macOS .app bundle
+npm run package:mac
+# Output: release/mac-arm64/AudioVault.app
+
+# 4. Generate drag-and-drop macOS .dmg installer & zip distribution
+npm run dist:mac
+# Output: release/AudioVault-1.0.0-arm64.dmg
 ```
-This bundles the Vite renderer into `dist/` and compiles the Electron main and preload processes into `dist-electron/`.
+
+To install and run:
+- Double click `release/AudioVault-1.0.0-arm64.dmg` and drag `AudioVault` into `/Applications`.
+- Or run directly from terminal:
+  ```bash
+  open release/mac-arm64/AudioVault.app
+  ```
+
+---
+
+## 🛡️ Sacred Production Isolation Architecture
+
+Development and testing are architecturally decoupled from the user's live audio vault:
+- **Production (`~/Music/AudioVault`) is sacred**: Tests, development watchers, and test runners never read, modify, or pollute production data.
+- **Environment & CLI Redirection**: `AUDIOVAULT_VAULT_DIR` and `--vault-dir=<path>` redirect all file operations, exports, and `registry.json` writes.
+- **Isolated User Storage**: `AUDIOVAULT_USER_DATA_DIR` isolates Electron's `userData`, localStorage, and cookies so test sessions cannot alter production application state.
+- **Automated Ephemeral Sandboxes**: The test harness spins up dedicated temporary directories (`/tmp/audiovault-e2e-sandbox-...`) with synthetic fixtures, guaranteeing deterministic verification with zero risk of production regressions.
 
 ---
 
 ## 🧪 Verification & Testing
 
-AudioVault maintains rigorous test coverage spanning unit tests, audio parsing logic, AI title generation, and full end-to-end Electron automation:
+AudioVault maintains exhaustive test coverage across 35 automated tests spanning unit tests, audio parsing logic, AI titling, and end-to-end Electron integration:
 
 ```bash
 # Typecheck
@@ -142,7 +170,7 @@ npm run typecheck
 # Run Vitest unit & integration suites (24 tests)
 npm test
 
-# Run full Playwright Electron E2E integration test suite (10 tests)
+# Run full Playwright Electron E2E integration test suite (11 tests in isolated sandbox)
 npm run test:e2e
 ```
 

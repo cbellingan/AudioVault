@@ -13,7 +13,7 @@ export class DedupEngine {
 
   constructor(customVaultDir?: string) {
     const homeDir = process.env.HOME || process.env.USERPROFILE || '.';
-    this.vaultDir = customVaultDir || path.join(homeDir, 'Music', 'AudioVault');
+    this.vaultDir = customVaultDir || process.env.AUDIOVAULT_VAULT_DIR || path.join(homeDir, 'Music', 'AudioVault');
     this.registryFile = path.join(this.vaultDir, 'registry.json');
     this.settings = {
       vaultDirectory: this.vaultDir,

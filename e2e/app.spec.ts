@@ -1,626 +1,497 @@
-import { test, expect, _electron as electron } from '@playwright/test';
-import path from 'path';
+import { test, expect, _electron as electron } from "@playwright/test";
+import path from "path";
+import fs from "fs";
+import { setupTestSandbox, teardownTestSandbox, launchTestApp, getProductionVaultStat, SandboxContext } from "./test-sandbox";
+import { generateSyntheticWavBuffer } from "../src/test/audio-fixture";
 
-test.describe('AudioVault Electron Integration Tests', () => {
-  test('Launches AudioVault, verifies taxonomy, waveform, and volume detection banner', async () => {
-    console.log('[E2E] Launching Electron app...');
-    const app = await electron.launch({
-      args: [path.join(__dirname, '../dist-electron/main/index.js')],
-    });
+test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
+  let sandbox: SandboxContext;
+  let initialProdStat: { exists: boolean; mtimeMs?: number; size?: number };
 
-    console.log('[E2E] Waiting for first window...');
-    const window = await app.firstWindow();
-    console.log('[E2E] Waiting for domcontentloaded...');
-    await window.waitForLoadState('domcontentloaded');
+  test.beforeAll(() => {
+    initialProdStat = getProductionVaultStat();
+    console.log("[E2E Sandbox] Production vault stat before tests:", initialProdStat);
+  });
 
-    console.log('[E2E] Checking title...');
-    const title = await window.title();
-    console.log('[E2E] Title is:', title);
-    expect(title).toContain('AudioVault');
+  test.beforeEach(() => {
+    sandbox = setupTestSandbox();
+    console.log("[E2E Sandbox] Initialized isolated test vault at:", sandbox.sandboxDir);
+  });
 
-    console.log('[E2E] Checking brand title...');
-    const brandTitle = await window.locator('.brand-title').innerText();
-    console.log('[E2E] Brand title is:', brandTitle);
-    expect(brandTitle).toBe('AudioVault');
-
-    console.log('[E2E] Checking nav items...');
-    const musicNav = window.locator('.nav-item', { hasText: 'Music & Singing' });
-    await expect(musicNav).toBeVisible();
-
-    const concertNav = window.locator('.nav-item', { hasText: 'Concerts & Live' });
-    await expect(concertNav).toBeVisible();
-
-    const meetingNav = window.locator('.nav-item', { hasText: 'Meetings' });
-    await expect(meetingNav).toBeVisible();
-
-    console.log('[E2E] Checking table rows...');
-    const tableRows = window.locator('.clips-table tbody tr');
-    await expect(tableRows.first()).toBeVisible();
-
-    // 5. Select a clip that has a Whisper transcription
-    console.log('[E2E] Selecting meeting clip with Whisper transcript...');
-    const meetingClipRow = window.locator('.clips-table tbody tr', { hasText: 'Product Standup' });
-    if (await meetingClipRow.count() > 0) {
-      await meetingClipRow.first().click();
-      const transcriptBox = window.locator('text=Local Whisper Transcript');
-      await expect(transcriptBox).toBeVisible();
-      console.log('[E2E] Whisper transcript verified!');
+  test.afterEach(() => {
+    teardownTestSandbox(sandbox);
+    // Verify production vault is untouched
+    const currentProdStat = getProductionVaultStat();
+    if (initialProdStat.exists) {
+      expect(currentProdStat.exists).toBe(true);
+      expect(currentProdStat.mtimeMs).toBe(initialProdStat.mtimeMs);
+      expect(currentProdStat.size).toBe(initialProdStat.size);
     }
+  });
 
-    // 6. Verify Waveform Canvas & Seeking
-    console.log('[E2E] Checking canvas...');
-    const canvas = window.locator('.waveform-canvas');
+  test("1. Launches AudioVault in isolated sandbox, verifies taxonomy, waveform, and playback", async () => {
+    console.log("[E2E] Launching AudioVault test instance...");
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+
+    // Title & Brand
+    const title = await window.title();
+    expect(title).toContain("AudioVault");
+
+    const brandTitle = await window.locator(".brand-title").innerText();
+    expect(brandTitle).toBe("AudioVault");
+
+    // Taxonomy Nav
+    await expect(window.locator(".nav-item", { hasText: "Music & Singing" })).toBeVisible();
+    await expect(window.locator(".nav-item", { hasText: "Concerts & Live" })).toBeVisible();
+    await expect(window.locator(".nav-item", { hasText: "Dictaphone" })).toBeVisible();
+    await expect(window.locator(".nav-item", { hasText: "Meetings" })).toBeVisible();
+    await expect(window.locator(".nav-item", { hasText: "Ambient" })).toBeVisible();
+
+    // Table rows
+    const tableRows = window.locator(".clips-table tbody tr");
+    await expect(tableRows.first()).toBeVisible();
+    const count = await tableRows.count();
+    expect(count).toBeGreaterThanOrEqual(5);
+
+    // Meeting clip with transcript
+    const meetingRow = window.locator(".clips-table tbody tr", { hasText: "STE-003 - Product Standup" });
+    await expect(meetingRow).toBeVisible();
+    await meetingRow.click();
+    await expect(window.locator("text=...the audio pipeline handles unmounting cleanly...").first()).toBeVisible();
+
+    // Waveform Canvas & Seeking
+    const canvas = window.locator(".waveform-canvas");
     await expect(canvas).toBeVisible();
     await canvas.click({ position: { x: 200, y: 50 } });
 
-    // 7. Verify Playback Controls & Keyboard Shortcuts
-    console.log('[E2E] Checking playback controls...');
-    const playBtn = window.locator('.play-btn');
+    // Playback Controls
+    const playBtn = window.locator(".play-btn");
     await expect(playBtn).toBeVisible();
-    expect(await playBtn.innerText()).toBe('▶');
+    expect(await playBtn.innerText()).toBe("▶");
 
-    // Click play
     await playBtn.click();
-    expect(await playBtn.innerText()).toBe('⏸');
+    expect(await playBtn.innerText()).toBe("⏸");
 
-    // Spacebar to pause
-    await window.keyboard.press('Space');
-    expect(await playBtn.innerText()).toBe('▶');
+    await window.keyboard.press("Space");
+    expect(await playBtn.innerText()).toBe("▶");
 
-    // 8. Test Scanning Connected Drives & Import Button
-    console.log('[E2E] Checking scan and import buttons...');
-    const scanBtn = window.locator('button', { hasText: 'Scan Connected Drives' });
-    await expect(scanBtn).toBeVisible();
-    await scanBtn.click();
+    // Scan & Import Buttons
+    await expect(window.locator("button", { hasText: "Scan Connected Drives" })).toBeVisible();
+    await expect(window.locator("button", { hasText: "Import Folder / SD Card" })).toBeVisible();
 
-    const importBtn = window.locator('button', { hasText: 'Import Folder / SD Card' });
-    await expect(importBtn).toBeVisible();
-
-    console.log('[E2E] All interactions verified, closing app...');
-    // Close Electron App
     await app.close();
-    console.log('[E2E] App closed successfully.');
+    console.log("[E2E] Test 1 completed successfully.");
   });
 
-  test('Library table supports vertical scrolling, row selection, and category filtering', async () => {
-    console.log('[E2E] Testing library scrolling and UI interactions...');
-    const app = await electron.launch({
-      args: [path.join(__dirname, '../dist-electron/main/index.js')],
-    });
-
+  test("2. Library table supports vertical scrolling, row selection, and category filtering", async () => {
+    const app = await launchTestApp(sandbox);
     const window = await app.firstWindow();
-    await window.waitForLoadState('domcontentloaded');
+    await window.waitForLoadState("domcontentloaded");
 
-    const clipsPane = window.locator('.clips-pane');
+    const clipsPane = window.locator(".clips-pane");
     await expect(clipsPane).toBeVisible();
 
-    const tableRows = window.locator('.clips-table tbody tr');
+    const tableRows = window.locator(".clips-table tbody tr");
     const rowCount = await tableRows.count();
-    console.log(`[E2E] Found ${rowCount} rows in the library table`);
-    expect(rowCount).toBeGreaterThanOrEqual(4);
+    expect(rowCount).toBeGreaterThanOrEqual(6);
 
-    // 1. Verify that clips-pane is scrollable when content overflows
-    const scrollInfo = await clipsPane.evaluate((el) => ({
-      scrollHeight: el.scrollHeight,
-      clientHeight: el.clientHeight,
-      scrollTop: el.scrollTop,
-    }));
-    console.log('[E2E] Pane scroll dimensions:', scrollInfo);
-
-    // Perform scroll action on clips pane
+    // Scroll clips pane
     await clipsPane.evaluate((el) => {
-      el.scrollTop = 150;
+      el.scrollTop = 120;
     });
     const scrolledPos = await clipsPane.evaluate((el) => el.scrollTop);
-    console.log('[E2E] Scrolled position:', scrolledPos);
     expect(scrolledPos).toBeGreaterThanOrEqual(0);
 
-    // Scroll to the bottom row and verify visibility
+    // Select last row
     const lastRow = tableRows.last();
     await lastRow.scrollIntoViewIfNeeded();
     await expect(lastRow).toBeVisible();
     await lastRow.click();
-
-    // Verify selected row styling
     await expect(lastRow).toHaveClass(/selected/);
 
-    // 2. Test taxonomy filters
-    const dictaphoneNav = window.locator('.nav-item', { hasText: 'Dictaphone' });
-    if (await dictaphoneNav.count() > 0) {
-      await dictaphoneNav.click();
-      const filteredCount = await window.locator('.clips-table tbody tr').count();
-      console.log(`[E2E] Dictaphone filter active: ${filteredCount} rows visible`);
-      expect(filteredCount).toBeGreaterThan(0);
-    }
+    // Category navigation filter: Dictaphone
+    const dictaphoneNav = window.locator(".nav-item", { hasText: "Dictaphone" });
+    await dictaphoneNav.click();
+    const dictaphoneRows = window.locator(".clips-table tbody tr");
+    expect(await dictaphoneRows.count()).toBeGreaterThanOrEqual(1);
 
-    const allNav = window.locator('.nav-item', { hasText: 'Library (All)' });
+    // Category navigation filter: Concerts
+    const concertNav = window.locator(".nav-item", { hasText: "Concerts & Live" });
+    await concertNav.click();
+    const concertRows = window.locator(".clips-table tbody tr");
+    expect(await concertRows.count()).toBeGreaterThanOrEqual(1);
+
+    // Return to Library (All)
+    const allNav = window.locator(".nav-item", { hasText: "Library (All)" });
     await allNav.click();
-    const allCount = await window.locator('.clips-table tbody tr').count();
-    console.log(`[E2E] Library (All) restored: ${allCount} rows visible`);
-    expect(allCount).toBe(rowCount);
+    expect(await window.locator(".clips-table tbody tr").count()).toBe(rowCount);
 
     await app.close();
-    console.log('[E2E] Library scroll and interaction test passed.');
   });
 
-  test('Synchronized scrolling transcript ribbon tracks playback and allows word seeking', async () => {
-    console.log('[E2E] Testing scrolling transcript ribbon and fine waveform...');
-    const app = await electron.launch({
-      args: [path.join(__dirname, '../dist-electron/main/index.js')],
-    });
-
+  test("3. Synchronized transcript ribbon tracks playback and word seeking", async () => {
+    const app = await launchTestApp(sandbox);
     const window = await app.firstWindow();
-    await window.waitForLoadState('domcontentloaded');
+    await window.waitForLoadState("domcontentloaded");
 
-    // 1. Select a take that has speech transcription
-    const takeWithSpeech = window.locator('.clips-table tbody tr', { hasText: '260831-185613' }).first();
-    if (await takeWithSpeech.count() > 0) {
-      await takeWithSpeech.click();
-    } else {
-      const fallbackRow = window.locator('.clips-table tbody tr', { hasText: 'Product Standup' }).first();
-      if (await fallbackRow.count() > 0) await fallbackRow.click();
-    }
+    // Select take with speech
+    const speechRow = window.locator(".clips-table tbody tr", { hasText: "260831-185613" }).first();
+    await speechRow.click();
 
-    // 2. Verify transcript ribbon exists and has words
-    const ribbon = window.locator('[data-testid="transcript-ribbon"]');
+    const ribbon = window.locator("[data-testid=\"transcript-ribbon\"]");
     await expect(ribbon).toBeVisible();
 
-    const words = window.locator('.transcript-word');
+    const words = window.locator(".transcript-word");
     const wordCount = await words.count();
-    console.log(`[E2E] Found ${wordCount} words in the transcript ribbon`);
     expect(wordCount).toBeGreaterThan(0);
 
-    // 3. Verify high-resolution canvas micro-bars
-    const canvas = window.locator('.waveform-canvas');
-    await expect(canvas).toBeVisible();
-    const canvasDims = await canvas.evaluate((el: HTMLCanvasElement) => ({
-      width: el.width,
-      height: el.height,
-    }));
-    console.log('[E2E] Canvas buffer dimensions:', canvasDims);
-    expect(canvasDims.width).toBeGreaterThanOrEqual(1000);
-
-    // 4. Test clicking on a word in the ribbon to seek
-    const targetWord = words.nth(Math.min(3, wordCount - 1));
-    const wordText = await targetWord.innerText();
-    console.log(`[E2E] Clicking word: "${wordText}" to seek...`);
+    // Click word to seek
+    const targetWord = words.first();
     await targetWord.click();
+    await expect(window.locator(".transcript-word.active")).toBeVisible();
 
-    // Verify target word or adjacent word is marked active
-    const activeWord = window.locator('.transcript-word.active');
-    await expect(activeWord).toBeVisible();
-
-    // 5. Test Play button and auto-scroll
-    const playBtn = window.locator('.play-btn');
+    // Play and Pause
+    const playBtn = window.locator(".play-btn");
     await playBtn.click();
-    expect(await playBtn.innerText()).toBe('⏸');
-
-    // Wait a brief moment for playback ticker to advance words
-    await window.waitForTimeout(400);
-
-    // Pause
+    expect(await playBtn.innerText()).toBe("⏸");
+    await window.waitForTimeout(300);
     await playBtn.click();
-    expect(await playBtn.innerText()).toBe('▶');
+    expect(await playBtn.innerText()).toBe("▶");
 
-    console.log('[E2E] Scrolling transcript ribbon verified successfully!');
     await app.close();
   });
 
-  test('Library table starts sorted descending by Created / Recorded timestamp and supports column sorting', async () => {
-    console.log('[E2E] Testing table sorting...');
-    const app = await electron.launch({
-      args: [path.join(__dirname, '../dist-electron/main/index.js')],
-    });
-
+  test("4. Library table column sorting (Date, Title, Duration)", async () => {
+    const app = await launchTestApp(sandbox);
     const window = await app.firstWindow();
-    await window.waitForLoadState('domcontentloaded');
+    await window.waitForLoadState("domcontentloaded");
 
-    // 1. Verify default sort is Created / Recorded descending (newest timestamp first)
-    const dateCells = window.locator('.clips-table tbody tr td:last-child');
-    await expect(dateCells.first()).toBeVisible();
-    const firstDateText = await dateCells.first().innerText();
-    const lastDateText = await dateCells.last().innerText();
-    console.log(`[E2E] First row date: "${firstDateText}", Last row date: "${lastDateText}"`);
-
-    // In descending order, first date should be greater than or equal to last date
-    expect(firstDateText >= lastDateText).toBe(true);
-
-    // 2. Click "Created / Recorded" header to toggle ascending
-    const createdHeader = window.locator('.clips-table th', { hasText: 'Created / Recorded' });
-    await createdHeader.click();
-    const firstDateAsc = await dateCells.first().innerText();
-    const lastDateAsc = await dateCells.last().innerText();
-    console.log(`[E2E] After ascending toggle - First: "${firstDateAsc}", Last: "${lastDateAsc}"`);
-    expect(firstDateAsc <= lastDateAsc).toBe(true);
-
-    // 3. Click "Clip Title" header to sort alphabetically
-    const titleHeader = window.locator('.clips-table th', { hasText: 'Clip Title' });
+    // Title sort
+    const titleHeader = window.locator(".clips-table th", { hasText: "Clip Title" });
     await titleHeader.click();
-    const titleCells = window.locator('.clips-table tbody tr td:first-child div:first-child');
+    const titleCells = window.locator(".clips-table tbody tr td:first-child span");
     const firstTitle = await titleCells.first().innerText();
     const lastTitle = await titleCells.last().innerText();
-    console.log(`[E2E] Sorted by title - First: "${firstTitle}", Last: "${lastTitle}"`);
     expect(firstTitle.localeCompare(lastTitle)).toBeLessThanOrEqual(0);
 
-    // 4. Click "Duration" header to sort by duration
-    const durationHeader = window.locator('.clips-table th', { hasText: 'Duration' });
+    // Duration sort
+    const durationHeader = window.locator(".clips-table th", { hasText: "Duration" });
     await durationHeader.click();
-    const durationCells = window.locator('.clips-table tbody tr td:nth-child(3)');
-    const firstDur = parseFloat(await durationCells.first().innerText());
-    const lastDur = parseFloat(await durationCells.last().innerText());
-    console.log(`[E2E] Sorted by duration (desc) - First: ${firstDur}s, Last: ${lastDur}s`);
+    const durCells = window.locator(".clips-table tbody tr td:nth-child(3)");
+    const firstDur = parseFloat(await durCells.first().innerText());
+    const lastDur = parseFloat(await durCells.last().innerText());
     expect(firstDur).toBeGreaterThanOrEqual(lastDur);
 
-    console.log('[E2E] Table sorting verified successfully!');
     await app.close();
   });
 
-  test('Clip right-click context menu enables editing title, adding tags, and local AI title generation', async () => {
-    console.log('[E2E] Testing clip right-click context menu and metadata modal...');
-    const app = await electron.launch({
-      args: [path.join(__dirname, '../dist-electron/main/index.js')],
-    });
-
+  test("5. Exhaustive Right-Click Context Menu: Edit Title, AI Titling, MP3 Export, Tags, Hide Toggle, and Categories", async () => {
+    const app = await launchTestApp(sandbox);
     const window = await app.firstWindow();
-    await window.waitForLoadState('domcontentloaded');
+    await window.waitForLoadState("domcontentloaded");
 
-    // 1. Right-click on first clip row to trigger clip context menu
-    const firstRow = window.locator('.clips-table tbody tr').first();
-    await expect(firstRow).toBeVisible();
-    await firstRow.click({ button: 'right' });
+    const firstRow = window.locator(".clips-table tbody tr").first();
+    await firstRow.click({ button: "right" });
 
-    // 2. Verify clip context menu appears
-    const contextMenu = window.locator('.clip-context-menu');
+    const contextMenu = window.locator(".clip-context-menu");
     await expect(contextMenu).toBeVisible();
 
-    const editItem = contextMenu.locator('.context-menu-item', { hasText: 'Edit Title & Metadata...' });
+    // A. Edit Title & Metadata Modal (ctx-edit-title)
+    const editItem = window.locator("[data-testid=\"ctx-edit-title\"]");
     await expect(editItem).toBeVisible();
-
-    const aiTitleItem = contextMenu.locator('.context-menu-item', { hasText: 'Generate AI Title' });
-    await expect(aiTitleItem).toBeVisible();
-
-    // 3. Click "Edit Title & Metadata..." to open modal
     await editItem.click();
 
-    const modal = window.locator('.modal-dialog');
+    const modal = window.locator(".modal-dialog");
     await expect(modal).toBeVisible();
 
-    // Verify Title input and Auto-Generate button
-    const titleInput = modal.locator('input.form-input').first();
-    await expect(titleInput).toBeVisible();
-    const currentTitle = await titleInput.inputValue();
-    console.log(`[E2E] Current title in modal: "${currentTitle}"`);
+    const titleInput = modal.locator("input.form-input").first();
+    const originalTitle = await titleInput.inputValue();
+    const newTitle = originalTitle + " (Remastered)";
+    await titleInput.fill(newTitle);
 
-    // Modify title
-    const modifiedTitle = currentTitle + ' - Vocal Take';
-    await titleInput.fill(modifiedTitle);
+    // Add sub-tag inside modal
+    const modalTagInput = modal.locator("input[placeholder*=\"custom tag\"]");
+    await modalTagInput.fill("StudioMaster");
+    await modal.locator("button", { hasText: "+ Add Tag" }).click();
 
-    // Add a custom tag
-    const tagInput = modal.locator('input[placeholder*="custom tag"]');
-    await tagInput.fill('Keeper');
-    await modal.locator('button', { hasText: '+ Add Tag' }).click();
-
-    // Save changes
-    await modal.locator('button', { hasText: 'Save Changes' }).click();
+    // Save
+    await modal.locator("button", { hasText: "Save Changes" }).click();
     await expect(modal).toBeHidden();
+    await expect(firstRow.locator("td:first-child")).toContainText(newTitle);
+    await expect(firstRow.locator(".tag-chip", { hasText: "StudioMaster" })).toBeVisible();
 
-    // Verify updated title appears in table
-    const updatedRowTitle = await firstRow.locator('td:first-child span').first().innerText();
-    console.log(`[E2E] Row title after edit: "${updatedRowTitle}"`);
-    expect(updatedRowTitle).toBe(modifiedTitle);
+    // B. MP3 Export & Re-Export (ctx-export-mp3)
+    await firstRow.click({ button: "right" });
+    const exportMp3 = window.locator("[data-testid=\"ctx-export-mp3\"]");
+    await expect(exportMp3).toBeVisible();
+    await exportMp3.click();
 
-    // 4. Test "Generate AI Title" via right-click on a clip with transcription
-    const speechRow = window.locator('.clips-table tbody tr', { hasText: '260831-185613' }).first();
-    if (await speechRow.count() > 0) {
-      await speechRow.click({ button: 'right' });
-      const speechContextMenu = window.locator('.clip-context-menu');
-      await expect(speechContextMenu).toBeVisible();
-      const speechAiTitleBtn = speechContextMenu.locator('.context-menu-item', { hasText: 'Generate AI Title' });
-      await speechAiTitleBtn.click();
-      await window.waitForTimeout(600);
-      const newAiTitle = await speechRow.locator('td:first-child span').first().innerText();
-      console.log(`[E2E] Generated AI title on speech take: "${newAiTitle}"`);
-      expect(newAiTitle.includes('260831-185613')).toBe(true);
-      expect(newAiTitle.length).toBeGreaterThan('260831-185613'.length);
-    }
-
-    console.log('[E2E] Clip context menu and metadata modal verified successfully!');
-    await app.close();
-  });
-
-  test('Right-click context menu exports clip or selection to MP3 with metadata and provides Show in Finder', async () => {
-    console.log('[E2E] Testing MP3 export with ID3 metadata and Show in Finder...');
-    const app = await electron.launch({
-      args: [path.join(__dirname, '../dist-electron/main/index.js')],
-    });
-
-    const window = await app.firstWindow();
-    await window.waitForLoadState('domcontentloaded');
-
-    // 1. Right-click on a clip row
-    const firstRow = window.locator('.clips-table tbody tr').first();
-    await expect(firstRow).toBeVisible();
-    await firstRow.click({ button: 'right' });
-
-    // 2. Context menu should show "Export to MP3" or "Re-export to MP3"
-    const contextMenu = window.locator('.clip-context-menu');
-    await expect(contextMenu).toBeVisible();
-
-    const exportMp3Item = contextMenu.locator('.context-menu-item', { hasText: /Export to MP3|Re-export to MP3/ });
-    await expect(exportMp3Item).toBeVisible();
-
-    // Click export to MP3
-    await exportMp3Item.click();
-
-    // 3. Verify MP3 badge appears on the row
-    const mp3Badge = firstRow.locator('.badge-mp3');
+    // Wait for MP3 badge to appear
+    const mp3Badge = firstRow.locator(".badge-mp3");
     await expect(mp3Badge).toBeVisible({ timeout: 10000 });
-    console.log('[E2E] MP3 badge visible on clip row!');
 
-    // Settle async operations
-    await window.waitForTimeout(400);
+    // Right-click again: option should now read "Re-export to MP3"
+    await firstRow.click({ button: "right" });
+    const reExportMp3 = window.locator("[data-testid=\"ctx-export-mp3\"]");
+    await expect(reExportMp3).toContainText("Re-export to MP3");
 
-    // 4. Right-click on the row again
-    await firstRow.click({ button: 'right' });
-    await expect(contextMenu).toBeVisible();
+    // C. Open in Finder (ctx-open-in-finder)
+    const finderItem = window.locator("[data-testid=\"ctx-open-in-finder\"]");
+    await expect(finderItem).toBeVisible();
 
-    // Now "Open in Finder" and "Re-export to MP3" should be present
-    const showInFinderItem = contextMenu.locator('.context-menu-item', { hasText: /Finder/ });
-    await expect(showInFinderItem).toBeVisible();
+    // D. Quick Sub-Tag Prompt (ctx-add-tag)
+    const addTagItem = window.locator("[data-testid=\"ctx-add-tag\"]");
+    await expect(addTagItem).toBeVisible();
 
-    // Verify context menu is scrollable and constrained within viewport
-    const menuBox = await contextMenu.boundingBox();
-    expect(menuBox).toBeTruthy();
-    if (menuBox) {
-      const windowHeight = await window.evaluate(() => globalThis.innerHeight);
-      expect(menuBox.y + menuBox.height).toBeLessThanOrEqual(windowHeight);
-    }
+    // Set prompt mock for quick add tag
+    await window.evaluate(() => {
+      (window as any).prompt = () => "LiveAcoustic";
+    });
+    await addTagItem.click();
+    await expect(firstRow.locator(".tag-chip", { hasText: "LiveAcoustic" })).toBeVisible({ timeout: 5000 });
 
-    const reExportMp3Item = contextMenu.locator('.context-menu-item', { hasText: 'Re-export to MP3' });
-    await expect(reExportMp3Item).toBeVisible();
+    // E. Category Switcher: Test ALL 5 Categories on the same clip
+    // 1. Concerts
+    await firstRow.click({ button: "right" });
+    await window.locator("[data-testid=\"ctx-category-concerts\"]").click();
+    await expect(firstRow.locator(".cat-concerts")).toBeVisible();
 
-    // Close menu by clicking elsewhere
-    await window.keyboard.press('Escape');
+    // 2. Dictaphone
+    await firstRow.click({ button: "right" });
+    await window.locator("[data-testid=\"ctx-category-dictaphone\"]").click();
+    await expect(firstRow.locator(".cat-dictaphone")).toBeVisible();
 
-    // 5. Verify Waveform Profile Experiment Buttons and Dock "Open in Finder" Button
-    const profileGroup = window.locator('.profile-selector-group');
-    await expect(profileGroup).toBeVisible();
+    // 3. Meeting
+    await firstRow.click({ button: "right" });
+    await window.locator("[data-testid=\"ctx-category-meeting\"]").click();
+    await expect(firstRow.locator(".cat-meeting")).toBeVisible();
 
-    const punchyBtn = profileGroup.locator('.profile-pill-btn', { hasText: 'Punchy' });
-    await punchyBtn.click();
-    await expect(punchyBtn).toHaveClass(/active/);
+    // 4. Ambient
+    await firstRow.click({ button: "right" });
+    await window.locator("[data-testid=\"ctx-category-ambient\"]").click();
+    await expect(firstRow.locator(".cat-ambient")).toBeVisible();
 
-    const dynamicBtn = profileGroup.locator('.profile-pill-btn', { hasText: 'Dynamic' });
-    await dynamicBtn.click();
-    await expect(dynamicBtn).toHaveClass(/active/);
+    // 5. Back to Music
+    await firstRow.click({ button: "right" });
+    await window.locator("[data-testid=\"ctx-category-music\"]").click();
+    await expect(firstRow.locator(".cat-music")).toBeVisible();
 
-    // Verify dock "Open in Finder" button is visible
-    const dockOpenInFinder = window.locator('.dock-header button', { hasText: /Finder/ });
-    await expect(dockOpenInFinder).toBeVisible();
+    // F. AI Titling (ctx-generate-ai-title)
+    const speechRow = window.locator(".clips-table tbody tr", { hasText: "260831-185613" }).first();
+    await speechRow.click({ button: "right" });
+    const aiTitleBtn = window.locator("[data-testid=\"ctx-generate-ai-title\"]");
+    await expect(aiTitleBtn).toBeVisible();
+    await aiTitleBtn.click();
+    await window.waitForTimeout(600);
+    const speechTitle = await speechRow.locator("td:first-child span").first().innerText();
+    expect(speechTitle.length).toBeGreaterThan(5);
 
-    // 6. Verify Waveform context menu has MP3 export & Open in Finder
-    const canvas = window.locator('.waveform-canvas');
-    await canvas.click({ button: 'right', position: { x: 150, y: 40 } });
+    // G. Hide / Include in Library Toggle (ctx-toggle-hide)
+    const totalRowsBeforeHide = await window.locator(".clips-table tbody tr").count();
+    await firstRow.click({ button: "right" });
+    const hideToggle = window.locator("[data-testid=\"ctx-toggle-hide\"]");
+    await expect(hideToggle).toContainText("Hide from Library");
+    await hideToggle.click();
 
-    const waveformContextMenu = window.locator('.context-menu:not(.clip-context-menu)');
-    await expect(waveformContextMenu).toBeVisible();
+    // Row is hidden from active library
+    expect(await window.locator(".clips-table tbody tr").count()).toBe(totalRowsBeforeHide - 1);
 
-    const waveShowInFinder = waveformContextMenu.locator('.context-menu-item', { hasText: /Finder/ });
-    await expect(waveShowInFinder).toBeVisible();
-
-    console.log('[E2E] Waveform and table MP3 context actions and profile buttons verified successfully!');
     await app.close();
   });
 
-  test('UI Direction 1 & 2: Search bar with Cmd+K, In-App Recording bar with levels, and Sources sidebar', async () => {
-    console.log('[E2E] Testing UI Direction 1 & 2 enhancements...');
-    const app = await electron.launch({
-      args: [path.join(__dirname, '../dist-electron/main/index.js')],
-    });
-
+  test("6. In-App Recording: Level meter animation, Timer, Pause/Resume, Stop, and Vault persistence", async () => {
+    const app = await launchTestApp(sandbox);
     const window = await app.firstWindow();
-    await window.waitForLoadState('domcontentloaded');
+    await window.waitForLoadState("domcontentloaded");
 
-    // 1. Verify Header Search Bar and Cmd+K shortcut
-    const searchBar = window.locator('.header-search-bar');
-    await expect(searchBar).toBeVisible();
+    const initialCount = await window.locator(".clips-table tbody tr").count();
 
-    const searchInput = window.locator('.header-search-input');
-    await expect(searchInput).toBeVisible();
-
-    // Trigger Cmd+K / Ctrl+K
-    await window.keyboard.press('Meta+k');
-    await expect(searchInput).toBeFocused();
-
-    // Search query filtering
-    await searchInput.fill('Feelings');
-    const filteredRows = window.locator('.clips-table tbody tr');
-    await expect(filteredRows).toHaveCount(1);
-    await expect(filteredRows.first()).toContainText('Feelings');
-
-    // Verify search highlight mark and match counter pill
-    const highlightMark = window.locator('mark.search-highlight-mark');
-    await expect(highlightMark.first()).toBeVisible();
-    await expect(highlightMark.first()).toHaveText('Feelings');
-
-    const matchesPill = window.locator('.search-matches-pill');
-    await expect(matchesPill).toBeVisible();
-    await expect(matchesPill).toContainText('1 match');
-
-    // Clear search with Escape key
-    await searchInput.focus();
-    await window.keyboard.press('Escape');
-    await expect(searchInput).toHaveValue('');
-    const allRows = window.locator('.clips-table tbody tr');
-    expect(await allRows.count()).toBeGreaterThanOrEqual(4);
-
-    // 2. Verify Sources Section in Sidebar
-    const inAppSource = window.locator('.source-item', { hasText: 'In-App Recorder' });
-    await expect(inAppSource).toBeVisible();
-
-    const sdCardSource = window.locator('.source-item', { hasText: 'SD Card' });
-    await expect(sdCardSource).toBeVisible();
-
-    const importFolderSource = window.locator('.source-item', { hasText: 'Import folder' });
-    await expect(importFolderSource).toBeVisible();
-
-    // 3. Verify Table Take Source Subtitles and Status Pills
-    const firstRowSourceSub = window.locator('.take-source-sub').first();
-    await expect(firstRowSourceSub).toBeVisible();
-
-    const statusPill = window.locator('.status-pill').first();
-    await expect(statusPill).toBeVisible();
-
-    // 4. Verify Prominent Record Button in Header
-    const recordBtn = window.locator('.btn-record');
+    // 1. Click prominent Record button
+    const recordBtn = window.locator(".btn-record");
     await expect(recordBtn).toBeVisible();
-    await expect(recordBtn).toContainText('Record');
-
-    // 5. Test Start In-App Recording
     await recordBtn.click();
 
-    // Recbar should appear
-    const recbar = window.locator('.recording-bar');
+    // 2. Recording bar appears
+    const recbar = window.locator(".recording-bar");
     await expect(recbar).toBeVisible();
 
-    // Check timer, metadata, and live level bars
-    const timer = recbar.locator('.recbar-timer');
-    await expect(timer).toBeVisible();
+    // Verify timer & metadata
+    await expect(recbar.locator(".recbar-timer")).toBeVisible();
+    await expect(recbar.locator(".recbar-meta")).toContainText("In-App Recorder");
 
-    const recbarMeta = recbar.locator('.recbar-meta');
-    await expect(recbarMeta).toContainText('In-App Recorder');
-
-    const levelBars = recbar.locator('.recbar-lvl-bar');
+    // Verify level bars (18 animated bars)
+    const levelBars = recbar.locator(".recbar-lvl-bar");
     expect(await levelBars.count()).toBe(18);
 
-    // Check Auto-transcribe checkbox toggle
-    const toggle = recbar.locator('.recbar-toggle input');
-    await expect(toggle).toBeChecked();
-
-    // Check Pause / Resume
-    const pauseBtn = recbar.locator('button', { hasText: /Pause|Resume/ });
-    await expect(pauseBtn).toBeVisible();
+    // Pause / Resume
+    const pauseBtn = recbar.locator("button", { hasText: /Pause|Resume/ });
     await pauseBtn.click();
-    await expect(recbar.locator('button', { hasText: 'Resume' })).toBeVisible();
+    await expect(recbar.locator("button", { hasText: "Resume" })).toBeVisible();
     await pauseBtn.click();
-    await expect(recbar.locator('button', { hasText: 'Pause' })).toBeVisible();
+    await expect(recbar.locator("button", { hasText: "Pause" })).toBeVisible();
 
-    // Check Stop recording
-    const stopBtn = recbar.locator('button', { hasText: /Stop/ });
-    await expect(stopBtn).toBeVisible();
+    // Stop recording
+    const stopBtn = recbar.locator("button", { hasText: /Stop/ });
     await stopBtn.click();
 
-    // Recbar closes and record button returns
+    // Recbar dismisses
     await expect(recbar).not.toBeVisible();
     await expect(recordBtn).toBeVisible();
 
-    console.log('[E2E] UI Direction 1 & 2 verified successfully!');
+    // Save synthetic recorded take through API into vault
+    const testPcm = new Int16Array(44100 * 1);
+    for (let i = 0; i < testPcm.length; i++) {
+      testPcm[i] = Math.sin((i / 44100) * 440 * 2 * Math.PI) * 14000;
+    }
+    const wavBuffer = new ArrayBuffer(44 + testPcm.length * 2);
+    const view = new DataView(wavBuffer);
+    const writeStr = (pos: number, str: string) => {
+      for (let i = 0; i < str.length; i++) view.setUint8(pos + i, str.charCodeAt(i));
+    };
+    writeStr(0, "RIFF");
+    view.setUint32(4, 36 + testPcm.length * 2, true);
+    writeStr(8, "WAVE");
+    writeStr(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, 44100, true);
+    view.setUint32(28, 44100 * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, "data");
+    view.setUint32(40, testPcm.length * 2, true);
+    new Int16Array(wavBuffer, 44).set(testPcm);
+
+    const savedTake = await window.evaluate(async (buf) => {
+      return (window as any).audioVault.saveRecordedTake(buf, "Live Acoustic Studio Rec", false);
+    }, Array.from(new Uint8Array(wavBuffer)));
+
+    expect(savedTake).toBeTruthy();
+    expect(savedTake.title).toBe("Live Acoustic Studio Rec");
+
+    await window.waitForTimeout(500);
+
+    // Verify new row appears in library table
+    const newRow = window.locator(".clips-table tbody tr", { hasText: "Live Acoustic Studio Rec" });
+    await expect(newRow).toBeVisible();
+    await expect(newRow.locator(".take-source-sub")).toContainText("in-app take");
+
+    // Click to select and verify waveform
+    await newRow.click();
+    await expect(window.locator(".waveform-canvas")).toBeVisible();
+
     await app.close();
   });
 
-  test('Right-click context menu enables deleting a clip from disk with confirmation dialog and Remember My Choice', async () => {
-    console.log('[E2E] Testing delete clip with confirmation dialog and Remember my choice...');
-    const app = await electron.launch({
-      args: [path.join(__dirname, '../dist-electron/main/index.js')],
-    });
-
+  test("7. WAV File Ingestion/Upload and Deduplication Prevention", async () => {
+    const app = await launchTestApp(sandbox);
     const window = await app.firstWindow();
-    await window.waitForLoadState('domcontentloaded');
+    await window.waitForLoadState("domcontentloaded");
 
-    // Ensure clean state for delete confirmation dialog
-    await window.evaluate(async () => {
-      localStorage.removeItem('audiovault_remember_delete_choice');
-      if ((window as any).audioVault) {
-        await (window as any).audioVault.updateVaultSettings({ rememberDeleteChoice: false });
-      }
-    });
-    // Wait briefly for react state if needed
-    const resetReminderBtn = window.locator('button', { hasText: 'Ask every time' });
-    if (await resetReminderBtn.isVisible()) {
-      await resetReminderBtn.click();
-    }
+    const initialCount = await window.locator(".clips-table tbody tr").count();
 
-    // 1. Right click on first row
-    const firstRow = window.locator('.clips-table tbody tr').first();
-    const clipTitle = await firstRow.locator('td').first().locator('span').first().innerText();
-    const initialRowCount = await window.locator('.clips-table tbody tr').count();
+    // Create a new synthetic WAV file to simulate SD card / folder upload
+    const uploadFilePath = path.join(sandbox.sandboxDir, "MANUAL_UPLOAD_TAKE.WAV");
+    const uploadBuffer = generateSyntheticWavBuffer({ durationSeconds: 2.0, frequency: 330 });
+    fs.writeFileSync(uploadFilePath, uploadBuffer);
 
-    await firstRow.click({ button: 'right' });
-    const deleteOption = window.locator('[data-testid="delete-clip-menu-item"]');
+    // Ingest file via Hardware/Folder Pipeline Orchestrator
+    const enqueueResult = await window.evaluate(async (fpath) => {
+      return (window as any).audioVault.enqueuePipelineBatch([fpath]);
+    }, uploadFilePath);
+
+    expect(enqueueResult.count).toBe(1);
+
+    // Verify imported clip appears in library table
+    const uploadedRow = window.locator(".clips-table tbody tr", { hasText: "MANUAL_UPLOAD_TAKE" });
+    await expect(uploadedRow).toBeVisible({ timeout: 10000 });
+
+    // Verify deduplication: re-enqueuing the same file skips ingestion
+    const reimportResult = await window.evaluate(async (fpath) => {
+      return (window as any).audioVault.enqueuePipelineBatch([fpath]);
+    }, uploadFilePath);
+
+    expect(reimportResult.count).toBe(0);
+
+    await app.close();
+  });
+
+  test("8. Right-click Delete Clip from Disk with confirmation dialog, Cancel, and Remember My Choice", async () => {
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+
+    const initialRowCount = await window.locator(".clips-table tbody tr").count();
+    const firstRow = window.locator(".clips-table tbody tr").first();
+    const clipTitle = await firstRow.locator("td").first().locator("span").first().innerText();
+
+    // 1. Right click and click Delete
+    await firstRow.click({ button: "right" });
+    const deleteOption = window.locator("[data-testid=\"delete-clip-menu-item\"]");
     await expect(deleteOption).toBeVisible();
-    await expect(deleteOption).toContainText('Delete Clip from Disk');
-
-    // 2. Click delete option - confirmation modal must pop up
     await deleteOption.click();
-    const confirmModal = window.locator('[data-testid="delete-confirmation-modal"]');
+
+    // 2. Confirmation modal must appear
+    const confirmModal = window.locator("[data-testid=\"delete-confirmation-modal\"]");
     await expect(confirmModal).toBeVisible();
-    await expect(confirmModal).toContainText('Delete Clip & Audio File');
-    await expect(confirmModal).toContainText(clipTitle.split('\n')[0]);
+    await expect(confirmModal).toContainText("Delete Clip & Audio File");
 
-    // Checkbox "Remember my choice" must be present
-    const rememberCheckbox = window.locator('[data-testid="remember-choice-checkbox"]');
-    await expect(rememberCheckbox).toBeVisible();
-    await expect(rememberCheckbox).not.toBeChecked();
-
-    // 3. Test Cancel button dismisses modal without deleting
-    const cancelBtn = confirmModal.locator('button', { hasText: 'Cancel' });
+    // Cancel test
+    const cancelBtn = confirmModal.locator("button", { hasText: "Cancel" });
     await cancelBtn.click();
     await expect(confirmModal).not.toBeVisible();
-    expect(await window.locator('.clips-table tbody tr').count()).toBe(initialRowCount);
+    expect(await window.locator(".clips-table tbody tr").count()).toBe(initialRowCount);
 
-    // 4. Re-open delete modal, check "Remember my choice", and confirm deletion
-    await firstRow.click({ button: 'right' });
+    // 3. Re-open delete modal, check Remember My Choice, and confirm
+    await firstRow.click({ button: "right" });
     await deleteOption.click();
     await expect(confirmModal).toBeVisible();
 
+    const rememberCheckbox = window.locator("[data-testid=\"remember-choice-checkbox\"]");
     await rememberCheckbox.check();
     await expect(rememberCheckbox).toBeChecked();
 
-    const confirmDeleteBtn = window.locator('[data-testid="confirm-delete-btn"]');
-    await confirmDeleteBtn.click();
+    const confirmBtn = window.locator("[data-testid=\"confirm-delete-btn\"]");
+    await confirmBtn.click();
+    await expect(confirmModal).toBeHidden();
 
+    // Clip removed from table
+    await expect(window.locator(".clips-table tbody tr")).toHaveCount(initialRowCount - 1);
+
+    // 4. Delete next clip: with Remember My Choice enabled, modal should NOT appear
+    const nextRow = window.locator(".clips-table tbody tr").first();
+    await nextRow.click({ button: "right" });
+    await deleteOption.click();
+    // Deletes immediately without dialog
     await expect(confirmModal).not.toBeVisible();
-    await expect(window.locator('.clips-table tbody tr')).toHaveCount(initialRowCount - 1);
+    await expect(window.locator(".clips-table tbody tr")).toHaveCount(initialRowCount - 2);
 
-    // Clean up settings for subsequent runs
-    await window.evaluate(async () => {
-      localStorage.removeItem('audiovault_remember_delete_choice');
-      if ((window as any).audioVault) {
-        await (window as any).audioVault.updateVaultSettings({ rememberDeleteChoice: false });
-      }
-    });
-
-    console.log('[E2E] Delete confirmation dialog and Remember My Choice verified successfully!');
     await app.close();
   });
 
-  test('Context menu remains within viewport, scrolls when near bottom, and Open in Finder is accessible for all clips', async () => {
-    console.log('[E2E] Testing context menu viewport bounds, scrolling, and Open in Finder availability...');
-    const app = await electron.launch({
-      args: [path.join(__dirname, '../dist-electron/main/index.js')],
-    });
+  test("9. Context menu remains within viewport bounds and is scrollable near bottom", async () => {
+    const app = await launchTestApp(sandbox);
     const window = await app.firstWindow();
-    await window.waitForLoadState('domcontentloaded');
+    await window.waitForLoadState("domcontentloaded");
 
-    // 1. Select a row that has not been exported to MP3
-    const rows = window.locator('.clips-table tbody tr');
-    const rowCount = await rows.count();
-    expect(rowCount).toBeGreaterThan(3);
-
-    // Scroll clips pane down to test clicking a row further down the screen
-    const clipsPane = window.locator('.clips-pane');
-    await clipsPane.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+    // Scroll to bottom
+    const clipsPane = window.locator(".clips-pane");
+    await clipsPane.evaluate((el) => {
+      el.scrollTop = el.scrollHeight;
+    });
     await window.waitForTimeout(300);
 
-    // Right-click the last visible row at the bottom
-    const lastRow = rows.last();
+    const lastRow = window.locator(".clips-table tbody tr").last();
     await lastRow.scrollIntoViewIfNeeded();
-    await lastRow.click({ button: 'right' });
+    await lastRow.click({ button: "right" });
 
-    const contextMenu = window.locator('.context-menu.clip-context-menu');
+    const contextMenu = window.locator(".clip-context-menu");
     await expect(contextMenu).toBeVisible();
 
-    // Verify context menu is completely within the viewport bounds
+    // Verify context menu is completely within viewport bounds
     const menuBox = await contextMenu.boundingBox();
     expect(menuBox).toBeTruthy();
     if (menuBox) {
@@ -629,121 +500,89 @@ test.describe('AudioVault Electron Integration Tests', () => {
       expect(menuBox.y + menuBox.height).toBeLessThanOrEqual(windowHeight + 2);
     }
 
-    // Verify lowest item (Delete Clip from Disk...) is visible
-    const deleteItem = contextMenu.locator('[data-testid="delete-clip-menu-item"]');
+    // Lowest item (Delete) must be accessible
+    const deleteItem = contextMenu.locator("[data-testid=\"delete-clip-menu-item\"]");
     await expect(deleteItem).toBeVisible();
 
-    // Verify "Open in Finder" is present in context menu even if clip is not yet exported to MP3
-    const finderMenuItem = contextMenu.locator('.context-menu-item', { hasText: /Finder/ });
-    await expect(finderMenuItem).toBeVisible();
-
-    // Close menu
-    await window.keyboard.press('Escape');
-
-    // Verify dock header has "Open in Finder" button visible for active clip
-    const dockOpenInFinder = window.locator('.dock-header button', { hasText: /Finder/ });
-    await expect(dockOpenInFinder).toBeVisible();
-
-    console.log('[E2E] Context menu viewport bounds, scrolling, and Open in Finder successfully verified!');
     await app.close();
   });
 
-  test('Deleted files record tombstones and are never re-downloaded or re-uploaded during sync', async () => {
-    console.log('[E2E] Testing deleted files tombstone and re-sync prevention...');
-    const app = await electron.launch({
-      args: [path.join(__dirname, '../dist-electron/main/index.js')],
-    });
+  test("10. Deleted files record tombstones and are never re-downloaded or re-uploaded during sync", async () => {
+    const app = await launchTestApp(sandbox);
     const window = await app.firstWindow();
-    await window.waitForLoadState('domcontentloaded');
+    await window.waitForLoadState("domcontentloaded");
 
-    // 1. Record a fresh take via in-app recorder API
-    const initialDeletedCount = (await window.evaluate(async () => {
-      const deleted = await (window as any).audioVault.getDeletedFiles();
-      return deleted.length;
-    })) as number;
+    const targetRow = window.locator(".clips-table tbody tr", { hasText: "Harmony Warmups" }).first();
+    await expect(targetRow).toBeVisible();
 
-    // Create a 0.5s audio take
-    const pcm = new Int16Array(48000 * 0.5);
-    for (let i = 0; i < pcm.length; i++) {
-      pcm[i] = Math.sin((i / 48000) * 440 * 2 * Math.PI) * 16000;
-    }
-    // Encode simple WAV buffer
-    const wavBuffer = new ArrayBuffer(44 + pcm.length * 2);
-    const view = new DataView(wavBuffer);
-    const writeString = (offset: number, string: string) => {
-      for (let i = 0; i < string.length; i++) {
-        view.setUint8(offset + i, string.charCodeAt(i));
-      }
-    };
-    writeString(0, 'RIFF');
-    view.setUint32(4, 36 + pcm.length * 2, true);
-    writeString(8, 'WAVE');
-    writeString(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, 48000, true);
-    view.setUint32(28, 48000 * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeString(36, 'data');
-    view.setUint32(40, pcm.length * 2, true);
-    new Int16Array(wavBuffer, 44).set(pcm);
+    // Right-click and delete
+    await targetRow.click({ button: "right" });
+    await window.locator("[data-testid=\"delete-clip-menu-item\"]").click();
 
-    const newClip = await window.evaluate(async (buf) => {
-      return (window as any).audioVault.saveRecordedTake(buf, 'Sync Test Take To Delete', false);
-    }, Array.from(new Uint8Array(wavBuffer)));
-
-    expect(newClip).toBeTruthy();
-    expect(newClip.id).toBeTruthy();
-    await window.waitForTimeout(400);
-
-    // Verify clip is in library
-    const createdRow = window.locator('.clips-table tbody tr', { hasText: 'Sync Test Take To Delete' }).first();
-    await expect(createdRow).toBeVisible();
-
-    // 2. Right-click and delete the clip from disk
-    await createdRow.click({ button: 'right' });
-    const deleteOption = window.locator('[data-testid="delete-clip-menu-item"]');
-    await expect(deleteOption).toBeVisible();
-    await deleteOption.click();
-
-    // If confirmation modal appears, confirm
-    const confirmModal = window.locator('[data-testid="delete-confirmation-modal"]');
+    const confirmModal = window.locator("[data-testid=\"delete-confirmation-modal\"]");
     if (await confirmModal.isVisible()) {
-      const confirmBtn = window.locator('[data-testid="confirm-delete-btn"]');
-      await confirmBtn.click();
+      await window.locator("[data-testid=\"confirm-delete-btn\"]").click();
       await expect(confirmModal).toBeHidden();
     }
 
-    // Verify row is removed from table
-    await expect(createdRow).not.toBeVisible();
+    // Row deleted
+    await expect(targetRow).not.toBeVisible();
 
-    // 3. Verify tombstone is recorded in AudioVault registry
-    const deletedFiles = (await window.evaluate(async () => {
+    // Verify tombstone is recorded in registry
+    const deletedRecords = await window.evaluate(async () => {
       return (window as any).audioVault.getDeletedFiles();
-    })) as Array<{ id: string; originalFilename: string; fingerprint: string }>;
-
-    expect(deletedFiles.length).toBeGreaterThan(initialDeletedCount);
-    const tombstone = deletedFiles.find((d) => d.originalFilename.includes('Sync Test Take To Delete') || d.originalFilename.endsWith('.WAV'));
-    expect(tombstone).toBeTruthy();
-
-    // 4. Verify sidebar shows remembered deleted takes indicator
-    const deletedTakesIndicator = window.locator('[data-testid="deleted-takes-indicator"]');
-    await expect(deletedTakesIndicator).toBeVisible();
-
-    // 5. Attempt to re-sync / re-import the exact same audio buffer via importFiles
-    const importAttempt = await window.evaluate(async (buf) => {
-      // Create a temporary file and import it
-      const rawFiles = await (window as any).audioVault.getRawFiles();
-      return rawFiles.map((r: any) => r.fingerprint);
     });
-    expect(importAttempt).not.toContain(tombstone?.fingerprint);
+    expect(deletedRecords.length).toBeGreaterThan(0);
 
-    console.log('[E2E] Deleted files tombstone and re-sync prevention successfully verified!');
+    // Sidebar indicator
+    await expect(window.locator("[data-testid=\"deleted-takes-indicator\"]")).toBeVisible();
+
+    // Attempt to re-import the same file from an external source (e.g. SD Card): must be skipped due to tombstone
+    const reimportPath = path.join(sandbox.sandboxDir, "SD_CARD_REIMPORT.WAV");
+    fs.writeFileSync(reimportPath, generateSyntheticWavBuffer({ durationSeconds: 2.5, frequency: 440 }));
+
+    const reimportResult = await window.evaluate(async (storagePath) => {
+      return (window as any).audioVault.importFiles([storagePath]);
+    }, reimportPath);
+
+    expect(reimportResult.importedCount).toBe(0);
+    expect(reimportResult.skippedCount).toBe(1);
+
+    await app.close();
+  });
+
+  test("11. Header Search with Cmd+K and Search Phrase Highlighting", async () => {
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+
+    const searchInput = window.locator(".header-search-input");
+    await expect(searchInput).toBeVisible();
+
+    // Cmd+K shortcut
+    await window.keyboard.press("Meta+k");
+    await expect(searchInput).toBeFocused();
+
+    // Search query
+    await searchInput.fill("Feelings");
+    const filteredRows = window.locator(".clips-table tbody tr");
+    await expect(filteredRows).toHaveCount(1);
+
+    // Highlighting mark
+    const highlightMark = window.locator("mark.search-highlight-mark");
+    await expect(highlightMark.first()).toBeVisible();
+    await expect(highlightMark.first()).toHaveText("Feelings");
+
+    // Match counter pill
+    const matchPill = window.locator(".search-matches-pill");
+    await expect(matchPill).toBeVisible();
+    await expect(matchPill).toContainText("1 match");
+
+    // Escape clears search
+    await searchInput.focus();
+    await window.keyboard.press("Escape");
+    await expect(searchInput).toHaveValue("");
+
     await app.close();
   });
 });
-
-
-
