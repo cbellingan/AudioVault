@@ -216,6 +216,8 @@ export interface AudioVaultAPI {
   showInFinder: (filePath: string) => Promise<boolean>;
   transcribeClipRegion: (clipId: string, startSeconds?: number, durationSeconds?: number) => Promise<VirtualClip | null>;
   getClipTranscript: (clipId: string) => Promise<string | null>;
+  reprocessClip: (clipId: string) => Promise<VirtualClip | null>;
+  reprocessAllClips: (onlyMissing?: boolean) => Promise<{ count: number }>;
   generateAiTitle: (clipId: string) => Promise<VirtualClip>;
   saveRecordedTake: (wavBuffer: ArrayBuffer, customTitle?: string, autoTranscribe?: boolean) => Promise<VirtualClip>;
 

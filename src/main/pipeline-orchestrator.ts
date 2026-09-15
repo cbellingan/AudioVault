@@ -213,6 +213,71 @@ export class PipelineOrchestrator extends EventEmitter {
     return job;
   }
 
+  /**
+   * Re-processes an existing raw file and clip through the full analysis & Whisper pipeline.
+   * Useful when models are updated or when refreshing metadata & transcription on demand.
+   */
+  public reprocessClip(clipId: string): IngestJobProgress | null {
+    const clip = this.dedupEngine.getVirtualClip(clipId);
+    if (!clip) return null;
+    const rawFile = this.dedupEngine.getRawFile(clip.parentFileId);
+    if (!rawFile || !fs.existsSync(rawFile.storagePath)) return null;
+
+    const stats = fs.statSync(rawFile.storagePath);
+    const fingerprint = this.dedupEngine.computeFileFingerprint(rawFile.storagePath);
+
+    const job: IngestJobProgress = {
+      jobId: `reprocess_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      sourcePath: rawFile.storagePath,
+      filename: rawFile.originalFilename,
+      stage: 'queued_analysis',
+      bytesCopied: stats.size,
+      totalBytes: stats.size,
+      copyPercent: 100,
+      analysisPercent: 0,
+      currentTaskDescription: `Re-processing "${clip.title}" with latest Whisper & AI models...`,
+    };
+    (job as any).targetPath = rawFile.storagePath;
+    (job as any).fingerprint = fingerprint;
+    (job as any).existingClipId = clip.id;
+    (job as any).existingRawFileId = rawFile.id;
+    (job as any).customTitle = clip.title;
+    (job as any).sourceDevice = rawFile.sourceDevice;
+
+    this.analysisQueue.push(job);
+    this.totalBatchJobsCount++;
+    this.throttleBroadcastStatus();
+    this.processNextAnalysis();
+    return job;
+  }
+
+  /**
+   * Batch re-processes clips in the library (e.g. all or only those missing transcript files).
+   */
+  public reprocessAllClips(onlyMissing = false): number {
+    const clips = this.dedupEngine.getVirtualClips();
+    let queued = 0;
+
+    for (const clip of clips) {
+      if (clip.isExcluded) continue;
+      const rawFile = this.dedupEngine.getRawFile(clip.parentFileId);
+      if (!rawFile || !fs.existsSync(rawFile.storagePath)) continue;
+
+      if (onlyMissing) {
+        const ext = path.extname(rawFile.storagePath);
+        const txtPath = rawFile.storagePath.slice(0, -ext.length) + '.txt';
+        if (fs.existsSync(txtPath) && fs.statSync(txtPath).size > 10) {
+          continue; // Already has transcript
+        }
+      }
+
+      this.reprocessClip(clip.id);
+      queued++;
+    }
+
+    return queued;
+  }
+
   public getStatus(): PipelineStatusEvent {
     return {
       totalJobs: this.totalBatchJobsCount,
@@ -362,6 +427,7 @@ export class PipelineOrchestrator extends EventEmitter {
       const transcriptPath = targetPath.slice(0, -ext.length) + '.txt';
       if (transcript && transcript.trim().length > 0) {
         try {
+          fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
           fs.writeFileSync(transcriptPath, transcript.trim(), 'utf-8');
           console.log(`[AudioVault Pipeline] 📝 Full transcript saved alongside audio: ${transcriptPath}`);
         } catch (fileErr) {

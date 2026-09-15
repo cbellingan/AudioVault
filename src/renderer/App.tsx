@@ -185,6 +185,10 @@ export default function App() {
   });
   const [rememberDeleteCheckbox, setRememberDeleteCheckbox] = useState<boolean>(false);
 
+  // Refresh AI & Transcripts modal state
+  const [showRefreshAiModal, setShowRefreshAiModal] = useState<boolean>(false);
+  const [isBatchReprocessing, setIsBatchReprocessing] = useState<boolean>(false);
+
   // Direction 1 & 2: Search and In-App Recording State
   const [searchQuery, setSearchQuery] = useState('');
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -1359,6 +1363,44 @@ export default function App() {
     }
   }
 
+  // On-demand single clip re-processing (audio analysis, YAMNet classification, full Whisper transcription)
+  async function handleReprocessClip(clip: VirtualClip) {
+    setClipContextMenu(null);
+    setToastMessage(`🔄 Re-processing "${clip.title}" (Whisper + Audio)...`);
+    try {
+      const updated = await window.audioVault.reprocessClip(clip.id);
+      if (updated) {
+        setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+        setToastMessage('✅ Re-processed audio & AI metadata successfully!');
+        setTimeout(() => setToastMessage(null), 3500);
+      }
+    } catch (err: any) {
+      console.error('Failed to reprocess clip:', err);
+      setToastMessage('❌ Re-processing failed: ' + (err.message || String(err)));
+      setTimeout(() => setToastMessage(null), 3500);
+    }
+  }
+
+  // Batch library AI refresh / backfill
+  async function handleBatchReprocess(onlyMissing: boolean) {
+    setShowRefreshAiModal(false);
+    setIsBatchReprocessing(true);
+    setToastMessage(onlyMissing ? '⚡ Backfilling missing transcripts in background...' : '🔄 Re-processing library with latest AI models...');
+    try {
+      const result = await window.audioVault.reprocessAllClips(onlyMissing);
+      setToastMessage(`✅ Queued ${result.count} clips for AI re-processing!`);
+      setTimeout(async () => {
+        const updated = await window.audioVault.getVirtualClips();
+        setClips(updated);
+        setIsBatchReprocessing(false);
+      }, 1200);
+    } catch (err: any) {
+      console.error('Failed to dispatch batch re-processing:', err);
+      setToastMessage('❌ Failed to refresh AI metadata: ' + (err.message || String(err)));
+      setIsBatchReprocessing(false);
+    }
+  }
+
   // Filter clips by category, tag, source, and global search query
   const filteredClips = clips.filter((c) => {
     if (c.isExcluded) return false;
@@ -1973,13 +2015,38 @@ export default function App() {
         <main className="app-workspace">
           {/* Top Pane: Virtual Clips Table */}
           <div className="clips-pane">
-            <div className="table-header-row">
+            <div className="table-header-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.15rem' }}>
                 Virtual Clips ({filteredClips.length})
               </h2>
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                Right-click waveform selection to categorize or split
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.8rem' }}>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  Right-click waveform selection to categorize or split
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  data-testid="refresh-ai-library-btn"
+                  disabled={isBatchReprocessing}
+                  onClick={() => setShowRefreshAiModal(true)}
+                  title="Re-run audio analysis and Whisper transcription across your library or backfill missing transcripts"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.35rem',
+                    fontSize: '0.75rem',
+                    padding: '0.25rem 0.6rem',
+                    borderRadius: '4px',
+                    border: '1px solid var(--border-color)',
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    color: 'var(--text-primary)',
+                    cursor: isBatchReprocessing ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  <span>🔄</span>
+                  <span>{isBatchReprocessing ? 'Processing AI...' : 'Refresh AI & Transcripts...'}</span>
+                </button>
+              </div>
             </div>
 
             <table className="clips-table">
@@ -2663,6 +2730,18 @@ export default function App() {
             );
           })()}
 
+          {/* Full Re-process Audio & AI Features */}
+          <div
+            className="context-menu-item"
+            data-testid="ctx-reprocess-clip"
+            style={{ color: 'var(--accent-cyan)' }}
+            onClick={() => handleReprocessClip(clipContextMenu.clip)}
+            title="Re-run audio analysis, AI classification and Whisper transcription for this clip"
+          >
+            <span>🔄</span>
+            <span>Re-process Audio & AI Features</span>
+          </div>
+
           {/* Copy Transcript Option */}
           {(() => {
             const clip = clipContextMenu.clip;
@@ -3136,6 +3215,108 @@ export default function App() {
                 onClick={handleConfirmDelete}
               >
                 Delete from Disk
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Refresh AI & Transcripts Modal */}
+      {showRefreshAiModal && (
+        <div
+          className="modal-overlay"
+          onClick={() => setShowRefreshAiModal(false)}
+          data-testid="refresh-ai-modal"
+        >
+          <div
+            className="modal-dialog"
+            style={{ maxWidth: '520px' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <span style={{ fontSize: '1.2rem' }}>🔄</span>
+                <h3 style={{ margin: 0, fontSize: '1.02rem', fontWeight: 600 }}>
+                  Refresh AI & Transcripts
+                </h3>
+              </div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => setShowRefreshAiModal(false)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="modal-body" style={{ gap: '1rem' }}>
+              <p style={{ margin: 0, color: 'var(--text-primary)', fontSize: '0.9rem', lineHeight: 1.5 }}>
+                Backfill or re-analyze your library with the latest models (Whisper + YAMNet acoustic classification).
+                Transcripts are saved to dedicated sidecar files alongside your raw audio takes to keep your vault registry clean and lightweight.
+              </p>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  data-testid="refresh-missing-btn"
+                  onClick={() => handleBatchReprocess(true)}
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'flex-start',
+                    padding: '0.75rem 1rem',
+                    textAlign: 'left',
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--accent-cyan)',
+                    color: 'var(--text-primary)',
+                    cursor: 'pointer',
+                    borderRadius: '6px',
+                  }}
+                >
+                  <div style={{ fontWeight: 600, color: 'var(--accent-cyan)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span>⚡ Backfill Missing Transcripts Only (Fast)</span>
+                  </div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+                    Only transcribes clips that don't have transcript files yet. Skips clips that already have transcripts.
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  data-testid="refresh-all-btn"
+                  onClick={() => handleBatchReprocess(false)}
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'flex-start',
+                    padding: '0.75rem 1rem',
+                    textAlign: 'left',
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border-color)',
+                    color: 'var(--text-primary)',
+                    cursor: 'pointer',
+                    borderRadius: '6px',
+                  }}
+                >
+                  <div style={{ fontWeight: 600, color: '#fbbf24', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span>🔄 Full Library Refresh (Re-run All)</span>
+                  </div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+                    Re-runs acoustic classification and full Whisper transcription on all takes in your library.
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setShowRefreshAiModal(false)}
+              >
+                Close
               </button>
             </div>
           </div>

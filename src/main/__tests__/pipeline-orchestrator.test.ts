@@ -184,4 +184,116 @@ describe('Pipeline Orchestrator (Serial SD Reader & Parallel Worker Pool)', () =
       } catch {}
     }
   });
+
+  it('keeps registry.json clean of transcript bloat and migrates legacy entries to sidecar files', async () => {
+    const sandboxVaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sandbox-clean-registry-'));
+    try {
+      const rawDir = path.join(sandboxVaultDir, 'raw');
+      fs.mkdirSync(rawDir, { recursive: true });
+
+      // Create a raw WAV take
+      const takePath = path.join(rawDir, 'LEGACY_SPEECH_TAKE.WAV');
+      fs.writeFileSync(takePath, generateSyntheticWavBuffer({ durationSeconds: 0.5, isPulsedSpeech: true }));
+
+      // Simulate a legacy registry.json with embedded transcript text and no sidecar .txt
+      const legacyRegistry = {
+        version: 1,
+        rawFiles: [
+          {
+            id: 'legacy-raw-1',
+            fingerprint: 'legacyfingerprint123',
+            originalFilename: 'LEGACY_SPEECH_TAKE.WAV',
+            storagePath: takePath,
+            fileSizeBytes: 1000,
+            durationSeconds: 0.5,
+            sampleRate: 44100,
+            channels: 1,
+            sourceDevice: 'SD-Card',
+            importedAt: new Date().toISOString(),
+            waveformPeaks: [0.1, 0.5, 0.2],
+          },
+        ],
+        virtualClips: [
+          {
+            id: 'legacy-clip-1',
+            parentFileId: 'legacy-raw-1',
+            title: 'Legacy Clip with Embedded Transcript',
+            startTimeSeconds: 0,
+            endTimeSeconds: 0.5,
+            category: 'dictaphone',
+            userTags: ['Meeting Note'],
+            classificationConfidence: 0.95,
+            transcription: 'Legacy in-registry transcript snippet',
+            fullTranscription: 'Legacy in-registry transcript snippet that should be migrated to disk',
+            createdAt: new Date().toISOString(),
+          },
+        ],
+        deletedHashes: [],
+        settings: {
+          vaultPath: sandboxVaultDir,
+          watchDirectory: '',
+          autoUnmountAfterIngest: false,
+          rememberDeleteChoice: false,
+        },
+      };
+
+      const registryPath = path.join(sandboxVaultDir, 'registry.json');
+      fs.writeFileSync(registryPath, JSON.stringify(legacyRegistry, null, 2), 'utf-8');
+
+      // Initialize DedupEngine: loadRegistry should automatically extract the legacy transcript to sidecar .txt
+      const sandboxDedup = new DedupEngine(sandboxVaultDir);
+      const sidecarTxt = path.join(rawDir, 'LEGACY_SPEECH_TAKE.txt');
+      expect(fs.existsSync(sidecarTxt)).toBe(true);
+      expect(fs.readFileSync(sidecarTxt, 'utf-8')).toBe(
+        'Legacy in-registry transcript snippet that should be migrated to disk'
+      );
+
+      // Now save registry (or trigger any update) and inspect registry.json on disk
+      sandboxDedup.updateVirtualClip('legacy-clip-1', { title: 'Updated Legacy Clip' });
+      const rawSavedJson = fs.readFileSync(registryPath, 'utf-8');
+      const parsedSaved = JSON.parse(rawSavedJson);
+
+      // Verify registry.json is clean of transcript strings
+      const savedClip = parsedSaved.virtualClips[0];
+      expect(savedClip.transcription).toBeUndefined();
+      expect(savedClip.fullTranscription).toBeUndefined();
+      expect(savedClip.transcriptionChunks).toBeUndefined();
+      expect(savedClip.transcriptPath).toBe(sidecarTxt);
+
+      // Verify in-memory hydration still works
+      const inMemoryClip = sandboxDedup.getVirtualClips()[0];
+      expect(inMemoryClip.fullTranscription).toBe(
+        'Legacy in-registry transcript snippet that should be migrated to disk'
+      );
+      expect(inMemoryClip.transcriptPath).toBe(sidecarTxt);
+
+      // Verify reprocessClip works
+      const sandboxWatcher = new VolumeWatcher(sandboxDedup);
+      const sandboxAudio = new AudioEngine();
+      const sandboxOrchestrator = new PipelineOrchestrator(sandboxDedup, sandboxWatcher, sandboxAudio);
+
+      const job = sandboxOrchestrator.reprocessClip('legacy-clip-1');
+      expect(job).toBeDefined();
+
+      await new Promise<void>((resolve) => {
+        sandboxOrchestrator.on('pipeline-status', (status) => {
+          if (status.completedJobs >= 1) resolve();
+        });
+        setTimeout(resolve, 2000);
+      });
+
+      const reprocessed = sandboxDedup.getVirtualClip('legacy-clip-1');
+      expect(reprocessed).toBeDefined();
+      expect(reprocessed!.fullTranscription).toContain('simulated local whisper');
+      expect(fs.existsSync(sidecarTxt)).toBe(true);
+
+      // Verify reprocessAllClips works
+      const batchRes = sandboxOrchestrator.reprocessAllClips(false);
+      expect(batchRes).toBe(1);
+    } finally {
+      try {
+        fs.rmSync(sandboxVaultDir, { recursive: true, force: true });
+      } catch {}
+    }
+  });
 });

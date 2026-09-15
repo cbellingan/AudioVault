@@ -178,8 +178,63 @@ export class DedupEngine {
           this.settings = { ...this.settings, ...data.settings };
         }
 
+        // Check if registry on disk contained legacy embedded transcript bloat
+        const hadLegacyEmbeddedTranscripts = Array.isArray(data.virtualClips) && data.virtualClips.some(
+          (c: any) => c.transcription || c.fullTranscription || (c.transcriptionChunks && c.transcriptionChunks.length > 0)
+        );
+        if (hadLegacyEmbeddedTranscripts) {
+          registryNeedsSave = true;
+        }
+
+        // Sidecar Migration & Backfill: ensure every clip with a transcript has a sidecar .txt file
+        for (const clip of this.virtualClips.values()) {
+          const rawFile = this.rawFiles.get(clip.parentFileId);
+          if (rawFile && rawFile.storagePath) {
+            const ext = path.extname(rawFile.storagePath);
+            const txtPath = rawFile.storagePath.slice(0, -ext.length) + '.txt';
+            const chunksPath = rawFile.storagePath.slice(0, -ext.length) + '.chunks.json';
+
+            if (fs.existsSync(txtPath)) {
+              clip.transcriptPath = txtPath;
+              if (!clip.fullTranscription) {
+                try {
+                  clip.fullTranscription = fs.readFileSync(txtPath, 'utf-8');
+                  const clean = clip.fullTranscription.replace(/^\[(?:Local )?Whisper\]:\s*"?/i, '').replace(/"?$/, '').trim();
+                  const snippet = clean.length > 220 ? `${clean.slice(0, 220).trim()}...` : clean;
+                  clip.transcription = `[Whisper]: "${snippet}"`;
+                } catch {}
+              }
+            } else if (clip.fullTranscription || clip.transcription) {
+              // Backfill: write embedded transcript from legacy registry to .txt sidecar
+              const textToWrite = clip.fullTranscription || (clip.transcription ? clip.transcription.replace(/^\[(?:Local )?Whisper\]:\s*"?/i, '').replace(/"?$/, '').trim() : '');
+              if (textToWrite && textToWrite.length > 3 && !textToWrite.startsWith('...')) {
+                try {
+                  fs.writeFileSync(txtPath, textToWrite, 'utf-8');
+                  clip.transcriptPath = txtPath;
+                  registryNeedsSave = true;
+                  console.log(`[AudioVault Dedup] 📝 Backfilled transcript file to: ${txtPath}`);
+                } catch (err) {
+                  console.warn(`[AudioVault Dedup] Failed writing backfilled transcript: ${txtPath}`, err);
+                }
+              }
+            }
+
+            // Hydrate chunks from sidecar if present
+            if (fs.existsSync(chunksPath) && (!clip.transcriptionChunks || clip.transcriptionChunks.length === 0)) {
+              try {
+                clip.transcriptionChunks = JSON.parse(fs.readFileSync(chunksPath, 'utf-8'));
+              } catch {}
+            } else if (clip.transcriptionChunks && clip.transcriptionChunks.length > 0 && !fs.existsSync(chunksPath)) {
+              try {
+                fs.writeFileSync(chunksPath, JSON.stringify(clip.transcriptionChunks, null, 2), 'utf-8');
+                registryNeedsSave = true;
+              } catch {}
+            }
+          }
+        }
+
         if (registryNeedsSave) {
-          console.log('[AudioVault Dedup] 🧹 Auto-cleaned duplicate takes/clips from registry.');
+          console.log('[AudioVault Dedup] 🧹 Auto-cleaned and migrated registry to sidecar files.');
           this.saveRegistry();
         }
       }
@@ -191,10 +246,35 @@ export class DedupEngine {
   public saveRegistry() {
     try {
       this.ensureDirectories();
+
+      // Ensure registry.json remains lean and free of transcript bloat:
+      // Transcripts and chunk timestamps live in sidecar files (.txt, .chunks.json)
+      const sanitizedClips = Array.from(this.virtualClips.values()).map((clip) => {
+        const rawFile = this.rawFiles.get(clip.parentFileId);
+        let transcriptPath = clip.transcriptPath;
+        if (!transcriptPath && rawFile?.storagePath) {
+          const ext = path.extname(rawFile.storagePath);
+          const txtPath = rawFile.storagePath.slice(0, -ext.length) + '.txt';
+          if (fs.existsSync(txtPath)) {
+            transcriptPath = txtPath;
+          }
+        }
+
+        const copy: any = { ...clip };
+        delete copy.fullTranscription;
+        if (transcriptPath) {
+          copy.transcriptPath = transcriptPath;
+          // Keep registry clean: remove large transcript text and chunk objects from JSON
+          delete copy.transcription;
+          delete copy.transcriptionChunks;
+        }
+        return copy;
+      });
+
       const payload = {
         settings: this.settings,
         rawFiles: Array.from(this.rawFiles.values()),
-        virtualClips: Array.from(this.virtualClips.values()),
+        virtualClips: sanitizedClips,
         deletedFiles: Array.from(this.deletedFiles.values()),
       };
       fs.writeFileSync(this.registryFile, JSON.stringify(payload, null, 2), 'utf-8');

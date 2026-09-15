@@ -630,4 +630,50 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
 
     await app.close();
   });
+
+  test("13. Backfill/Refresh: Context menu re-process, library refresh modal, and clean registry.json sidecars", async () => {
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+
+    // 1. Verify registry.json is clean of transcript bloat (no transcription / fullTranscription)
+    const registryContent = fs.readFileSync(sandbox.registryPath, "utf-8");
+    const parsedRegistry = JSON.parse(registryContent);
+    for (const clip of parsedRegistry.virtualClips) {
+      expect(clip.transcription).toBeUndefined();
+      expect(clip.fullTranscription).toBeUndefined();
+      expect(clip.transcriptionChunks).toBeUndefined();
+    }
+
+    // 2. Test Single Clip Re-process from Context Menu
+    const targetRow = window.locator(".clips-table tbody tr", { hasText: "ZOOM0001 - Harmony Warmups" }).first();
+    await targetRow.click({ button: "right" });
+
+    const reprocessMenuItem = window.locator("[data-testid=\"ctx-reprocess-clip\"]");
+    await expect(reprocessMenuItem).toBeVisible();
+    await reprocessMenuItem.click();
+
+    // Verify toast appears
+    const toast = window.locator("[data-testid=\"copy-toast\"]");
+    await expect(toast).toBeVisible();
+    await expect(toast).toContainText("Re-process");
+
+    // 3. Test Library AI Refresh Modal
+    const refreshLibraryBtn = window.locator("[data-testid=\"refresh-ai-library-btn\"]");
+    await expect(refreshLibraryBtn).toBeVisible();
+    await refreshLibraryBtn.click();
+
+    const refreshModal = window.locator("[data-testid=\"refresh-ai-modal\"]");
+    await expect(refreshModal).toBeVisible();
+
+    const backfillBtn = window.locator("[data-testid=\"refresh-missing-btn\"]");
+    await expect(backfillBtn).toBeVisible();
+    await backfillBtn.click();
+
+    // Modal closes and toast feedback appears
+    await expect(refreshModal).toBeHidden();
+    await expect(toast).toBeVisible();
+
+    await app.close();
+  });
 });
