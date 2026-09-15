@@ -1,4 +1,6 @@
 import fs from 'fs';
+import path from 'path';
+import { Worker } from 'node:worker_threads';
 
 export interface TranscriptionResult {
   text: string;
@@ -7,11 +9,61 @@ export interface TranscriptionResult {
 }
 
 export class TranscriptionService {
+  private worker: Worker | null = null;
+  private pendingTasks = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void }>();
   private transcriberPromise: Promise<any> | null = null;
   private isInitialized = false;
 
   /**
-   * Lazily loads the quantized Whisper-tiny model on-device.
+   * Lazily spawns or returns the background transcription Worker thread.
+   */
+  private getWorker(): Worker | null {
+    if (this.worker) return this.worker;
+    try {
+      const candidates = [
+        path.join(__dirname, 'transcription-worker.js'),
+        path.join(__dirname, '../main/transcription-worker.js'),
+        path.resolve(__dirname, '../../dist-electron/main/transcription-worker.js'),
+      ];
+      const workerPath = candidates.find((c) => fs.existsSync(c));
+      if (!workerPath) {
+        return null;
+      }
+      this.worker = new Worker(workerPath);
+      this.worker.on('message', (response: { id: string; success: boolean; result?: any; error?: string }) => {
+        const pending = this.pendingTasks.get(response.id);
+        if (pending) {
+          this.pendingTasks.delete(response.id);
+          if (response.success && response.result) {
+            pending.resolve(response.result);
+          } else {
+            if (response.error) {
+              console.warn('[Transcription Worker Task Warning]:', response.error);
+            }
+            pending.resolve(null);
+          }
+        }
+      });
+      this.worker.on('error', (err) => {
+        console.error('[Transcription Worker Error]:', err);
+        for (const [, pending] of this.pendingTasks.entries()) {
+          pending.resolve(null);
+        }
+        this.pendingTasks.clear();
+        this.worker = null;
+      });
+      this.worker.on('exit', () => {
+        this.worker = null;
+      });
+      return this.worker;
+    } catch (err) {
+      console.warn('[TranscriptionService] Falling back to in-process execution:', err);
+      return null;
+    }
+  }
+
+  /**
+   * Lazily loads the quantized Whisper-tiny model on-device (fallback).
    */
   private async getTranscriber() {
     if (!this.transcriberPromise) {
@@ -45,9 +97,35 @@ export class TranscriptionService {
 
   /**
    * Reads a WAV file from disk, decodes PCM/IEEE float, resamples to 16kHz mono, and runs local Whisper inference.
-   * Supports starting from any startOffsetSeconds within the file.
+   * Runs in a background Worker thread to keep the Electron UI completely responsive at 60fps.
    */
   public async transcribeAudioFile(
+    filePath: string,
+    maxDurationSeconds?: number,
+    startOffsetSeconds = 0
+  ): Promise<TranscriptionResult | null> {
+    const worker = this.getWorker();
+    if (worker) {
+      return new Promise<TranscriptionResult | null>((resolve, reject) => {
+        const id = `task_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        this.pendingTasks.set(id, { resolve, reject });
+        worker.postMessage({
+          id,
+          filePath,
+          maxDurationSeconds,
+          startOffsetSeconds,
+        });
+      });
+    }
+
+    // In-process fallback (e.g. for vitest or if worker script not found)
+    return this.transcribeInProcess(filePath, maxDurationSeconds, startOffsetSeconds);
+  }
+
+  /**
+   * In-process fallback for transcription when Worker thread is unavailable.
+   */
+  private async transcribeInProcess(
     filePath: string,
     maxDurationSeconds?: number,
     startOffsetSeconds = 0

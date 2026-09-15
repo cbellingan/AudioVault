@@ -224,12 +224,15 @@ export default function App() {
     const duration = Math.max(0.1, activeClip.endTimeSeconds - activeClip.startTimeSeconds);
 
     // 1. If clip has precise Whisper timestamp chunks
-    if (activeClip.transcriptionChunks && activeClip.transcriptionChunks.length > 0) {
+    if (activeClip.transcriptionChunks && Array.isArray(activeClip.transcriptionChunks) && activeClip.transcriptionChunks.length > 0) {
       const words: TimedWord[] = [];
       activeClip.transcriptionChunks.forEach((chunk, chunkIdx) => {
+        if (!chunk || typeof chunk.text !== 'string') return;
         const rawTokens = chunk.text.trim().split(/\s+/).filter(Boolean);
         if (rawTokens.length === 0) return;
-        const [chunkStart, chunkEnd] = chunk.timestamp;
+        const timestamp = Array.isArray(chunk.timestamp) ? chunk.timestamp : [0, 1];
+        const chunkStart = typeof timestamp[0] === 'number' && !isNaN(timestamp[0]) ? timestamp[0] : 0;
+        const chunkEnd = typeof timestamp[1] === 'number' && !isNaN(timestamp[1]) ? timestamp[1] : chunkStart + 1.5;
         const chunkDur = Math.max(0.1, chunkEnd - chunkStart);
         const perWord = chunkDur / rawTokens.length;
 
@@ -396,14 +399,31 @@ export default function App() {
           (!status.activeAnalysisJobs || status.activeAnalysisJobs.length === 0)
         ) {
           activeIngestingVolumePathRef.current = null;
+          // Refresh clips once pipeline becomes idle
+          window.audioVault.getVirtualClips().then((all) => {
+            if (all && all.length > 0) setClips(all);
+          });
         }
-        window.audioVault.getVirtualClips().then((all) => {
-          if (all.length > 0) setClips(all);
-        });
       });
+
+      const unsubscribeClipAdded = window.audioVault.onClipAdded
+        ? window.audioVault.onClipAdded((newClip) => {
+            setClips((prev) => {
+              const idx = prev.findIndex((c) => c.id === newClip.id);
+              if (idx >= 0) {
+                const updated = [...prev];
+                updated[idx] = newClip;
+                return updated;
+              }
+              return [newClip, ...prev];
+            });
+          })
+        : () => {};
+
       return () => {
         unsubscribeVolume();
         unsubscribePipeline();
+        unsubscribeClipAdded();
       };
     }
   }, []);
@@ -843,23 +863,26 @@ export default function App() {
     }
 
     // Draw Speech Dialogue Regions and Overlays directly on the Waveform
-    if (activeClip && activeClip.transcriptionChunks && activeClip.transcriptionChunks.length > 0) {
+    if (activeClip && activeClip.transcriptionChunks && Array.isArray(activeClip.transcriptionChunks) && activeClip.transcriptionChunks.length > 0) {
       const duration = Math.max(0.1, activeClip.endTimeSeconds - activeClip.startTimeSeconds);
 
       // Group adjacent chunks into continuous speech dialogue regions
       const regions: Array<{ start: number; end: number; previewText: string }> = [];
       activeClip.transcriptionChunks.forEach((c) => {
+        if (!c || typeof c.text !== 'string' || !Array.isArray(c.timestamp)) return;
+        const cStart = typeof c.timestamp[0] === 'number' && !isNaN(c.timestamp[0]) ? c.timestamp[0] : 0;
+        const cEnd = typeof c.timestamp[1] === 'number' && !isNaN(c.timestamp[1]) ? c.timestamp[1] : cStart + 1;
         const last = regions[regions.length - 1];
-        if (last && c.timestamp[0] - last.end < 8.0) {
-          last.end = Math.max(last.end, c.timestamp[1]);
+        if (last && cStart - last.end < 8.0) {
+          last.end = Math.max(last.end, cEnd);
           if (last.previewText.length < 50) {
-            last.previewText += ' ' + c.text;
+            last.previewText += ' ' + (c.text || '');
           }
         } else {
           regions.push({
-            start: c.timestamp[0],
-            end: c.timestamp[1],
-            previewText: c.text,
+            start: cStart,
+            end: cEnd,
+            previewText: c.text || '',
           });
         }
       });
@@ -1422,7 +1445,9 @@ export default function App() {
       const q = searchQuery.toLowerCase().trim();
       const inTitle = c.title.toLowerCase().includes(q);
       const inTranscript = (c.fullTranscription || c.transcription || '').toLowerCase().includes(q);
-      const inChunks = c.transcriptionChunks ? c.transcriptionChunks.some((chunk) => chunk.text.toLowerCase().includes(q)) : false;
+      const inChunks = Array.isArray(c.transcriptionChunks)
+        ? c.transcriptionChunks.some((chunk) => chunk && typeof chunk.text === 'string' && chunk.text.toLowerCase().includes(q))
+        : false;
       const inTags = c.userTags.some((tag) => tag.toLowerCase().includes(q));
       const inFilename = parentRaw ? parentRaw.originalFilename.toLowerCase().includes(q) : false;
 

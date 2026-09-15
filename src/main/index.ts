@@ -82,6 +82,16 @@ function createWindow() {
     },
   });
 
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    if (level >= 2) {
+      console.warn(`[Renderer Console Warning/Error] ${message} (${sourceId}:${line})`);
+    }
+  });
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error(`[Renderer Process Gone] reason: ${details.reason}, exitCode: ${details.exitCode}`);
+  });
+
   if (process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
@@ -127,10 +137,6 @@ app.whenReady().then(() => {
     }
   });
 
-  // Reconcile and process any unprocessed takes on startup
-  setTimeout(() => {
-    pipelineOrchestrator.enqueueUnprocessedRawFiles();
-  }, 1000);
 
   // Background check for mounted external media
   const volumeInterval = setInterval(async () => {
@@ -587,68 +593,9 @@ function setupIpcHandlers() {
   });
 
   ipcMain.handle('vault:reprocess-clip', async (_, clipId: string): Promise<VirtualClip | null> => {
-    const clip = dedupEngine.getVirtualClip(clipId);
-    if (!clip) return null;
-    const rawFile = dedupEngine.getRawFile(clip.parentFileId);
-    if (!rawFile || !fs.existsSync(rawFile.storagePath)) return null;
-
-    // 1. Re-analyze audio waveform & acoustics
-    const analysis = audioEngine.analyzeWavFile(rawFile.storagePath);
-    rawFile.waveformPeaks = analysis.peaks;
-    rawFile.durationSeconds = analysis.features.durationSeconds;
-    rawFile.sampleRate = analysis.features.sampleRate;
-    rawFile.channels = analysis.features.channels;
-    dedupEngine.addRawFile(rawFile);
-
-    // 2. Transcribe full audio with Whisper
-    const transcriptRes = await audioEngine.transcribeAudioDetails(
-      rawFile.storagePath,
-      analysis.features.durationSeconds,
-      0
-    );
-    const transcript = transcriptRes?.text || null;
-    const transcriptChunks = transcriptRes?.chunks;
-
-    // 3. Save sidecar .txt and .chunks.json files alongside audio file
-    const ext = path.extname(rawFile.storagePath);
-    const transcriptPath = rawFile.storagePath.slice(0, -ext.length) + '.txt';
-    const chunksPath = rawFile.storagePath.slice(0, -ext.length) + '.chunks.json';
-
-    if (transcript && transcript.trim().length > 0) {
-      try {
-        fs.writeFileSync(transcriptPath, transcript.trim(), 'utf-8');
-        console.log(`[AudioVault Main] 📝 Full transcript refreshed on disk: ${transcriptPath}`);
-      } catch (err) {
-        console.warn(`[AudioVault Main] Failed writing transcript file: ${transcriptPath}`, err);
-      }
-    }
-    if (transcriptChunks && transcriptChunks.length > 0) {
-      try {
-        fs.writeFileSync(chunksPath, JSON.stringify(transcriptChunks, null, 2), 'utf-8');
-      } catch {}
-    }
-
-    // 4. Re-classify acoustics with latest model
-    const classification = audioEngine.classifyAcoustics(
-      analysis.features,
-      rawFile.originalFilename,
-      transcript
-    );
-
-    const mergedTags = Array.from(new Set([...clip.userTags, ...classification.tags]));
-    const updated = dedupEngine.updateVirtualClip(clipId, {
-      category: classification.category,
-      userTags: mergedTags,
-      classificationConfidence: classification.confidence,
-      classificationSource: 'yamnet_local',
-      transcription: classification.transcriptionSnippet,
-      fullTranscription: transcript || undefined,
-      transcriptPath: (transcript && fs.existsSync(transcriptPath)) ? transcriptPath : undefined,
-      transcriptionChunks: transcriptChunks,
-      updatedAt: new Date().toISOString(),
-    });
-
-    return updated || null;
+    const job = pipelineOrchestrator.reprocessClip(clipId);
+    if (!job) return null;
+    return dedupEngine.getVirtualClip(clipId) || null;
   });
 
   ipcMain.handle('vault:reprocess-all-clips', async (_, onlyMissing = false): Promise<{ count: number }> => {

@@ -36,6 +36,13 @@ const audioVaultApi: AudioVaultAPI = {
       ipcRenderer.removeListener('vault:pipeline-status', handler);
     };
   },
+  onClipAdded: (callback: (clip: VirtualClip) => void) => {
+    const handler = (_: unknown, clip: VirtualClip) => callback(clip);
+    ipcRenderer.on('vault:clip-added', handler);
+    return () => {
+      ipcRenderer.removeListener('vault:clip-added', handler);
+    };
+  },
   getRawFiles: () => ipcRenderer.invoke('vault:get-raw-files'),
   getVirtualClips: () => ipcRenderer.invoke('vault:get-virtual-clips'),
   createVirtualClip: (clip: Omit<VirtualClip, 'id' | 'createdAt' | 'updatedAt'>) =>

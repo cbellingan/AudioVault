@@ -28,7 +28,7 @@ export class PipelineOrchestrator extends EventEmitter {
   // Settings & Counters
   private isProcessingCopy = false;
   private isProcessingAnalysis = false;
-  private maxAnalysisConcurrency = 3; // Parallel processing on local SSD
+  private maxAnalysisConcurrency = 1; // Dedicated background worker queue for Whisper inference
   private completedJobsCount = 0;
   private failedJobsCount = 0;
   private totalBatchJobsCount = 0;

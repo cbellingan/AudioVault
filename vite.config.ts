@@ -20,6 +20,17 @@ export default defineConfig({
         },
       },
       {
+        entry: path.resolve(__dirname, 'src/main/transcription-worker.ts'),
+        vite: {
+          build: {
+            outDir: path.resolve(__dirname, 'dist-electron/main'),
+            rollupOptions: {
+              external: ['@xenova/transformers', 'onnxruntime-node'],
+            },
+          },
+        },
+      },
+      {
         entry: path.resolve(__dirname, 'src/preload/index.ts'),
         onstart(options) {
           options.reload();

@@ -203,6 +203,7 @@ export interface AudioVaultAPI {
   enqueuePipelineBatch: (filePaths: string[], unmountVolumePath?: string) => Promise<{ batchId: string; count: number }>;
   reconcileVault: () => Promise<number>;
   onPipelineStatus: (callback: (status: PipelineStatusEvent) => void) => () => void;
+  onClipAdded?: (callback: (clip: VirtualClip) => void) => () => void;
 
   // Audio Library & Clips
   getRawFiles: () => Promise<RawAudioFile[]>;
