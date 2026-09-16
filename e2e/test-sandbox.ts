@@ -159,10 +159,19 @@ export function setupTestSandbox(): SandboxContext {
   };
 
   const registry = {
-    version: 2,
+    version: 3,
     rawFiles,
     virtualClips,
     deletedFiles: [],
+    collections: [
+      {
+        id: "col_default_1",
+        name: "Personal ideas",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ],
+    savedViews: [],
     settings,
   };
 

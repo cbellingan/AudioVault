@@ -292,8 +292,12 @@ export class AudioEngine {
     text: string;
     chunks?: Array<{ text: string; timestamp: [number, number] }>;
   } | null> {
-    if (process.env.VITEST || process.env.NODE_ENV === 'test') {
-      if (filePath.toLowerCase().includes('speech') || filePath.includes('TAKE_02')) {
+    if (process.env.VITEST || process.env.NODE_ENV === 'test' || process.env.AUDIOVAULT_TEST_MODE === '1') {
+      if (
+        filePath.toLowerCase().includes('speech') ||
+        filePath.includes('TAKE_02') ||
+        filePath.toLowerCase().includes('field')
+      ) {
         return {
           text: 'simulated local whisper speech transcript',
           chunks: [

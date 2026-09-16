@@ -88,6 +88,32 @@ export interface VolumeDetectedEvent {
   files: DiscoveredAudioFile[];
 }
 
+export interface ImportPlanItem {
+  path: string;
+  name: string;
+  sizeBytes: number;
+  status: 'new' | 'duplicate' | 'excluded';
+  explanation?: string;
+  existingId?: string;
+}
+
+export interface ImportPlan {
+  sourceDescription: string;
+  totalFound: number;
+  newFilesCount: number;
+  duplicatesCount: number;
+  excludedCount: number;
+  items: ImportPlanItem[];
+  destinationFolder: string;
+}
+
+export interface ExecuteImportOptions {
+  filePaths: string[];
+  targetCollection?: string;
+  autoTranscribe?: boolean;
+  unmountVolumePath?: string;
+}
+
 export interface DeletedFileRecord {
   id: string;
   fingerprint: string;
@@ -222,6 +248,9 @@ export interface IngestJobProgress {
   analysisPercent: number;    // 0 - 100
   currentTaskDescription: string;
   error?: string;
+  targetCollection?: string;
+  autoTranscribe?: boolean;
+  batchId?: string;
 }
 
 export interface PipelineStatusEvent {
@@ -248,6 +277,8 @@ export interface AudioVaultAPI {
 
   // Pipeline Queue & Non-blocking Stream
   selectAndImport: () => Promise<{ batchId: string; count: number } | null>;
+  planImport: (options?: { paths?: string[]; sourceDescription?: string }) => Promise<ImportPlan | null>;
+  executeImportPlan: (options: ExecuteImportOptions) => Promise<{ batchId: string; count: number } | null>;
   enqueuePipelineBatch: (filePaths: string[], unmountVolumePath?: string) => Promise<{ batchId: string; count: number }>;
   reconcileVault: () => Promise<number>;
   onPipelineStatus: (callback: (status: PipelineStatusEvent) => void) => () => void;

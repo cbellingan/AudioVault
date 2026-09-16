@@ -1057,6 +1057,121 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
 
     await app.close();
   });
+
+  test("19. Import Planning & Duplicate Explanations: review modal, duplicate/excluded explanations, collection targeting, cancel and execute (Slice F07)", async () => {
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+    await window.waitForSelector(".clips-table tbody tr", { timeout: 8000 });
+
+    const initialRowCount = await window.locator(".clips-table tbody tr").count();
+
+    // 1. Prepare a simulated external source folder with mixed files:
+    // - 1 new WAV file
+    // - 1 duplicate WAV file (same content as ZOOM0001_WARMUPS.WAV in sandbox)
+    // - 1 excluded/deleted file (we delete ZOOM0002 to create a tombstone)
+    const extSourceDir = path.join(sandbox.sandboxDir, "mock_sd_card");
+    fs.mkdirSync(extSourceDir, { recursive: true });
+
+    // File A: brand new recording
+    const newTakePath = path.join(extSourceDir, "NEW_FIELD_TAKE.WAV");
+    const newTakeBuffer = generateSyntheticWavBuffer({ durationSeconds: 2.0, frequency: 380 });
+    fs.writeFileSync(newTakePath, newTakeBuffer);
+
+    // File B: duplicate of existing take
+    const dupTakePath = path.join(extSourceDir, "DUP_ZOOM0001.WAV");
+    const existingWarmupPath = path.join(sandbox.rawDir, "ZOOM0001_WARMUPS.WAV");
+    fs.copyFileSync(existingWarmupPath, dupTakePath);
+
+    // Delete ZOOM0002 to create a tombstone for File C
+    await window.evaluate(async () => {
+      const clips = await (window as any).audioVault.getVirtualClips();
+      const clip02 = clips.find((c: any) => c.title.includes("ZOOM0002"));
+      if (clip02) {
+        await (window as any).audioVault.deleteVirtualClip(clip02.id, true);
+        if ((window as any).__reloadClips) {
+          await (window as any).__reloadClips();
+        }
+      }
+    });
+
+    // File C: excluded take with content of deleted clip
+    const excTakePath = path.join(extSourceDir, "EXC_ZOOM0002.WAV");
+    const sampleBuffer02 = generateSyntheticWavBuffer({ durationSeconds: 3.0, frequency: 880 });
+    fs.writeFileSync(excTakePath, sampleBuffer02);
+
+    // 2. Open Import Planning Modal via __openImportPlanner
+    await window.evaluate(async (srcDir) => {
+      await (window as any).__openImportPlanner([srcDir], "Field Zoom Recorder");
+    }, extSourceDir);
+
+    // 3. Verify Import Plan Review Modal elements
+    const planModal = window.locator("[data-testid=\"import-plan-modal\"]");
+    await expect(planModal).toBeVisible();
+
+    const planTitle = window.locator("[data-testid=\"import-plan-title\"]");
+    await expect(planTitle).toHaveText("1 new recording");
+
+    const planSubtitle = window.locator("[data-testid=\"import-plan-subtitle\"]");
+    await expect(planSubtitle).toContainText("Field Zoom Recorder");
+    await expect(planSubtitle).toContainText("3 found");
+    await expect(planSubtitle).toContainText("1 already in library");
+    await expect(planSubtitle).toContainText("1 previously excluded");
+
+    // Check collapsible skipped recordings
+    const skippedDetails = window.locator("[data-testid=\"import-skipped-details\"]");
+    await expect(skippedDetails).toBeVisible();
+    await expect(skippedDetails).toContainText("2 skipped recording(s)");
+
+    // 4. Test Cancel: clicking cancel makes 0 library mutations
+    const cancelBtn = window.locator("[data-testid=\"cancel-import-btn\"]");
+    await cancelBtn.click();
+    await expect(planModal).toHaveCount(0);
+
+    // Verify row count is unchanged
+    const afterCancelCount = await window.locator(".clips-table tbody tr").count();
+    expect(afterCancelCount).toBe(initialRowCount - 1); // minus the 1 we deleted to create tombstone
+
+    // 5. Re-open modal, choose collection, and confirm import
+    await window.evaluate(async (srcDir) => {
+      await (window as any).__openImportPlanner([srcDir], "Field Zoom Recorder");
+    }, extSourceDir);
+
+    await expect(planModal).toBeVisible();
+
+    // Select Target Collection
+    const colSelect = window.locator("[data-testid=\"import-plan-collection-select\"]");
+    await expect(colSelect).toBeVisible();
+    await colSelect.selectOption("Personal ideas");
+
+    // Verify auto-transcribe toggle is checked
+    const autoTranscribeToggle = window.locator("[data-testid=\"import-plan-autotranscribe-toggle\"]");
+    await expect(autoTranscribeToggle).toBeChecked();
+
+    // Confirm import
+    const confirmBtn = window.locator("[data-testid=\"confirm-import-btn\"]");
+    await confirmBtn.click();
+
+    // Modal closes
+    await expect(planModal).toHaveCount(0);
+
+    // Toast appears
+    const toast = window.locator("[data-testid=\"copy-toast\"]");
+    await expect(toast).toBeVisible();
+    await expect(toast).toContainText("Enqueued 1 audio take for ingestion!");
+
+    // Verify workspace switched to imports
+    await expect(window.locator("[data-testid=\"imports-workspace\"]")).toBeVisible();
+
+    // Switch back to library and verify new take appears
+    const libraryNav = window.locator(".app-sidebar .nav-item", { hasText: "All Recordings" });
+    await libraryNav.click();
+
+    const newClipRow = window.locator(".clips-table tbody tr", { hasText: "NEW_FIELD_TAKE" });
+    await expect(newClipRow).toBeVisible({ timeout: 12000 });
+
+    await app.close();
+  });
 });
 
 

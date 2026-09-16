@@ -9,6 +9,7 @@ import {
   IngestJobProgress,
   CollectionRecord,
   SavedViewRecord,
+  ImportPlan,
 } from '../shared/types';
 import { commandRegistry } from './commands/command-registry';
 import {
@@ -249,6 +250,12 @@ export default function App() {
   // Refresh AI & Transcripts modal state
   const [showRefreshAiModal, setShowRefreshAiModal] = useState<boolean>(false);
   const [isBatchReprocessing, setIsBatchReprocessing] = useState<boolean>(false);
+
+  // Slice F07: Import Planning & Review Modal State
+  const [importPlan, setImportPlan] = useState<ImportPlan | null>(null);
+  const [importTargetCollection, setImportTargetCollection] = useState<string>('');
+  const [importAutoTranscribe, setImportAutoTranscribe] = useState<boolean>(true);
+  const [isExecutingImport, setIsExecutingImport] = useState<boolean>(false);
 
   // Direction 1 & 2: Search and In-App Recording State
   const [searchQuery, setSearchQuery] = useState('');
@@ -564,6 +571,80 @@ export default function App() {
     showExcerptModal,
   ]);
 
+  // Slice F07: Open Import Planning and Review Modal
+  const handleOpenImportPlanner = async (paths?: string[], sourceDesc?: string) => {
+    if (window.audioVault?.planImport) {
+      const plan = await window.audioVault.planImport(
+        paths ? { paths, sourceDescription: sourceDesc } : undefined
+      );
+      if (!plan) return;
+      if (plan.totalFound === 0) {
+        setToastMessage('⚠️ No audio recordings (.wav, .mp3, etc.) found in selected location.');
+        setTimeout(() => setToastMessage(null), 3500);
+        return;
+      }
+      setImportPlan(plan);
+      setImportTargetCollection('');
+      setImportAutoTranscribe(true);
+    } else {
+      setImportPlan({
+        sourceDescription: sourceDesc || 'Sample Import',
+        totalFound: 3,
+        newFilesCount: 2,
+        duplicatesCount: 1,
+        excludedCount: 0,
+        items: [
+          { path: '/mock/take1.wav', name: 'TAKE_01.WAV', sizeBytes: 102400, status: 'new' },
+          { path: '/mock/take2.wav', name: 'TAKE_02.WAV', sizeBytes: 204800, status: 'new' },
+          { path: '/mock/take3.wav', name: 'TAKE_03.WAV', sizeBytes: 153600, status: 'duplicate' },
+        ],
+        destinationFolder: 'AudioVault / raw',
+      });
+      setImportTargetCollection('');
+      setImportAutoTranscribe(true);
+    }
+  };
+  (window as any).__openImportPlanner = handleOpenImportPlanner;
+  (window as any).__reloadClips = async () => {
+    const fresh = await window.audioVault.getVirtualClips();
+    setClips(fresh);
+  };
+
+  const handleExecuteImportPlan = async () => {
+    if (!importPlan) return;
+    setIsExecutingImport(true);
+    try {
+      const newPaths = importPlan.items.filter((i) => i.status === 'new').map((i) => i.path);
+      if (newPaths.length === 0) {
+        setImportPlan(null);
+        return;
+      }
+      if (window.audioVault?.executeImportPlan) {
+        const res = await window.audioVault.executeImportPlan({
+          filePaths: newPaths,
+          targetCollection: importTargetCollection.trim() || undefined,
+          autoTranscribe: importAutoTranscribe,
+          unmountVolumePath: detectedVolume?.volumePath,
+        });
+        setImportPlan(null);
+        setActiveWorkspace('imports');
+        if (res && res.count > 0) {
+          setToastMessage(`📥 Enqueued ${res.count} audio take${res.count === 1 ? '' : 's'} for ingestion!`);
+          setTimeout(() => setToastMessage(null), 3500);
+        }
+      } else {
+        setImportPlan(null);
+        setActiveWorkspace('imports');
+        setToastMessage(`📥 Enqueued ${newPaths.length} audio take(s) for ingestion!`);
+        setTimeout(() => setToastMessage(null), 3500);
+      }
+    } catch (err) {
+      console.error('Failed executing import plan:', err);
+    } finally {
+      setIsExecutingImport(false);
+    }
+  };
+
   // Register all typed commands with unified handlers
   useEffect(() => {
     commandRegistry.register({
@@ -597,29 +678,13 @@ export default function App() {
       id: 'import-audio',
       label: 'Import Audio…',
       isEnabled: () => true,
-      execute: async () => {
-        if (window.audioVault) {
-          const res = await window.audioVault.selectAndImport();
-          if (res && res.count > 0) {
-            setToastMessage(`📥 Enqueued ${res.count} audio takes for ingestion!`);
-            setTimeout(() => setToastMessage(null), 3500);
-          }
-        }
-      },
+      execute: () => handleOpenImportPlanner(),
     });
     commandRegistry.register({
       id: 'import-folder',
       label: 'Import Folder…',
       isEnabled: () => true,
-      execute: async () => {
-        if (window.audioVault) {
-          const res = await window.audioVault.selectAndImport();
-          if (res && res.count > 0) {
-            setToastMessage(`📥 Enqueued ${res.count} audio takes for ingestion!`);
-            setTimeout(() => setToastMessage(null), 3500);
-          }
-        }
-      },
+      execute: () => handleOpenImportPlanner(),
     });
     commandRegistry.register({
       id: 'new-recording',
@@ -1254,42 +1319,11 @@ export default function App() {
     ctx.restore();
   }, [selectedClipId, rawFiles, clips, playbackProgress, waveformProfile]);
 
-  // Handle hardware ingest confirmation (Non-blocking pipeline)
+  // Handle hardware ingest confirmation (opens Import Planner modal)
   async function handleConfirmIngest() {
     if (!detectedVolume) return;
-    const volPath = detectedVolume.volumePath;
-    activeIngestingVolumePathRef.current = volPath;
-
-    const pathsToImport = detectedVolume.files
-      .filter((f) => !f.isAlreadyImported && !f.isDeleted)
-      .map((f) => f.path);
-
-    if (window.audioVault) {
-      await window.audioVault.enqueuePipelineBatch(
-        pathsToImport,
-        autoUnmountPref ? detectedVolume.volumePath : undefined
-      );
-    } else {
-      // Simulate ingest in browser mode
-      const newMockClip: VirtualClip = {
-        id: `clip_${Date.now()}`,
-        parentFileId: 'raw_new',
-        title: detectedVolume.files[0]?.name || 'ZOOM0005_Imported.WAV',
-        startTimeSeconds: 0,
-        endTimeSeconds: 95.0,
-        category: 'music',
-        userTags: ['Rehearsal Take', 'SD Ingest'],
-        classificationConfidence: 0.95,
-        classificationSource: 'yamnet_local',
-        isExcluded: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      setClips((prev) => [newMockClip, ...prev]);
-      setSelectedClipId(newMockClip.id);
-    }
-
-    setDetectedVolume(null);
+    const allPaths = detectedVolume.files.map((f) => f.path);
+    await handleOpenImportPlanner(allPaths, `${detectedVolume.volumeName} · SD card`);
   }
 
   // Waveform click / drag region selection
@@ -3201,7 +3235,8 @@ export default function App() {
                 <button
                   type="button"
                   className="btn btn-primary btn-sm"
-                  onClick={() => commandRegistry.execute('import-audio')}
+                  data-testid="select-audio-folder-btn"
+                  onClick={() => handleOpenImportPlanner()}
                 >
                   📥 Select Audio / Folder
                 </button>
@@ -3210,7 +3245,8 @@ export default function App() {
 
             <div
               className="imports-hero-card"
-              onClick={() => commandRegistry.execute('import-audio')}
+              data-testid="imports-hero-card"
+              onClick={() => handleOpenImportPlanner()}
             >
               <div style={{ fontSize: '2.4rem' }}>📥</div>
               <div style={{ fontWeight: 600, fontSize: '1.05rem' }}>Drop Audio Files or Folders Here</div>
@@ -3225,7 +3261,7 @@ export default function App() {
                 Hardware Media & Queue Status
               </div>
               {detectedVolume ? (
-                <div className="batch-card">
+                <div className="batch-card" data-testid="detected-volume-card">
                   <div>
                     <div style={{ fontWeight: 600, color: 'var(--accent-cyan)' }}>
                       💾 Connected Media: {detectedVolume.volumeName}
@@ -3237,9 +3273,10 @@ export default function App() {
                   <button
                     type="button"
                     className="btn btn-primary btn-sm"
+                    data-testid="review-import-btn"
                     onClick={handleConfirmIngest}
                   >
-                    Import Takes
+                    Review import…
                   </button>
                 </div>
               ) : (
@@ -5503,6 +5540,148 @@ export default function App() {
               >
                 Save Excerpt
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Slice F07: Import Planning & Review Modal */}
+      {importPlan && (
+        <div
+          className="modal-overlay"
+          onClick={() => setImportPlan(null)}
+          data-testid="import-plan-modal"
+        >
+          <div
+            className="modal-dialog"
+            style={{ maxWidth: '580px' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div>
+                <div className="modal-step-badge">Import · Review source</div>
+                <h3
+                  style={{ margin: 0, fontSize: '1.2rem', fontWeight: 700, color: '#fff' }}
+                  data-testid="import-plan-title"
+                >
+                  {importPlan.newFilesCount === 0
+                    ? 'No new recordings'
+                    : `${importPlan.newFilesCount} new recording${importPlan.newFilesCount === 1 ? '' : 's'}`}
+                </h3>
+                <div
+                  style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}
+                  data-testid="import-plan-subtitle"
+                >
+                  {importPlan.sourceDescription} · {importPlan.totalFound} found ·{' '}
+                  {importPlan.duplicatesCount} already in library · {importPlan.excludedCount} previously excluded
+                </div>
+              </div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => setImportPlan(null)}
+                title="Cancel import"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="import-plan-body">
+              <div className="import-plan-panel">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h4 style={{ margin: 0, fontSize: '0.98rem', fontWeight: 600, color: '#fff' }}>
+                    What will happen
+                  </h4>
+                  <span className="badge badge-emerald">Originals preserved</span>
+                </div>
+                <p style={{ margin: 0, fontSize: '0.86rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                  {importPlan.newFilesCount > 0
+                    ? `Copy ${importPlan.newFilesCount} recording${importPlan.newFilesCount === 1 ? '' : 's'} into AudioVault. Make them available to listen to, then transcribe in the background.`
+                    : 'All discovered audio files are already in your library or have been excluded. No files will be imported.'}
+                </p>
+
+                {importPlan.newFilesCount > 0 && (
+                  <>
+                    <label className="import-plan-field">
+                      <span>Target Collection</span>
+                      <select
+                        className="toolbar-select"
+                        value={importTargetCollection}
+                        onChange={(e) => setImportTargetCollection(e.target.value)}
+                        data-testid="import-plan-collection-select"
+                        style={{ width: '100%' }}
+                      >
+                        <option value="">(None / Unassigned)</option>
+                        {collections.map((c) => (
+                          <option key={c.id || c.name} value={c.name}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="import-plan-checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={importAutoTranscribe}
+                        onChange={(e) => setImportAutoTranscribe(e.target.checked)}
+                        data-testid="import-plan-autotranscribe-toggle"
+                      />
+                      <span>Transcribe after import</span>
+                    </label>
+                  </>
+                )}
+
+                <div className="import-destination-notice">
+                  <small>
+                    Saved in: <strong>{importPlan.destinationFolder}</strong> · Local processing
+                  </small>
+                </div>
+
+                {(importPlan.duplicatesCount > 0 || importPlan.excludedCount > 0) && (
+                  <details className="import-skipped-details" data-testid="import-skipped-details">
+                    <summary>
+                      {importPlan.duplicatesCount + importPlan.excludedCount} skipped recording(s)
+                    </summary>
+                    <div className="import-skipped-list">
+                      {importPlan.items
+                        .filter((item) => item.status !== 'new')
+                        .map((item, idx) => (
+                          <div key={idx} className="import-skipped-item">
+                            <span className="import-skipped-name">{item.name}</span>
+                            <span
+                              className={`badge ${item.status === 'duplicate' ? 'badge-muted' : 'badge-amber'}`}
+                            >
+                              {item.status === 'duplicate' ? 'Already imported' : 'Previously excluded'}
+                            </span>
+                          </div>
+                        ))}
+                    </div>
+                  </details>
+                )}
+              </div>
+
+              <div className="modal-actions" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.65rem' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  data-testid="cancel-import-btn"
+                  onClick={() => setImportPlan(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  data-testid="confirm-import-btn"
+                  disabled={importPlan.newFilesCount === 0 || isExecutingImport}
+                  onClick={handleExecuteImportPlan}
+                >
+                  {isExecutingImport
+                    ? 'Starting import...'
+                    : `Import ${importPlan.newFilesCount} recording${importPlan.newFilesCount === 1 ? '' : 's'}`}
+                </button>
+              </div>
             </div>
           </div>
         </div>

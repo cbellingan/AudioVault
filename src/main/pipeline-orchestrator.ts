@@ -56,7 +56,9 @@ export class PipelineOrchestrator extends EventEmitter {
 
   public enqueueBatch(
     filePaths: string[],
-    volumeToUnmount?: string
+    volumeToUnmount?: string,
+    targetCollection?: string,
+    autoTranscribe = true
   ): { batchId: string; count: number } {
     const batchId = `batch_${Date.now()}`;
     this.pendingUnmountVolumePath = volumeToUnmount;
@@ -86,7 +88,7 @@ export class PipelineOrchestrator extends EventEmitter {
 
       const fingerprint = this.dedupEngine.computeFileFingerprint(filePath);
       if (
-        this.dedupEngine.isFingerprintImported(fingerprint) ||
+        this.dedupEngine.isFingerprintImported(fingerprint, filePath) ||
         this.dedupEngine.isDeletedFile(fingerprint, filePath) ||
         this.isFileInProgress(filePath)
       ) {
@@ -105,6 +107,9 @@ export class PipelineOrchestrator extends EventEmitter {
         copyPercent: 0,
         analysisPercent: 0,
         currentTaskDescription: 'Waiting in sequential SD card queue...',
+        targetCollection,
+        autoTranscribe,
+        batchId,
       };
 
       this.copyQueue.push(job);
@@ -140,7 +145,7 @@ export class PipelineOrchestrator extends EventEmitter {
           if (stats.isFile() && stats.size > 44) {
             const fingerprint = this.dedupEngine.computeFileFingerprint(fullPath);
             if (
-              this.dedupEngine.isFingerprintImported(fingerprint) ||
+              this.dedupEngine.isFingerprintImported(fingerprint, fullPath) ||
               this.dedupEngine.isDeletedFile(fingerprint, fullPath)
             ) {
               continue;
@@ -339,7 +344,7 @@ export class PipelineOrchestrator extends EventEmitter {
     try {
       // Check deduplication and tombstone (previously deleted file)
       const fingerprint = this.dedupEngine.computeFileFingerprint(currentJob.sourcePath);
-      if (this.dedupEngine.isFingerprintImported(fingerprint)) {
+      if (this.dedupEngine.isFingerprintImported(fingerprint, currentJob.sourcePath)) {
         currentJob.stage = 'completed';
         currentJob.currentTaskDescription = 'Already imported (deduplicated).';
         this.completedJobsCount++;
@@ -407,12 +412,15 @@ export class PipelineOrchestrator extends EventEmitter {
       currentJob.currentTaskDescription = 'Running local Whisper speech transcription...';
       this.throttleBroadcastStatus();
 
-      // 2. Local Whisper Transcription (transcribing full audio duration)
-      const transcriptRes = await this.audioEngine.transcribeAudioDetails(
-        targetPath,
-        analysis.features.durationSeconds,
-        0
-      );
+      // 2. Local Whisper Transcription (transcribing full audio duration if autoTranscribe enabled)
+      let transcriptRes: any = null;
+      if (currentJob.autoTranscribe !== false) {
+        transcriptRes = await this.audioEngine.transcribeAudioDetails(
+          targetPath,
+          analysis.features.durationSeconds,
+          0
+        );
+      }
       const transcript = transcriptRes?.text || null;
       const transcriptChunks = transcriptRes?.chunks;
       if (transcript) {
@@ -550,6 +558,7 @@ export class PipelineOrchestrator extends EventEmitter {
             endTimeSeconds: analysis.features.durationSeconds,
             category: classification.category,
             userTags: classification.tags,
+            collections: currentJob.targetCollection ? [currentJob.targetCollection] : [],
             classificationConfidence: classification.confidence,
             classificationSource: 'yamnet_local',
             transcription: classification.transcriptionSnippet,

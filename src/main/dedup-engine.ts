@@ -606,10 +606,39 @@ export class DedupEngine {
     return hash.digest('hex');
   }
 
-  public isFingerprintImported(fingerprint: string): boolean {
+  public isFingerprintImported(fingerprint: string, filePath?: string): boolean {
     for (const file of this.rawFiles.values()) {
       if (file.fingerprint === fingerprint) return true;
     }
+
+    // Secondary checks if file path is provided and exists on disk (handles timestamp shifts on copied files)
+    if (filePath && fs.existsSync(filePath)) {
+      try {
+        const stats = fs.statSync(filePath);
+        const fileName = path.basename(filePath);
+        let contentHash: string | null = null;
+
+        for (const file of this.rawFiles.values()) {
+          if (file.fileSizeBytes === stats.size && stats.size > 0) {
+            if (file.originalFilename === fileName) {
+              return true;
+            }
+            if (!contentHash) {
+              contentHash = this.computeContentHash(filePath);
+            }
+            if (file.storagePath && fs.existsSync(file.storagePath)) {
+              const existingHash = this.computeContentHash(file.storagePath);
+              if (existingHash === contentHash) {
+                return true;
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore read/stat errors
+      }
+    }
+
     return false;
   }
 

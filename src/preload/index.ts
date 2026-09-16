@@ -8,6 +8,8 @@ import {
   VirtualClip,
   PrimaryCategory,
   PipelineStatusEvent,
+  ImportPlan,
+  ExecuteImportOptions,
 } from '../shared/types';
 
 const audioVaultApi: AudioVaultAPI = {
@@ -26,6 +28,10 @@ const audioVaultApi: AudioVaultAPI = {
     };
   },
   selectAndImport: () => ipcRenderer.invoke('vault:select-and-import'),
+  planImport: (options?: { paths?: string[]; sourceDescription?: string }) =>
+    ipcRenderer.invoke('vault:plan-import', options),
+  executeImportPlan: (options: ExecuteImportOptions) =>
+    ipcRenderer.invoke('vault:execute-import-plan', options),
   enqueuePipelineBatch: (filePaths: string[], unmountVolumePath?: string) =>
     ipcRenderer.invoke('vault:enqueue-pipeline-batch', filePaths, unmountVolumePath),
   reconcileVault: () => ipcRenderer.invoke('vault:reconcile-vault'),

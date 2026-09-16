@@ -21,6 +21,7 @@ import { AudioEngine } from './audio-engine';
 import { PipelineOrchestrator } from './pipeline-orchestrator';
 import { TitleService } from './title-service';
 import { setupApplicationMenu } from './menu';
+import { createImportPlan } from './import-planner';
 import {
   IngestResult,
   PipelineStatusEvent,
@@ -33,6 +34,8 @@ import {
   CollectionRecord,
   ImportBatchRecord,
   SavedViewRecord,
+  ImportPlan,
+  ExecuteImportOptions,
 } from '../shared/types';
 
 // Configure isolated test sandbox if running in automated test mode
@@ -205,6 +208,56 @@ function setupIpcHandlers() {
     return pipelineOrchestrator.enqueueUnprocessedRawFiles();
   });
 
+  // Slice F07: Plan Import before committing
+  ipcMain.handle(
+    'vault:plan-import',
+    async (
+      _,
+      options?: { paths?: string[]; sourceDescription?: string }
+    ): Promise<ImportPlan | null> => {
+      let pathsToPlan = options?.paths;
+      let sourceDescription = options?.sourceDescription;
+
+      if (!pathsToPlan || pathsToPlan.length === 0) {
+        if (!mainWindow) return null;
+        const res = await dialog.showOpenDialog(mainWindow, {
+          properties: ['openDirectory', 'openFile', 'multiSelections'],
+          title: 'Select Audio Files or Directory to Import',
+          filters: [{ name: 'Audio Files', extensions: ['wav', 'mp3', 'm4a', 'flac', 'aif', 'aiff'] }],
+        });
+        if (res.canceled || res.filePaths.length === 0) return null;
+        pathsToPlan = res.filePaths;
+        sourceDescription =
+          res.filePaths.length === 1 ? path.basename(res.filePaths[0]) : `${res.filePaths.length} selected items`;
+      }
+
+      return createImportPlan({
+        paths: pathsToPlan,
+        dedupEngine,
+        volumeWatcher,
+        sourceDescription,
+        isPathInProgressFn: (fp) => pipelineOrchestrator.isFileInProgress(fp),
+      });
+    }
+  );
+
+  // Slice F07: Execute Import Plan
+  ipcMain.handle(
+    'vault:execute-import-plan',
+    async (
+      _,
+      options: ExecuteImportOptions
+    ): Promise<{ batchId: string; count: number } | null> => {
+      if (!options.filePaths || options.filePaths.length === 0) return null;
+      return pipelineOrchestrator.enqueueBatch(
+        options.filePaths,
+        options.unmountVolumePath,
+        options.targetCollection,
+        options.autoTranscribe !== false
+      );
+    }
+  );
+
   // Native Open Dialog to import folders, SD cards, or audio files
   ipcMain.handle('vault:select-and-import', async (): Promise<{ batchId: string; count: number } | null> => {
     if (!mainWindow) return null;
@@ -253,7 +306,7 @@ function setupIpcHandlers() {
         }
 
         const fingerprint = dedupEngine.computeFileFingerprint(sourcePath);
-        if (dedupEngine.isFingerprintImported(fingerprint) || dedupEngine.isDeletedFile(fingerprint, sourcePath)) {
+        if (dedupEngine.isFingerprintImported(fingerprint, sourcePath) || dedupEngine.isDeletedFile(fingerprint, sourcePath)) {
           result.skippedCount++;
           continue;
         }
