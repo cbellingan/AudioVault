@@ -139,6 +139,12 @@ app.whenReady().then(() => {
     }
   });
 
+  pipelineOrchestrator.on('job-ready-to-play', (_job, clip: VirtualClip) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('vault:clip-added', clip);
+    }
+  });
+
   pipelineOrchestrator.on('job-completed', (_job, clip: VirtualClip) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('vault:clip-added', clip);

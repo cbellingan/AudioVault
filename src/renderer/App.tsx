@@ -624,7 +624,7 @@ export default function App() {
           filePaths: newPaths,
           targetCollection: importTargetCollection.trim() || undefined,
           autoTranscribe: importAutoTranscribe,
-          unmountVolumePath: detectedVolume?.volumePath,
+          unmountVolumePath: detectedVolume?.volumePath || (window as any).__testUnmountVolumePath,
         });
         setImportPlan(null);
         setActiveWorkspace('imports');
@@ -2771,12 +2771,17 @@ export default function App() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
               <span style={{ fontWeight: 600 }}>Pipeline Activity</span>
               {pipelineStatus.isSdCardActive ? (
-                <span className="pipeline-status-badge badge-serial">
+                <span className="pipeline-status-badge badge-serial" data-testid="sd-card-active-badge">
                   ⚡ SD Card Read (Sequential: 1 active)
                 </span>
               ) : pipelineStatus.canUnmountSdCard ? (
-                <span className="pipeline-status-badge badge-unmounted">
-                  ✓ SD Card Read Finished — Safely Ejected!
+                <span
+                  className={`pipeline-status-badge ${pipelineStatus.cardStatusText === 'Card ejected cleanly' ? 'badge-unmounted' : 'badge-emerald'}`}
+                  data-testid="sd-card-safe-badge"
+                >
+                  {pipelineStatus.cardStatusText === 'Card ejected cleanly'
+                    ? '✓ SD Card Read Finished — Safely Ejected!'
+                    : '✓ Copy Complete — Safe to Disconnect Card!'}
                 </span>
               ) : null}
             </div>

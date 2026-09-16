@@ -262,6 +262,7 @@ export interface PipelineStatusEvent {
   isSdCardActive: boolean;
   canUnmountSdCard: boolean;
   unmountMessage?: string;
+  cardStatusText?: string;
 }
 
 export interface AudioVaultAPI {

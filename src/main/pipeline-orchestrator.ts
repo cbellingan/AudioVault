@@ -284,6 +284,17 @@ export class PipelineOrchestrator extends EventEmitter {
   }
 
   public getStatus(): PipelineStatusEvent {
+    let cardStatusText: string | undefined;
+    if (this.isProcessingCopy || this.copyQueue.length > 0) {
+      cardStatusText = 'Reading from SD Card (Sequential)...';
+    } else if (this.sdCardCopyFinished) {
+      if (this.unmountMessage && this.unmountMessage.includes('Cleanly unmounted')) {
+        cardStatusText = 'Card ejected cleanly';
+      } else if (this.pendingUnmountVolumePath) {
+        cardStatusText = 'Copy complete — safe to disconnect card';
+      }
+    }
+
     return {
       totalJobs: this.totalBatchJobsCount,
       completedJobs: this.completedJobsCount,
@@ -293,6 +304,7 @@ export class PipelineOrchestrator extends EventEmitter {
       isSdCardActive: !this.sdCardCopyFinished,
       canUnmountSdCard: this.sdCardCopyFinished && !!this.pendingUnmountVolumePath,
       unmountMessage: this.unmountMessage,
+      cardStatusText,
     };
   }
 
@@ -361,6 +373,14 @@ export class PipelineOrchestrator extends EventEmitter {
           this.throttleBroadcastStatus();
         });
 
+        // Copy integrity verification (Slice F08)
+        const copiedStats = fs.statSync(targetPath);
+        if (copiedStats.size !== currentJob.totalBytes) {
+          throw new Error(
+            `Integrity check failed for ${currentJob.filename}: Expected ${currentJob.totalBytes} bytes, found ${copiedStats.size} bytes`
+          );
+        }
+
         // File is now safely on fast internal SSD! Push to parallel analysis queue
         currentJob.stage = 'queued_analysis';
         currentJob.currentTaskDescription = 'File on SSD. Queued for local acoustic analysis...';
@@ -405,55 +425,12 @@ export class PipelineOrchestrator extends EventEmitter {
       const stats = fs.statSync(targetPath);
       console.log(`[AudioVault Pipeline] 🚀 Starting analysis of: ${currentJob.filename} (${(stats.size / 1024 / 1024).toFixed(1)} MB)`);
 
-      // 1. Acoustic & Waveform Analysis
+      // 1. Acoustic & Waveform Analysis (Fast: < 50ms)
       const analysis = this.audioEngine.analyzeWavFile(targetPath);
       console.log(`[AudioVault Pipeline] 📊 Analyzed WAV: ${analysis.features.sampleRate}Hz, ${analysis.features.channels}ch, ${analysis.features.durationSeconds}s, peaks: ${analysis.peaks.length}`);
-      currentJob.analysisPercent = 50;
-      currentJob.currentTaskDescription = 'Running local Whisper speech transcription...';
-      this.throttleBroadcastStatus();
 
-      // 2. Local Whisper Transcription (transcribing full audio duration if autoTranscribe enabled)
-      let transcriptRes: any = null;
-      if (currentJob.autoTranscribe !== false) {
-        transcriptRes = await this.audioEngine.transcribeAudioDetails(
-          targetPath,
-          analysis.features.durationSeconds,
-          0
-        );
-      }
-      const transcript = transcriptRes?.text || null;
-      const transcriptChunks = transcriptRes?.chunks;
-      if (transcript) {
-        console.log(`[AudioVault Pipeline] 🗣️ Whisper transcript for ${currentJob.filename} (${transcript.length} chars): "${transcript.slice(0, 80)}..."`);
-      }
-      currentJob.analysisPercent = 85;
-      currentJob.currentTaskDescription = 'Classifying audio events & generating metadata...';
-      this.throttleBroadcastStatus();
-
-      // Save full transcript to .txt file alongside the imported file
-      const ext = path.extname(targetPath);
-      const transcriptPath = targetPath.slice(0, -ext.length) + '.txt';
-      if (transcript && transcript.trim().length > 0) {
-        try {
-          fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
-          fs.writeFileSync(transcriptPath, transcript.trim(), 'utf-8');
-          console.log(`[AudioVault Pipeline] 📝 Full transcript saved alongside audio: ${transcriptPath}`);
-        } catch (fileErr) {
-          console.warn(`[AudioVault Pipeline] Failed writing transcript file: ${transcriptPath}`, fileErr);
-        }
-      }
-
-      // 3. Local AI Classification
-      const classification = this.audioEngine.classifyAcoustics(
-        analysis.features,
-        currentJob.filename,
-        transcript
-      );
-      console.log(`[AudioVault Pipeline] 🏷️ Classified as: ${classification.category.toUpperCase()} (${(classification.confidence * 100).toFixed(0)}%)`);
-      currentJob.analysisPercent = 95;
-      this.throttleBroadcastStatus();
-
-      // 3. Register Raw File in Vault (or retrieve existing)
+      // 2. Early Audio Availability (Slice F08):
+      // Register RawAudioFile and VirtualClip immediately so it is available to play before speech transcription
       let rawFileId = (currentJob as any).existingRawFileId;
       if (!rawFileId) {
         const existingRaw = this.dedupEngine.getRawFileByFingerprint(fingerprint);
@@ -500,54 +477,16 @@ export class PipelineOrchestrator extends EventEmitter {
         }
       }
 
-      // 4. Create or Update Non-Destructive Virtual Clip (with local LLM composite title if speech transcribed)
       let initialTitle = (currentJob as any).customTitle || currentJob.filename.replace(/\.[^/.]+$/, '');
-      const speechToSummarize = transcript || classification.transcriptionSnippet;
-      if (speechToSummarize && speechToSummarize.length > 5 && !(currentJob as any).customTitle) {
-        try {
-          initialTitle = await this.titleService.generateCompositeTitle(initialTitle, speechToSummarize);
-        } catch (titleErr) {
-          console.warn('[AudioVault Pipeline] Title generation fallback:', titleErr);
-        }
-      }
-
       const existingClipId = (currentJob as any).existingClipId;
       let defaultClip: VirtualClip;
 
       if (existingClipId && this.dedupEngine.getVirtualClip(existingClipId)) {
-        const existing = this.dedupEngine.getVirtualClip(existingClipId)!;
-        const mergedTags = Array.from(new Set([...existing.userTags, ...classification.tags]));
-        const updated = this.dedupEngine.updateVirtualClip(existingClipId, {
-          title: (currentJob as any).customTitle ? existing.title : initialTitle,
-          category: classification.category,
-          userTags: mergedTags,
-          classificationConfidence: classification.confidence,
-          classificationSource: 'yamnet_local',
-          transcription: classification.transcriptionSnippet,
-          fullTranscription: transcript || undefined,
-          transcriptPath: (transcript && fs.existsSync(transcriptPath)) ? transcriptPath : undefined,
-          transcriptionChunks: transcriptChunks,
-          updatedAt: new Date().toISOString(),
-        });
-        defaultClip = updated || existing;
+        defaultClip = this.dedupEngine.getVirtualClip(existingClipId)!;
       } else {
         const existingClips = this.dedupEngine.getClipsForRawFile(rawFileId);
         if (existingClips.length > 0) {
-          const firstClip = existingClips[0];
-          const mergedTags = Array.from(new Set([...firstClip.userTags, ...classification.tags]));
-          const updated = this.dedupEngine.updateVirtualClip(firstClip.id, {
-            title: firstClip.title || initialTitle,
-            category: classification.category,
-            userTags: mergedTags,
-            classificationConfidence: classification.confidence,
-            classificationSource: 'yamnet_local',
-            transcription: classification.transcriptionSnippet,
-            fullTranscription: transcript || undefined,
-            transcriptPath: (transcript && fs.existsSync(transcriptPath)) ? transcriptPath : undefined,
-            transcriptionChunks: transcriptChunks,
-            updatedAt: new Date().toISOString(),
-          });
-          defaultClip = updated || firstClip;
+          defaultClip = existingClips[0];
         } else {
           const clipId = `clip_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
           defaultClip = {
@@ -556,15 +495,11 @@ export class PipelineOrchestrator extends EventEmitter {
             title: initialTitle,
             startTimeSeconds: 0,
             endTimeSeconds: analysis.features.durationSeconds,
-            category: classification.category,
-            userTags: classification.tags,
+            category: 'unclassified',
+            userTags: [],
             collections: currentJob.targetCollection ? [currentJob.targetCollection] : [],
-            classificationConfidence: classification.confidence,
+            classificationConfidence: 0.8,
             classificationSource: 'yamnet_local',
-            transcription: classification.transcriptionSnippet,
-            fullTranscription: transcript || undefined,
-            transcriptPath: (transcript && fs.existsSync(transcriptPath)) ? transcriptPath : undefined,
-            transcriptionChunks: transcriptChunks,
             isExcluded: false,
             createdAt: analysis.creationTimestamp || new Date().toISOString(),
             updatedAt: new Date().toISOString(),
@@ -575,6 +510,88 @@ export class PipelineOrchestrator extends EventEmitter {
             defaultClip = candidate;
           }
         }
+      }
+
+      // Audio file is now verified, has waveform peaks, registered in registry, and playable immediately!
+      currentJob.analysisPercent = 40;
+      currentJob.currentTaskDescription = currentJob.autoTranscribe !== false
+        ? 'Ready to play. Speech transcription running in background...'
+        : 'Ready to play in library.';
+      this.throttleBroadcastStatus();
+      this.emit('job-ready-to-play', currentJob, defaultClip);
+
+      // 3. Background Local Whisper Transcription (if autoTranscribe enabled)
+      let transcriptRes: any = null;
+      if (currentJob.autoTranscribe !== false) {
+        try {
+          transcriptRes = await this.audioEngine.transcribeAudioDetails(
+            targetPath,
+            analysis.features.durationSeconds,
+            0
+          );
+        } catch (transcribeErr) {
+          console.warn(`[AudioVault Pipeline] Transcription warning for ${currentJob.filename}:`, transcribeErr);
+        }
+      }
+      const transcript = transcriptRes?.text || null;
+      const transcriptChunks = transcriptRes?.chunks;
+      if (transcript) {
+        console.log(`[AudioVault Pipeline] 🗣️ Whisper transcript for ${currentJob.filename} (${transcript.length} chars): "${transcript.slice(0, 80)}..."`);
+      }
+      currentJob.analysisPercent = 85;
+      currentJob.currentTaskDescription = 'Classifying audio events & generating metadata...';
+      this.throttleBroadcastStatus();
+
+      // Save full transcript to .txt file alongside the imported file
+      const ext = path.extname(targetPath);
+      const transcriptPath = targetPath.slice(0, -ext.length) + '.txt';
+      if (transcript && transcript.trim().length > 0) {
+        try {
+          fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+          fs.writeFileSync(transcriptPath, transcript.trim(), 'utf-8');
+          console.log(`[AudioVault Pipeline] 📝 Full transcript saved alongside audio: ${transcriptPath}`);
+        } catch (fileErr) {
+          console.warn(`[AudioVault Pipeline] Failed writing transcript file: ${transcriptPath}`, fileErr);
+        }
+      }
+
+      // 4. Local AI Classification
+      const classification = this.audioEngine.classifyAcoustics(
+        analysis.features,
+        currentJob.filename,
+        transcript
+      );
+      console.log(`[AudioVault Pipeline] 🏷️ Classified as: ${classification.category.toUpperCase()} (${(classification.confidence * 100).toFixed(0)}%)`);
+      currentJob.analysisPercent = 95;
+      this.throttleBroadcastStatus();
+
+      // 5. Composite title if speech transcribed and not custom title
+      let finalTitle = (currentJob as any).customTitle ? defaultClip.title : initialTitle;
+      const speechToSummarize = transcript || classification.transcriptionSnippet;
+      if (speechToSummarize && speechToSummarize.length > 5 && !(currentJob as any).customTitle) {
+        try {
+          finalTitle = await this.titleService.generateCompositeTitle(initialTitle, speechToSummarize);
+        } catch (titleErr) {
+          console.warn('[AudioVault Pipeline] Title generation fallback:', titleErr);
+        }
+      }
+
+      // 6. Update clip in registry with transcript, chunks, tags, category, and composite title
+      const mergedTags = Array.from(new Set([...defaultClip.userTags, ...classification.tags]));
+      const updated = this.dedupEngine.updateVirtualClip(defaultClip.id, {
+        title: finalTitle,
+        category: classification.category,
+        userTags: mergedTags,
+        classificationConfidence: classification.confidence,
+        classificationSource: 'yamnet_local',
+        transcription: classification.transcriptionSnippet,
+        fullTranscription: transcript || undefined,
+        transcriptPath: (transcript && fs.existsSync(transcriptPath)) ? transcriptPath : undefined,
+        transcriptionChunks: transcriptChunks,
+        updatedAt: new Date().toISOString(),
+      });
+      if (updated) {
+        defaultClip = updated;
       }
 
       currentJob.stage = 'completed';
@@ -603,6 +620,8 @@ export class PipelineOrchestrator extends EventEmitter {
       this.unmountMessage = res.success
         ? `Cleanly unmounted ${path.basename(this.pendingUnmountVolumePath)}. Safe to remove card!`
         : `Unmount notice: ${res.message}`;
+    } else {
+      this.unmountMessage = `Copy complete for ${path.basename(this.pendingUnmountVolumePath)}. Safe to disconnect card!`;
     }
   }
 

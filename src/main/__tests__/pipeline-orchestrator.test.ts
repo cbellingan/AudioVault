@@ -296,4 +296,67 @@ describe('Pipeline Orchestrator (Serial SD Reader & Parallel Worker Pool)', () =
       } catch {}
     }
   });
+
+  it('registers recording as playable immediately upon copy before transcription finishes (Slice F08)', async () => {
+    const sandboxVaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'f08-vault-'));
+    const sandboxSdDir = fs.mkdtempSync(path.join(os.tmpdir(), 'f08-sd-'));
+
+    try {
+      const testDedup = new DedupEngine(sandboxVaultDir);
+      const testWatcher = new VolumeWatcher(testDedup);
+      const testAudio = new AudioEngine();
+      const testOrch = new PipelineOrchestrator(testDedup, testWatcher, testAudio);
+
+      const speechTake = path.join(sandboxSdDir, 'F08_SPEECH_TAKE.WAV');
+      fs.writeFileSync(speechTake, generateSyntheticWavBuffer({ durationSeconds: 1.5, frequency: 440 }));
+
+      let readyFired = false;
+      let readyClipId: string | null = null;
+      let completedFired = false;
+
+      testOrch.on('job-ready-to-play', (_job, clip) => {
+        readyFired = true;
+        readyClipId = clip.id;
+        // Verify audio is already registered in registry and playable
+        const storedClip = testDedup.getVirtualClip(clip.id);
+        expect(storedClip).toBeDefined();
+        expect(storedClip?.title).toBe('F08_SPEECH_TAKE');
+        const parentRaw = testDedup.getRawFile(storedClip!.parentFileId);
+        expect(parentRaw).toBeDefined();
+        expect(parentRaw?.waveformPeaks.length).toBeGreaterThan(0);
+        // Completed should NOT have fired yet when ready-to-play fires
+        expect(completedFired).toBe(false);
+      });
+
+      testOrch.on('job-completed', () => {
+        completedFired = true;
+      });
+
+      testOrch.enqueueBatch([speechTake], sandboxSdDir, undefined, true);
+
+      await new Promise<void>((resolve) => {
+        testOrch.on('pipeline-status', (status) => {
+          if (status.completedJobs >= 1) resolve();
+        });
+        setTimeout(resolve, 4000);
+      });
+
+      expect(readyFired).toBe(true);
+      expect(completedFired).toBe(true);
+
+      const finalClip = testDedup.getVirtualClip(readyClipId!);
+      expect(finalClip).toBeDefined();
+      expect(finalClip?.transcription).toBeDefined();
+
+      const finalStatus = testOrch.getStatus();
+      expect(finalStatus.isSdCardActive).toBe(false);
+      expect(finalStatus.canUnmountSdCard).toBe(true);
+      expect(finalStatus.cardStatusText).toBeDefined();
+    } finally {
+      try {
+        fs.rmSync(sandboxVaultDir, { recursive: true, force: true });
+        fs.rmSync(sandboxSdDir, { recursive: true, force: true });
+      } catch {}
+    }
+  });
 });

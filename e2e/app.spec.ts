@@ -1172,6 +1172,71 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
 
     await app.close();
   });
+
+  test("20. Early Audio Availability & Safe Copy Lifecycle: file is playable immediately upon copy before transcription completes, and status displays safe disconnect badge (Slice F08)", async () => {
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+    await window.waitForSelector(".clips-table tbody tr", { timeout: 8000 });
+
+    const extSourceDir = path.join(sandbox.sandboxDir, "mock_field_sd");
+    fs.mkdirSync(extSourceDir, { recursive: true });
+
+    const takePath = path.join(extSourceDir, "F08_EARLY_PLAYABLE.WAV");
+    const sampleBuffer = generateSyntheticWavBuffer({ durationSeconds: 2.0, frequency: 500 });
+    fs.writeFileSync(takePath, sampleBuffer);
+
+    // Set test unmount volume path on window
+    await window.evaluate((dir) => {
+      (window as any).__testUnmountVolumePath = dir;
+    }, extSourceDir);
+
+    // Open import planner and execute
+    await window.evaluate(async (srcDir) => {
+      await (window as any).__openImportPlanner([srcDir], "Field Zoom Recorder");
+    }, extSourceDir);
+
+    const planModal = window.locator("[data-testid=\"import-plan-modal\"]");
+    await expect(planModal).toBeVisible();
+
+    const confirmBtn = window.locator("[data-testid=\"confirm-import-btn\"]");
+    await confirmBtn.click();
+    await expect(planModal).toHaveCount(0);
+
+    // Switch to All Recordings view
+    const libraryNav = window.locator(".app-sidebar .nav-item", { hasText: "All Recordings" });
+    await libraryNav.click();
+
+    // Verify row appears immediately as playable with waveform
+    const earlyClipRow = window.locator(".clips-table tbody tr", { hasText: "F08_EARLY_PLAYABLE" });
+    await expect(earlyClipRow).toBeVisible({ timeout: 10000 });
+
+    // Select row and trigger playback
+    await earlyClipRow.click();
+    const playBtn = window.locator(".play-btn");
+    await expect(playBtn).toBeVisible();
+    await playBtn.click();
+    await expect(playBtn).toHaveText("⏸");
+
+    // Click title link to enter deep-dive workspace
+    const titleLink = earlyClipRow.locator("[data-testid=\"clip-title-link\"]");
+    await titleLink.click();
+
+    // Verify detail player bar is active and populated
+    const playerBar = window.locator("[data-testid=\"detail-player-bar\"]");
+    await expect(playerBar).toBeVisible();
+    await expect(playerBar).toContainText("F08_EARLY_PLAYABLE");
+
+    // Return to library
+    const backBtn = window.locator("[data-testid=\"detail-back-btn\"]");
+    await backBtn.click();
+
+    // Verify pipeline tray displays safe disconnect / unmounted badge once copy is done
+    const safeBadge = window.locator("[data-testid=\"sd-card-safe-badge\"]");
+    await expect(safeBadge).toBeVisible({ timeout: 10000 });
+
+    await app.close();
+  });
 });
 
 
