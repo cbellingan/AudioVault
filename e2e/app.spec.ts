@@ -974,6 +974,89 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
 
     await app.close();
   });
+
+  test("18. Indexed Search with Passage Navigation: global search, scope switching, passage hits view, timestamp navigation, and return to search (Slice F06)", async () => {
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+    await window.waitForSelector(".clips-table tbody tr", { timeout: 8000 });
+
+    // 1. Check header search input and search scope select
+    const searchInput = window.locator(".header-search-input");
+    const scopeSelect = window.locator("[data-testid=\"search-scope-select\"]");
+    await expect(searchInput).toBeVisible();
+    await expect(scopeSelect).toBeVisible();
+    await expect(scopeSelect).toHaveValue("all");
+
+    // 2. Search for words present in sandbox fixture transcripts ("pipeline")
+    await searchInput.fill("pipeline");
+
+    // Matches pill should appear
+    const matchPill = window.locator(".search-matches-pill");
+    await expect(matchPill).toBeVisible();
+
+    // 3. Test Search Scope filtering
+    // Scope = titles: shouldn't match clips whose titles don't contain this phrase
+    await scopeSelect.selectOption("titles");
+    await expect(window.locator(".clips-table tbody tr")).toHaveCount(1); // empty state row
+
+    // Scope = transcripts: finds the recordings
+    await scopeSelect.selectOption("transcripts");
+    const transcriptRows = window.locator(".clips-table tbody tr");
+    expect(await transcriptRows.count()).toBeGreaterThanOrEqual(1);
+
+    // Switch back to "all"
+    await scopeSelect.selectOption("all");
+
+    // 4. Test View Mode Toggle: switch from Table to Passage Hits View
+    const toggleView = window.locator("[data-testid=\"search-view-mode-toggle\"]");
+    await expect(toggleView).toBeVisible();
+
+    const passagesBtn = window.locator("[data-testid=\"search-mode-passages-btn\"]");
+    await expect(passagesBtn).toBeVisible();
+    await passagesBtn.click();
+
+    // Verify search-results-view is rendered
+    const searchResultsView = window.locator("[data-testid=\"search-results-view\"]");
+    await expect(searchResultsView).toBeVisible();
+
+    const resultItems = window.locator("[data-testid=\"search-result-item\"]");
+    expect(await resultItems.count()).toBeGreaterThanOrEqual(1);
+
+    // Verify highlighted match exists in blockquote
+    const highlightMarks = searchResultsView.locator("mark.search-highlight-mark");
+    expect(await highlightMarks.count()).toBeGreaterThanOrEqual(1);
+
+    // 5. Click passage timestamp to deep-link directly into detail workspace
+    const timestampBtn = searchResultsView.locator(".passage-timestamp").first();
+    await expect(timestampBtn).toBeVisible();
+    await timestampBtn.click();
+
+    // Workspace transitions to recording workspace
+    const recWorkspace = window.locator("[data-testid=\"recording-workspace\"]");
+    await expect(recWorkspace).toBeVisible();
+
+    // Back button should say "← Back to Search Results"
+    const backBtn = window.locator("[data-testid=\"detail-back-btn\"]");
+    await expect(backBtn).toHaveText("← Back to Search Results");
+
+    // 6. Click Back to return to search results
+    await backBtn.click();
+    await expect(searchResultsView).toBeVisible();
+    await expect(recWorkspace).toHaveCount(0);
+
+    // Switch back to Table View
+    const tableBtn = window.locator("[data-testid=\"search-mode-table-btn\"]");
+    await tableBtn.click();
+    await expect(window.locator(".clips-table")).toBeVisible();
+
+    // Clear search
+    await searchInput.focus();
+    await window.keyboard.press("Escape");
+    await expect(searchInput).toHaveValue("");
+
+    await app.close();
+  });
 });
 
 

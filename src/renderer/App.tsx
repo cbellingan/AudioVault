@@ -27,6 +27,12 @@ import {
   formatTranscriptAsPlainText,
   TranscriptPassage,
 } from './library/transcript-passages';
+import {
+  searchLibrary,
+  SearchScope,
+  SearchResultItem,
+  SearchPassageHit,
+} from './library/search-engine';
 
 // Standalone fallback mock data
 const mockFallbackClips: VirtualClip[] = [
@@ -246,6 +252,8 @@ export default function App() {
 
   // Direction 1 & 2: Search and In-App Recording State
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchScope, setSearchScope] = useState<SearchScope>('all');
+  const [searchViewMode, setSearchViewMode] = useState<'table' | 'passages'>('table');
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedSource, setSelectedSource] = useState<'all' | 'in-app' | 'sd-card' | 'import-folder'>('all');
 
@@ -286,6 +294,15 @@ export default function App() {
       (c) => c.parentFileId === activeClip.parentFileId && c.id !== activeClip.id && !c.isExcluded
     );
   }, [clips, activeClip]);
+
+  const searchResults = useMemo<SearchResultItem[]>(() => {
+    if (!searchQuery.trim()) return [];
+    return searchLibrary(clips, searchQuery, searchScope);
+  }, [clips, searchQuery, searchScope]);
+
+  const totalPassageHits = useMemo(() => {
+    return searchResults.reduce((acc, r) => acc + r.passageHits.length, 0);
+  }, [searchResults]);
 
   // Auto-scroll active passage in detail view
   useEffect(() => {
@@ -1352,6 +1369,23 @@ export default function App() {
     }
   };
 
+  const handleJumpToPassageHit = (clipId: string, startSec: number) => {
+    setSelectedClipId(clipId);
+    setActiveWorkspace('detail');
+    const targetClip = clips.find((c) => c.id === clipId);
+    if (audioRef.current && targetClip) {
+      const clipDuration = targetClip.endTimeSeconds - targetClip.startTimeSeconds;
+      const targetTime = Math.max(0, Math.min(clipDuration, startSec));
+      audioRef.current.currentTime = targetClip.startTimeSeconds + targetTime;
+      setCurrentTimeSec(targetTime);
+      if (clipDuration > 0) {
+        setPlaybackProgress(targetTime / clipDuration);
+      }
+      setIsPlaying(true);
+      audioRef.current.play().catch(() => {});
+    }
+  };
+
   const handleCopyDetailTranscript = () => {
     if (!activeClip) return;
     const textToCopy =
@@ -2020,19 +2054,26 @@ export default function App() {
     if (selectedSource === 'in-app' && !isLocalTake) return false;
     if (selectedSource === 'sd-card' && isLocalTake) return false;
 
-    // Global Search Query across Title, Transcript, Tags, and Raw Filename
+    // Global Search Query across Title, Transcript, Tags, and Raw Filename (Slice F06)
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
       const inTitle = c.title.toLowerCase().includes(q);
-      const inTranscript = (c.fullTranscription || c.transcription || '').toLowerCase().includes(q);
+      const inTags = c.userTags.some((tag) => tag.toLowerCase().includes(q));
+      const inNotes = (c.notes || '').toLowerCase().includes(q);
+      const inTranscript = (c.editedTranscript || c.fullTranscription || c.transcription || '').toLowerCase().includes(q);
       const inChunks = Array.isArray(c.transcriptionChunks)
         ? c.transcriptionChunks.some((chunk) => chunk && typeof chunk.text === 'string' && chunk.text.toLowerCase().includes(q))
         : false;
-      const inTags = c.userTags.some((tag) => tag.toLowerCase().includes(q));
       const inFilename = parentRaw ? parentRaw.originalFilename.toLowerCase().includes(q) : false;
 
-      if (!inTitle && !inTranscript && !inChunks && !inTags && !inFilename) {
-        return false;
+      if (searchScope === 'titles') {
+        if (!inTitle && !inTags && !inFilename) return false;
+      } else if (searchScope === 'transcripts') {
+        if (!inTranscript && !inChunks) return false;
+      } else {
+        if (!inTitle && !inTranscript && !inChunks && !inTags && !inFilename && !inNotes) {
+          return false;
+        }
       }
     }
 
@@ -2473,6 +2514,18 @@ export default function App() {
               }
             }}
           />
+          <select
+            className="search-scope-select"
+            value={searchScope}
+            onChange={(e) => setSearchScope(e.target.value as SearchScope)}
+            data-testid="search-scope-select"
+            title="Search scope"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <option value="all">All</option>
+            <option value="transcripts">Transcripts</option>
+            <option value="titles">Titles & Tags</option>
+          </select>
           {searchQuery ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <span className="search-matches-pill">
@@ -3773,6 +3826,27 @@ export default function App() {
                   >
                     💾 Save this view…
                   </button>
+
+                  {searchQuery.trim() && (
+                    <div className="search-view-mode-toggle" data-testid="search-view-mode-toggle">
+                      <button
+                        type="button"
+                        className={`search-view-mode-btn ${searchViewMode === 'table' ? 'active' : ''}`}
+                        onClick={() => setSearchViewMode('table')}
+                        data-testid="search-mode-table-btn"
+                      >
+                        📋 Table View
+                      </button>
+                      <button
+                        type="button"
+                        className={`search-view-mode-btn ${searchViewMode === 'passages' ? 'active' : ''}`}
+                        onClick={() => setSearchViewMode('passages')}
+                        data-testid="search-mode-passages-btn"
+                      >
+                        💬 Passage Hits ({totalPassageHits})
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {groupingMode !== 'none' && (
@@ -3790,117 +3864,202 @@ export default function App() {
                 )}
               </div>
 
-              <table className="clips-table">
-                <thead>
-                  <tr>
-                    <th onClick={() => handleSort('title')} title="Click to sort by Clip Title">
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                        <input
-                          type="checkbox"
-                          checked={sortedClips.length > 0 && selectedClipIds.size === sortedClips.length}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={() => {
-                            if (selectedClipIds.size === sortedClips.length) setSelectedClipIds(new Set());
-                            else setSelectedClipIds(new Set(sortedClips.map((c) => c.id)));
-                          }}
-                          title="Select all visible recordings"
-                          aria-label="Select all recordings"
-                        />
-                        <span>Clip Title</span> {renderSortIndicator('title')}
+              {searchQuery.trim() && searchViewMode === 'passages' ? (
+                <div className="search-results-view" data-testid="search-results-view">
+                  <div className="search-results-header">
+                    <div>
+                      <h3 style={{ margin: 0, fontSize: '1.05rem', color: '#fff' }}>
+                        Passage search for &ldquo;{searchQuery}&rdquo;
+                      </h3>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        Found {totalPassageHits} matching passage{totalPassageHits === 1 ? '' : 's'} across{' '}
+                        {searchResults.filter((r) => r.passageHits.length > 0).length} recording
+                        {searchResults.filter((r) => r.passageHits.length > 0).length === 1 ? '' : 's'}
                       </div>
-                    </th>
-                    <th onClick={() => handleSort('category')} title="Click to sort by Category">
-                      Category {renderSortIndicator('category')}
-                    </th>
-                    <th onClick={() => handleSort('duration')} title="Click to sort by Duration">
-                      Duration {renderSortIndicator('duration')}
-                    </th>
-                    <th onClick={() => handleSort('tags')} title="Click to sort by Sub-Tags">
-                      Sub-Tags {renderSortIndicator('tags')}
-                    </th>
-                    <th onClick={() => handleSort('confidence')} title="Click to sort by Local AI Signal">
-                      Local AI Signal {renderSortIndicator('confidence')}
-                    </th>
-                    <th>Status</th>
-                    <th onClick={() => handleSort('createdAt')} title="Click to sort by Creation / Import Time">
-                      Created / Recorded {renderSortIndicator('createdAt')}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedClips.length === 0 ? (
-                    <tr>
-                      <td colSpan={7} style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--text-muted)' }}>
-                        <div style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>No recordings match these filters</div>
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => {
-                            setTranscriptFilter('all');
-                            setSelectedCategory('all');
-                            setSelectedTag(null);
-                            setSearchQuery('');
-                          }}
-                        >
-                          Clear all filters
-                        </button>
-                      </td>
-                    </tr>
-                  ) : groupingMode === 'none' ? (
-                    hierarchyItems.map((item) => {
-                      const primary = item.primaryClip;
-                      const isExpanded = expandedExcerptClipIds.has(primary.id);
-                      return (
-                        <React.Fragment key={primary.id}>
-                          {renderClipRow(primary, false, item.excerpts.length)}
-                          {isExpanded &&
-                            item.excerpts.map((excerpt) => (
-                              <React.Fragment key={excerpt.id}>
-                                {renderClipRow(excerpt, true, 0)}
-                              </React.Fragment>
-                            ))}
-                        </React.Fragment>
-                      );
-                    })
+                    </div>
+                  </div>
+
+                  {totalPassageHits === 0 ? (
+                    <div className="search-empty-state">
+                      <div style={{ fontSize: '1.5rem' }}>💬</div>
+                      <div style={{ color: 'var(--text-muted)', fontSize: '0.95rem' }}>
+                        No spoken passages match &ldquo;{searchQuery}&rdquo;
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => setSearchViewMode('table')}
+                      >
+                        View matching recordings in Table View ({filteredClips.length})
+                      </button>
+                    </div>
                   ) : (
-                    groupedSections.map((section) => {
-                      const isCollapsed = collapsedGroups.has(section.key);
-                      return (
-                        <React.Fragment key={section.key}>
-                          <tr className="group-header-row">
-                            <td colSpan={7}>
+                    <div className="search-results-list">
+                      {searchResults
+                        .filter((r) => r.passageHits.length > 0)
+                        .map((res) => (
+                          <article
+                            key={res.clip.id}
+                            className="search-result-article"
+                            data-testid="search-result-item"
+                          >
+                            <div className="search-result-top">
                               <button
                                 type="button"
-                                className="group-header-btn"
-                                onClick={() => toggleGroupCollapse(section.key)}
+                                className="search-result-title"
+                                onClick={() => {
+                                  setSelectedClipId(res.clip.id);
+                                  setActiveWorkspace('detail');
+                                }}
                               >
-                                <span>{isCollapsed ? '▸' : '▾'} {section.label}</span>
-                                <small>· {section.count} recording{section.count === 1 ? '' : 's'}</small>
+                                {res.clip.title}
                               </button>
-                            </td>
-                          </tr>
-                          {!isCollapsed &&
-                            section.items.map((item) => {
-                              const primary = item.primaryClip;
-                              const isExpanded = expandedExcerptClipIds.has(primary.id);
-                              return (
-                                <React.Fragment key={primary.id}>
-                                  {renderClipRow(primary, false, item.excerpts.length)}
-                                  {isExpanded &&
-                                    item.excerpts.map((excerpt) => (
-                                      <React.Fragment key={excerpt.id}>
-                                        {renderClipRow(excerpt, true, 0)}
-                                      </React.Fragment>
-                                    ))}
-                                </React.Fragment>
-                              );
-                            })}
-                        </React.Fragment>
-                      );
-                    })
+                              <div className="search-result-meta">
+                                <span className={`category-pill cat-${res.clip.category}`}>
+                                  {res.clip.category}
+                                </span>
+                                <span>•</span>
+                                <span>
+                                  {res.passageHits.length} hit{res.passageHits.length === 1 ? '' : 's'}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="search-result-passages">
+                              {res.passageHits.map((hit) => (
+                                <blockquote key={hit.passageId} className="search-result-blockquote">
+                                  <button
+                                    type="button"
+                                    className="passage-timestamp"
+                                    data-hit={res.clip.id}
+                                    title="Play clip at this passage timestamp"
+                                    onClick={() => handleJumpToPassageHit(res.clip.id, hit.startSec)}
+                                  >
+                                    ⏱️ {hit.timestampLabel}
+                                  </button>
+                                  <div style={{ flex: 1 }}>
+                                    <HighlightMatch text={hit.snippet} query={searchQuery} />
+                                  </div>
+                                </blockquote>
+                              ))}
+                            </div>
+                          </article>
+                        ))}
+                    </div>
                   )}
-                </tbody>
-              </table>
+                </div>
+              ) : (
+                <table className="clips-table">
+                  <thead>
+                    <tr>
+                      <th onClick={() => handleSort('title')} title="Click to sort by Clip Title">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                          <input
+                            type="checkbox"
+                            checked={sortedClips.length > 0 && selectedClipIds.size === sortedClips.length}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={() => {
+                              if (selectedClipIds.size === sortedClips.length) setSelectedClipIds(new Set());
+                              else setSelectedClipIds(new Set(sortedClips.map((c) => c.id)));
+                            }}
+                            title="Select all visible recordings"
+                            aria-label="Select all recordings"
+                          />
+                          <span>Clip Title</span> {renderSortIndicator('title')}
+                        </div>
+                      </th>
+                      <th onClick={() => handleSort('category')} title="Click to sort by Category">
+                        Category {renderSortIndicator('category')}
+                      </th>
+                      <th onClick={() => handleSort('duration')} title="Click to sort by Duration">
+                        Duration {renderSortIndicator('duration')}
+                      </th>
+                      <th onClick={() => handleSort('tags')} title="Click to sort by Sub-Tags">
+                        Sub-Tags {renderSortIndicator('tags')}
+                      </th>
+                      <th onClick={() => handleSort('confidence')} title="Click to sort by Local AI Signal">
+                        Local AI Signal {renderSortIndicator('confidence')}
+                      </th>
+                      <th>Status</th>
+                      <th onClick={() => handleSort('createdAt')} title="Click to sort by Creation / Import Time">
+                        Created / Recorded {renderSortIndicator('createdAt')}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedClips.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--text-muted)' }}>
+                          <div style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>No recordings match these filters</div>
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => {
+                              setTranscriptFilter('all');
+                              setSelectedCategory('all');
+                              setSelectedTag(null);
+                              setSearchQuery('');
+                            }}
+                          >
+                            Clear all filters
+                          </button>
+                        </td>
+                      </tr>
+                    ) : groupingMode === 'none' ? (
+                      hierarchyItems.map((item) => {
+                        const primary = item.primaryClip;
+                        const isExpanded = expandedExcerptClipIds.has(primary.id);
+                        return (
+                          <React.Fragment key={primary.id}>
+                            {renderClipRow(primary, false, item.excerpts.length)}
+                            {isExpanded &&
+                              item.excerpts.map((excerpt) => (
+                                <React.Fragment key={excerpt.id}>
+                                  {renderClipRow(excerpt, true, 0)}
+                                </React.Fragment>
+                              ))}
+                          </React.Fragment>
+                        );
+                      })
+                    ) : (
+                      groupedSections.map((section) => {
+                        const isCollapsed = collapsedGroups.has(section.key);
+                        return (
+                          <React.Fragment key={section.key}>
+                            <tr className="group-header-row">
+                              <td colSpan={7}>
+                                <button
+                                  type="button"
+                                  className="group-header-btn"
+                                  onClick={() => toggleGroupCollapse(section.key)}
+                                >
+                                  <span>{isCollapsed ? '▸' : '▾'} {section.label}</span>
+                                  <small>· {section.count} recording{section.count === 1 ? '' : 's'}</small>
+                                </button>
+                              </td>
+                            </tr>
+                            {!isCollapsed &&
+                              section.items.map((item) => {
+                                const primary = item.primaryClip;
+                                const isExpanded = expandedExcerptClipIds.has(primary.id);
+                                return (
+                                  <React.Fragment key={primary.id}>
+                                    {renderClipRow(primary, false, item.excerpts.length)}
+                                    {isExpanded &&
+                                      item.excerpts.map((excerpt) => (
+                                        <React.Fragment key={excerpt.id}>
+                                          {renderClipRow(excerpt, true, 0)}
+                                        </React.Fragment>
+                                      ))}
+                                  </React.Fragment>
+                                );
+                              })}
+                          </React.Fragment>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              )}
 
               {/* Floating Batch Selection Bar (F03) */}
               {selectedClipIds.size > 0 && (
