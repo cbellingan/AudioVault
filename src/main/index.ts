@@ -86,12 +86,19 @@ function createWindow() {
     minHeight: 720,
     title: 'AudioVault - Hardware Ingestion & Non-Destructive Classifier',
     backgroundColor: '#070a12',
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
     },
+  });
+
+  mainWindow.once('ready-to-show', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+    }
   });
 
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {

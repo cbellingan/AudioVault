@@ -262,9 +262,7 @@ export default function App() {
 
   // Delete clip confirmation modal state
   const [clipToDelete, setClipToDelete] = useState<VirtualClip | null>(null);
-  const [rememberDeleteChoice, setRememberDeleteChoice] = useState<boolean>(() => {
-    return localStorage.getItem('audiovault_remember_delete_choice') === 'true';
-  });
+  const [rememberDeleteChoice, setRememberDeleteChoice] = useState<boolean>(false);
   const [rememberDeleteCheckbox, setRememberDeleteCheckbox] = useState<boolean>(false);
 
   // Refresh AI & Transcripts modal state
@@ -1130,12 +1128,16 @@ export default function App() {
       }
       setRawFiles(allRaw);
       setAutoUnmountPref(settings.autoUnmountAfterIngest);
-
-      // Initial check for mounted drives
-      const volumes = await window.audioVault.scanVolumes();
-      if (volumes.length > 0 && volumes[0].newFilesCount > 0) {
-        setDetectedVolume(volumes[0]);
+      if (settings.rememberDeleteChoice !== undefined) {
+        setRememberDeleteChoice(settings.rememberDeleteChoice);
       }
+
+      // Initial check for mounted drives (background non-blocking)
+      window.audioVault.scanVolumes().then((volumes) => {
+        if (volumes && volumes.length > 0 && volumes[0].newFilesCount > 0) {
+          setDetectedVolume(volumes[0]);
+        }
+      }).catch(() => {});
 
       if (window.audioVault.getDeletedFiles) {
         const deleted = await window.audioVault.getDeletedFiles();
@@ -3106,7 +3108,7 @@ export default function App() {
         {/* Persistent Native Audio Element across all workspaces */}
         <audio
           ref={audioRef}
-          src={`audiovault://file/${activeClip.parentFileId}`}
+          src={activeClip && !activeClip.parentFileId.startsWith('raw_0') ? `audiovault://file/${activeClip.parentFileId}` : undefined}
           onTimeUpdate={() => {
             if (audioRef.current && activeClip) {
               const duration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
