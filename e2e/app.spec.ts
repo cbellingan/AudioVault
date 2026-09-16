@@ -1237,6 +1237,69 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
 
     await app.close();
   });
+
+  test("21. Persistent Import History & Recoverable Job Queue: imports workspace displays persistent batch cards, stats, and 'View in library' collection navigation (Slice F09)", async () => {
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+    await window.waitForSelector(".clips-table tbody tr", { timeout: 8000 });
+
+    // 1. Navigate to Imports workspace using switcher button
+    const importsBtn = window.locator("[data-testid=\"workspace-imports-btn\"]");
+    await importsBtn.click();
+
+    const importsWorkspace = window.locator("[data-testid=\"imports-workspace\"]");
+    await expect(importsWorkspace).toBeVisible();
+
+    const historySection = window.locator("[data-testid=\"import-history-section\"]");
+    await expect(historySection).toBeVisible();
+
+    // 2. Prepare mock external audio source with 2 takes
+    const extSourceDir = path.join(sandbox.sandboxDir, "mock_f09_batch");
+    fs.mkdirSync(extSourceDir, { recursive: true });
+
+    const take1 = path.join(extSourceDir, "F09_CARD_TAKE1.WAV");
+    const take2 = path.join(extSourceDir, "F09_CARD_TAKE2.WAV");
+    fs.writeFileSync(take1, generateSyntheticWavBuffer({ durationSeconds: 1.0, frequency: 440 }));
+    fs.writeFileSync(take2, generateSyntheticWavBuffer({ durationSeconds: 1.2, frequency: 880 }));
+
+    // Open import planner with a target collection
+    await window.evaluate(async (srcDir) => {
+      await (window as any).__openImportPlanner([srcDir], "Field Kit SD");
+    }, extSourceDir);
+
+    const planModal = window.locator("[data-testid=\"import-plan-modal\"]");
+    await expect(planModal).toBeVisible();
+
+    // Select target collection 'Personal ideas'
+    const colSelect = window.locator("[data-testid=\"import-plan-collection-select\"]");
+    await colSelect.selectOption("Personal ideas");
+
+    const confirmBtn = window.locator("[data-testid=\"confirm-import-btn\"]");
+    await confirmBtn.click();
+    await expect(planModal).toHaveCount(0);
+
+    // Verify import batch card appears in Import History
+    const batchCard = window.locator("[data-testid=\"import-batch-card\"]").first();
+    await expect(batchCard).toBeVisible({ timeout: 10000 });
+    await expect(batchCard).toContainText("Personal ideas");
+
+    // Wait for the batch to reach completed status
+    await expect(batchCard.locator(".badge-emerald")).toContainText("Completed", { timeout: 15000 });
+    await expect(batchCard).toContainText("2 takes imported");
+
+    // Click "View in library" button on the batch card
+    const viewBtn = batchCard.locator("[data-testid=\"view-batch-recordings-btn\"]");
+    await viewBtn.click();
+
+    // Verify navigation back to library workspace filtered by collection
+    const activeCol = window.locator(".collection-item.active");
+    await expect(activeCol).toBeVisible();
+    await expect(activeCol).toContainText("Personal ideas");
+
+    await app.close();
+  });
 });
+
 
 

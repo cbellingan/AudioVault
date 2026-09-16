@@ -359,4 +359,75 @@ describe('Pipeline Orchestrator (Serial SD Reader & Parallel Worker Pool)', () =
       } catch {}
     }
   });
+
+  it('tracks import batches in persistent history and reconciles interrupted batches (Slice F09)', async () => {
+    const sandboxVaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'f09-vault-'));
+    const sandboxSrcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'f09-src-'));
+
+    try {
+      const testDedup = new DedupEngine(sandboxVaultDir);
+      const testWatcher = new VolumeWatcher(testDedup);
+      const testAudio = new AudioEngine();
+      const testOrch = new PipelineOrchestrator(testDedup, testWatcher, testAudio);
+
+      const file1 = path.join(sandboxSrcDir, 'F09_TAKE1.WAV');
+      const file2 = path.join(sandboxSrcDir, 'F09_TAKE2.WAV');
+      fs.writeFileSync(file1, generateSyntheticWavBuffer({ durationSeconds: 0.5, frequency: 440 }));
+      fs.writeFileSync(file2, generateSyntheticWavBuffer({ durationSeconds: 0.6, frequency: 880 }));
+
+      const { batchId } = testOrch.enqueueBatch([file1, file2], undefined, 'Field Notes', true);
+
+      // Verify batch record was created immediately
+      const initialBatches = testDedup.getImportBatches();
+      expect(initialBatches.length).toBe(1);
+      expect(initialBatches[0].id).toBe(batchId);
+      expect(initialBatches[0].targetCollection).toBe('Field Notes');
+      expect(initialBatches[0].status).toBe('in_progress');
+      expect(initialBatches[0].totalFiles).toBe(2);
+
+      // Wait for pipeline completion
+      await new Promise<void>((resolve) => {
+        testOrch.on('pipeline-status', (status) => {
+          if (status.completedJobs >= 2) resolve();
+        });
+        setTimeout(resolve, 4000);
+      });
+
+      // Verify batch record updated to completed with recordings
+      const completedBatches = testDedup.getImportBatches();
+      expect(completedBatches.length).toBe(1);
+      expect(completedBatches[0].status).toBe('completed');
+      expect(completedBatches[0].importedCount).toBe(2);
+      expect(completedBatches[0].recordingIds.length).toBe(2);
+
+      // Test reconciliation of interrupted batch
+      testDedup.addImportBatch({
+        id: 'interrupted-batch-1',
+        sourceName: 'Interrupted SD',
+        sourceType: 'sd_card',
+        importedAt: new Date(Date.now() - 3600000).toISOString(),
+        totalFiles: 3,
+        importedCount: 1,
+        duplicateCount: 0,
+        excludedCount: 0,
+        failedCount: 0,
+        recordingIds: [completedBatches[0].recordingIds[0]], // Valid recording exists
+        autoTranscribe: true,
+        status: 'in_progress',
+      });
+
+      const reconciledCount = testOrch.reconcileInterruptedBatches();
+      expect(reconciledCount).toBe(1);
+
+      const reconciledBatch = testDedup.getImportBatches().find((b) => b.id === 'interrupted-batch-1');
+      expect(reconciledBatch).toBeDefined();
+      expect(reconciledBatch!.status).toBe('completed');
+    } finally {
+      try {
+        fs.rmSync(sandboxVaultDir, { recursive: true, force: true });
+        fs.rmSync(sandboxSrcDir, { recursive: true, force: true });
+      } catch {}
+    }
+  });
 });
+

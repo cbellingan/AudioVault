@@ -131,6 +131,7 @@ app.whenReady().then(() => {
   setupIpcHandlers();
   createWindow();
   setupApplicationMenu(() => mainWindow);
+  pipelineOrchestrator.reconcileInterruptedBatches();
 
   // Forward pipeline progress & job completion to Renderer
   pipelineOrchestrator.on('pipeline-status', (status: PipelineStatusEvent) => {

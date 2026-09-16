@@ -512,7 +512,9 @@ export class DedupEngine {
   }
 
   public getImportBatches(): ImportBatchRecord[] {
-    return Array.from(this.importBatches.values());
+    return Array.from(this.importBatches.values()).sort(
+      (a, b) => new Date(b.importedAt).getTime() - new Date(a.importedAt).getTime()
+    );
   }
 
   public addImportBatch(batch: ImportBatchRecord): void {

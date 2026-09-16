@@ -10,6 +10,7 @@ import {
   CollectionRecord,
   SavedViewRecord,
   ImportPlan,
+  ImportBatchRecord,
 } from '../shared/types';
 import { commandRegistry } from './commands/command-registry';
 import {
@@ -166,6 +167,7 @@ export default function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<'library' | 'imports' | 'settings' | 'record' | 'detail'>('library');
   const [activeScope, setActiveScope] = useState<'all' | 'recent' | 'review' | 'favorites' | string>('all');
   const [collections, setCollections] = useState<CollectionRecord[]>([]);
+  const [importBatches, setImportBatches] = useState<ImportBatchRecord[]>([]);
   const [selectedClipIds, setSelectedClipIds] = useState<Set<string>>(new Set());
   const [showNewCollectionModal, setShowNewCollectionModal] = useState(false);
   const [newCollectionName, setNewCollectionName] = useState('');
@@ -538,6 +540,15 @@ export default function App() {
     }
   }, []);
 
+  // Refresh Import Batches when entering Imports workspace or when pipeline jobs update (Slice F09)
+  useEffect(() => {
+    if (activeWorkspace === 'imports' && window.audioVault?.getImportBatches) {
+      window.audioVault.getImportBatches().then((batches) => {
+        if (batches) setImportBatches(batches);
+      });
+    }
+  }, [activeWorkspace, pipelineStatus?.completedJobs, pipelineStatus?.totalJobs]);
+
   // Connect CommandRegistry context to current app state
   useEffect(() => {
     commandRegistry.updateContext({
@@ -631,6 +642,10 @@ export default function App() {
         if (res && res.count > 0) {
           setToastMessage(`📥 Enqueued ${res.count} audio take${res.count === 1 ? '' : 's'} for ingestion!`);
           setTimeout(() => setToastMessage(null), 3500);
+        }
+        if (window.audioVault?.getImportBatches) {
+          const batches = await window.audioVault.getImportBatches();
+          if (batches) setImportBatches(batches);
         }
       } else {
         setImportPlan(null);
@@ -1074,6 +1089,13 @@ export default function App() {
         const views = await window.audioVault.getSavedViews();
         if (views && views.length > 0) {
           setSavedViews(views);
+        }
+      }
+
+      if (window.audioVault.getImportBatches) {
+        const batches = await window.audioVault.getImportBatches();
+        if (batches && batches.length > 0) {
+          setImportBatches(batches);
         }
       }
     } catch (e) {
@@ -2856,6 +2878,7 @@ export default function App() {
           <div className="workspace-switcher" data-testid="workspace-switcher">
             <button
               type="button"
+              data-testid="workspace-library-btn"
               className={`workspace-btn ${activeWorkspace === 'library' ? 'active' : ''}`}
               onClick={() => {
                 setActiveWorkspace('library');
@@ -2867,6 +2890,7 @@ export default function App() {
             </button>
             <button
               type="button"
+              data-testid="workspace-imports-btn"
               className={`workspace-btn ${activeWorkspace === 'imports' ? 'active' : ''}`}
               onClick={() => setActiveWorkspace('imports')}
               title="Imports Workspace (⌘2)"
@@ -3288,6 +3312,106 @@ export default function App() {
                 <div className="batch-card" style={{ opacity: 0.8 }}>
                   <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
                     No external field recorder connected. Drag audio files or click above to ingest from folders.
+                  </div>
+                </div>
+              )}
+
+              {/* Active Pipeline Queue (if jobs running) */}
+              {pipelineStatus && (pipelineStatus.activeCopyJob || (pipelineStatus.activeAnalysisJobs && pipelineStatus.activeAnalysisJobs.length > 0)) && (
+                <div className="batch-card" data-testid="imports-active-queue" style={{ borderColor: 'var(--accent-cyan)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                    <div style={{ fontWeight: 600, color: 'var(--accent-cyan)', fontSize: '0.9rem' }}>
+                      ⚡ Active Ingestion Queue
+                    </div>
+                    <span className="badge badge-cyan">
+                      {pipelineStatus.completedJobs} / {pipelineStatus.totalJobs} completed
+                    </span>
+                  </div>
+                  {pipelineStatus.activeCopyJob && (
+                    <div style={{ marginBottom: '0.5rem' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem', marginBottom: '0.2rem' }}>
+                        <span>Copying: <strong>{pipelineStatus.activeCopyJob.filename}</strong></span>
+                        <span>{pipelineStatus.activeCopyJob.copyPercent}%</span>
+                      </div>
+                      <div className="progress-track">
+                        <div className="progress-fill" style={{ width: `${pipelineStatus.activeCopyJob.copyPercent}%` }} />
+                      </div>
+                    </div>
+                  )}
+                  {pipelineStatus.activeAnalysisJobs.length > 0 && (
+                    <div className="worker-pills-row" style={{ marginTop: '0.4rem' }}>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Workers:</span>
+                      {pipelineStatus.activeAnalysisJobs.map((j) => (
+                        <div key={j.jobId} className="worker-pill">
+                          <span>🧠 {j.filename}</span>
+                          <span style={{ color: 'var(--accent-cyan)' }}>{j.analysisPercent}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Import History Section (Slice F09) */}
+            <div className="batch-list" data-testid="import-history-section" style={{ marginTop: '1.25rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                <div style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Import History
+                </div>
+                <span className="badge badge-muted" data-testid="import-history-count">
+                  {importBatches.length} batch{importBatches.length === 1 ? '' : 'es'}
+                </span>
+              </div>
+
+              {importBatches.length > 0 ? (
+                importBatches.map((batch) => (
+                  <div key={batch.id} className="batch-card" data-testid="import-batch-card">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <span style={{ fontWeight: 600, color: '#fff', fontSize: '0.92rem' }}>
+                            {batch.sourceType === 'sd_card' ? '💾' : batch.sourceType === 'folder' ? '📁' : '📄'} {batch.sourceName}
+                          </span>
+                          <span className={`badge ${batch.status === 'completed' ? 'badge-emerald' : batch.status === 'in_progress' ? 'badge-cyan' : 'badge-amber'}`}>
+                            {batch.status === 'completed' ? '✓ Completed' : batch.status === 'in_progress' ? '⚡ In Progress' : '⚠ Interrupted'}
+                          </span>
+                          {batch.targetCollection && (
+                            <span className="badge badge-muted">
+                              🏷️ {batch.targetCollection}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.3rem' }}>
+                          {new Date(batch.importedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })} · {batch.importedCount} take{batch.importedCount === 1 ? '' : 's'} imported
+                          {batch.duplicateCount > 0 ? ` · ${batch.duplicateCount} duplicate(s) skipped` : ''}
+                          {batch.failedCount > 0 ? ` · ${batch.failedCount} failed` : ''}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: '0.4rem' }}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          data-testid="view-batch-recordings-btn"
+                          onClick={() => {
+                            if (batch.targetCollection) {
+                              setActiveScope(`col:${batch.targetCollection}`);
+                            } else {
+                              setActiveScope('all');
+                            }
+                            setActiveWorkspace('library');
+                          }}
+                        >
+                          View in library
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="batch-card" style={{ opacity: 0.8 }}>
+                  <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                    No imports recorded yet. Connect an SD card or import audio files to begin.
                   </div>
                 </div>
               )}

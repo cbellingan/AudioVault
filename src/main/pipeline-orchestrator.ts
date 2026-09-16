@@ -9,6 +9,7 @@ import {
   PipelineStatusEvent,
   RawAudioFile,
   VirtualClip,
+  ImportBatchRecord,
 } from '../shared/types';
 
 import { TitleService } from './title-service';
@@ -116,6 +117,47 @@ export class PipelineOrchestrator extends EventEmitter {
       this.totalBatchJobsCount++;
       addedCount++;
     }
+
+    let sourceType: 'sd_card' | 'folder' | 'files' = 'files';
+    if (volumeToUnmount) {
+      sourceType = 'sd_card';
+    } else if (
+      filePaths.some((p) => {
+        try {
+          return fs.statSync(p).isDirectory();
+        } catch {
+          return false;
+        }
+      })
+    ) {
+      sourceType = 'folder';
+    }
+
+    let sourceName = 'Audio Files';
+    if (volumeToUnmount) {
+      sourceName = path.basename(volumeToUnmount);
+    } else if (filePaths.length === 1) {
+      sourceName = path.basename(filePaths[0]);
+    } else if (filePaths.length > 1) {
+      sourceName = `${filePaths.length} items`;
+    }
+
+    const batchRecord: ImportBatchRecord = {
+      id: batchId,
+      sourceName,
+      sourceType,
+      importedAt: new Date().toISOString(),
+      totalFiles: resolvedPaths.length,
+      importedCount: 0,
+      duplicateCount: resolvedPaths.length - addedCount,
+      excludedCount: 0,
+      failedCount: 0,
+      recordingIds: [],
+      targetCollection,
+      autoTranscribe: autoTranscribe !== false,
+      status: addedCount > 0 ? 'in_progress' : 'completed',
+    };
+    this.dedupEngine.addImportBatch(batchRecord);
 
     this.throttleBroadcastStatus();
     this.processNextCopy();
@@ -598,6 +640,22 @@ export class PipelineOrchestrator extends EventEmitter {
       currentJob.analysisPercent = 100;
       currentJob.currentTaskDescription = `Completed. Categorized as ${classification.category.toUpperCase()}`;
       this.completedJobsCount++;
+
+      // Update persistent batch record (Slice F09)
+      if (currentJob.batchId) {
+        const batch = this.dedupEngine.getImportBatches().find((b) => b.id === currentJob.batchId);
+        if (batch) {
+          const recIds = Array.from(new Set([...batch.recordingIds, defaultClip.id]));
+          const newImportedCount = recIds.length;
+          const isComplete = newImportedCount + batch.failedCount >= (batch.totalFiles - batch.duplicateCount);
+          this.dedupEngine.updateImportBatch(currentJob.batchId, {
+            recordingIds: recIds,
+            importedCount: newImportedCount,
+            status: isComplete ? 'completed' : 'in_progress',
+          });
+        }
+      }
+
       console.log(`[AudioVault Pipeline] ✅ Registered into Vault: ${currentJob.filename}`);
       this.emit('job-completed', currentJob, defaultClip);
     } catch (err: any) {
@@ -605,6 +663,19 @@ export class PipelineOrchestrator extends EventEmitter {
       currentJob.stage = 'failed';
       currentJob.error = err.message || String(err);
       this.failedJobsCount++;
+
+      if (currentJob.batchId) {
+        const batch = this.dedupEngine.getImportBatches().find((b) => b.id === currentJob.batchId);
+        if (batch) {
+          const newFailedCount = batch.failedCount + 1;
+          const isComplete = batch.importedCount + newFailedCount >= (batch.totalFiles - batch.duplicateCount);
+          this.dedupEngine.updateImportBatch(currentJob.batchId, {
+            failedCount: newFailedCount,
+            status: isComplete ? (batch.importedCount > 0 ? 'completed' : 'failed') : 'in_progress',
+            error: err.message || String(err),
+          });
+        }
+      }
     } finally {
       this.activeAnalysisJobs.delete(currentJob.jobId);
       this.throttleBroadcastStatus();
@@ -655,5 +726,22 @@ export class PipelineOrchestrator extends EventEmitter {
       this.notifyTimeout = null;
       this.emit('pipeline-status', this.getStatus());
     }, 80); // Throttled to ~12 updates per second max
+  }
+
+  public reconcileInterruptedBatches(): number {
+    const batches = this.dedupEngine.getImportBatches();
+    let reconciled = 0;
+    for (const b of batches) {
+      if (b.status === 'in_progress') {
+        const clips = this.dedupEngine.getVirtualClips();
+        const validRecs = b.recordingIds.filter((id) => clips.some((c) => c.id === id));
+        this.dedupEngine.updateImportBatch(b.id, {
+          status: validRecs.length > 0 ? 'completed' : 'failed',
+          importedCount: validRecs.length,
+        });
+        reconciled++;
+      }
+    }
+    return reconciled;
   }
 }
