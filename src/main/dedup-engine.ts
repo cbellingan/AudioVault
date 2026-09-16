@@ -13,7 +13,22 @@ export class DedupEngine {
 
   constructor(customVaultDir?: string) {
     const homeDir = process.env.HOME || process.env.USERPROFILE || '.';
-    this.vaultDir = customVaultDir || process.env.AUDIOVAULT_VAULT_DIR || path.join(homeDir, 'Music', 'AudioVault');
+    const prodVault = path.join(homeDir, 'Music', 'AudioVault');
+    const isTestMode =
+      process.env.AUDIOVAULT_TEST_MODE === '1' ||
+      process.env.NODE_ENV === 'test' ||
+      process.env.VITEST === 'true';
+
+    const targetDir = customVaultDir || process.env.AUDIOVAULT_VAULT_DIR;
+    if (isTestMode) {
+      if (!targetDir || path.resolve(targetDir) === path.resolve(prodVault)) {
+        throw new Error(
+          `[AudioVault Hard Guard] Test mode active (AUDIOVAULT_TEST_MODE, NODE_ENV=test, or VITEST), but no isolated vault directory was specified or the production vault path was targeted: "${targetDir || 'undefined'}". Accessing production vault during tests is strictly forbidden.`
+        );
+      }
+    }
+
+    this.vaultDir = targetDir || prodVault;
     this.registryFile = path.join(this.vaultDir, 'registry.json');
     this.settings = {
       vaultDirectory: this.vaultDir,
@@ -34,6 +49,18 @@ export class DedupEngine {
   public updateSettings(newSettings: Partial<VaultSettings>): VaultSettings {
     this.settings = { ...this.settings, ...newSettings };
     if (newSettings.vaultDirectory && newSettings.vaultDirectory !== this.vaultDir) {
+      const homeDir = process.env.HOME || process.env.USERPROFILE || '.';
+      const prodVault = path.join(homeDir, 'Music', 'AudioVault');
+      const isTestMode =
+        process.env.AUDIOVAULT_TEST_MODE === '1' ||
+        process.env.NODE_ENV === 'test' ||
+        process.env.VITEST === 'true';
+
+      if (isTestMode && path.resolve(newSettings.vaultDirectory) === path.resolve(prodVault)) {
+        throw new Error(
+          `[AudioVault Hard Guard] Attempted to switch vault directory to production vault during test mode: "${newSettings.vaultDirectory}". Strictly forbidden.`
+        );
+      }
       this.vaultDir = newSettings.vaultDirectory;
       this.registryFile = path.join(this.vaultDir, 'registry.json');
       this.ensureDirectories();
