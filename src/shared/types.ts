@@ -274,6 +274,28 @@ export interface AudioVaultAPI {
   getDeletedFiles: () => Promise<DeletedFileRecord[]>;
   clearDeletedFiles: () => Promise<boolean>;
   forgetDeletedFile: (idOrFingerprint: string) => Promise<boolean>;
+
+  // Application Menu & Navigation Actions
+  onMenuAction?: (callback: (action: string, ...args: any[]) => void) => () => void;
+
+  // Collections API
+  getCollections?: () => Promise<CollectionRecord[]>;
+  addCollection?: (col: CollectionRecord) => Promise<CollectionRecord>;
+  deleteCollection?: (id: string) => Promise<boolean>;
+
+  // Import Batches API
+  getImportBatches?: () => Promise<ImportBatchRecord[]>;
+
+  // Saved Views API
+  getSavedViews?: () => Promise<SavedViewRecord[]>;
+  addSavedView?: (view: SavedViewRecord) => Promise<SavedViewRecord>;
+  deleteSavedView?: (id: string) => Promise<boolean>;
+
+  // Flags & Membership
+  toggleFavorite?: (clipId: string) => Promise<boolean>;
+  toggleReviewed?: (clipId: string) => Promise<boolean>;
+  addClipToCollection?: (clipId: string, collectionName: string) => Promise<boolean>;
+  removeClipFromCollection?: (clipId: string, collectionName: string) => Promise<boolean>;
 }
 
 declare global {

@@ -676,4 +676,57 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
 
     await app.close();
   });
+
+  test("14. Navigation Shell & Commands: Workspace switching, Library Views, and Collection creation", async () => {
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+
+    // 1. Verify workspace switcher is present
+    const switcher = window.locator("[data-testid=\"workspace-switcher\"]");
+    await expect(switcher).toBeVisible();
+
+    // 2. Switch to Imports workspace
+    const importsTab = switcher.locator("button", { hasText: "Imports" });
+    await importsTab.click();
+    const importsWorkspace = window.locator("[data-testid=\"imports-workspace\"]");
+    await expect(importsWorkspace).toBeVisible();
+
+    // 3. Switch back to Library workspace using shortcut (Meta+1) or button
+    const libraryTab = switcher.locator("button", { hasText: "Library" });
+    await libraryTab.click();
+    await expect(window.locator(".clips-pane")).toBeVisible();
+
+    // 4. Create New Collection via button
+    const newColBtn = window.locator("button.nav-header-action", { hasText: "+ New" });
+    await expect(newColBtn).toBeVisible();
+    await newColBtn.click();
+
+    // Modal opens
+    const modalInput = window.locator(".modal-body input");
+    await expect(modalInput).toBeVisible();
+    await modalInput.fill("Field Research 2026");
+    await window.keyboard.press("Enter");
+
+    // Verify toast and new collection item
+    const toast = window.locator("[data-testid=\"copy-toast\"]");
+    await expect(toast).toBeVisible();
+    await expect(toast).toContainText("Created collection \"Field Research 2026\"");
+
+    const colItem = window.locator(".collection-item", { hasText: "Field Research 2026" });
+    await expect(colItem).toBeVisible();
+
+    // 5. Test Library Views filtering
+    const needsReview = window.locator(".nav-item", { hasText: "Needs Review" });
+    await expect(needsReview).toBeVisible();
+    await needsReview.click();
+    await expect(needsReview).toHaveClass(/active/);
+
+    const allRecordings = window.locator(".nav-item", { hasText: "All Recordings" });
+    await allRecordings.click();
+    await expect(allRecordings).toHaveClass(/active/);
+
+    await app.close();
+  });
 });
+

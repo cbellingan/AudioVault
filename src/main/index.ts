@@ -20,6 +20,7 @@ import { VolumeWatcher } from './volume-watcher';
 import { AudioEngine } from './audio-engine';
 import { PipelineOrchestrator } from './pipeline-orchestrator';
 import { TitleService } from './title-service';
+import { setupApplicationMenu } from './menu';
 import {
   IngestResult,
   PipelineStatusEvent,
@@ -29,6 +30,9 @@ import {
   VirtualClip,
   VolumeDetectedEvent,
   DeletedFileRecord,
+  CollectionRecord,
+  ImportBatchRecord,
+  SavedViewRecord,
 } from '../shared/types';
 
 // Configure isolated test sandbox if running in automated test mode
@@ -123,6 +127,7 @@ app.whenReady().then(() => {
 
   setupIpcHandlers();
   createWindow();
+  setupApplicationMenu(() => mainWindow);
 
   // Forward pipeline progress & job completion to Renderer
   pipelineOrchestrator.on('pipeline-status', (status: PipelineStatusEvent) => {
@@ -707,5 +712,55 @@ function setupIpcHandlers() {
 
   ipcMain.handle('vault:forget-deleted-file', async (_, idOrFingerprint: string): Promise<boolean> => {
     return dedupEngine.forgetDeletedFile(idOrFingerprint);
+  });
+
+  // Collections IPC Handlers
+  ipcMain.handle('vault:get-collections', async (): Promise<CollectionRecord[]> => {
+    return dedupEngine.getCollections();
+  });
+
+  ipcMain.handle('vault:add-collection', async (_, col: CollectionRecord): Promise<CollectionRecord> => {
+    dedupEngine.addCollection(col);
+    return col;
+  });
+
+  ipcMain.handle('vault:delete-collection', async (_, id: string): Promise<boolean> => {
+    return dedupEngine.deleteCollection(id);
+  });
+
+  // Import Batches IPC Handlers
+  ipcMain.handle('vault:get-import-batches', async (): Promise<ImportBatchRecord[]> => {
+    return dedupEngine.getImportBatches();
+  });
+
+  // Saved Views IPC Handlers
+  ipcMain.handle('vault:get-saved-views', async (): Promise<SavedViewRecord[]> => {
+    return dedupEngine.getSavedViews();
+  });
+
+  ipcMain.handle('vault:add-saved-view', async (_, view: SavedViewRecord): Promise<SavedViewRecord> => {
+    dedupEngine.addSavedView(view);
+    return view;
+  });
+
+  ipcMain.handle('vault:delete-saved-view', async (_, id: string): Promise<boolean> => {
+    return dedupEngine.deleteSavedView(id);
+  });
+
+  // Flag & Collection Membership Handlers
+  ipcMain.handle('vault:toggle-favorite', async (_, clipId: string): Promise<boolean> => {
+    return dedupEngine.toggleFavorite(clipId);
+  });
+
+  ipcMain.handle('vault:toggle-reviewed', async (_, clipId: string): Promise<boolean> => {
+    return dedupEngine.toggleReviewed(clipId);
+  });
+
+  ipcMain.handle('vault:add-clip-to-collection', async (_, clipId: string, collectionName: string): Promise<boolean> => {
+    return dedupEngine.addClipToCollection(clipId, collectionName);
+  });
+
+  ipcMain.handle('vault:remove-clip-from-collection', async (_, clipId: string, collectionName: string): Promise<boolean> => {
+    return dedupEngine.removeClipFromCollection(clipId, collectionName);
   });
 }

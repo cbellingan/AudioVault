@@ -75,6 +75,36 @@ const audioVaultApi: AudioVaultAPI = {
   clearDeletedFiles: () => ipcRenderer.invoke('vault:clear-deleted-files'),
   forgetDeletedFile: (idOrFingerprint: string) =>
     ipcRenderer.invoke('vault:forget-deleted-file', idOrFingerprint),
+
+  // Application Menu Actions
+  onMenuAction: (callback: (action: string, ...args: any[]) => void) => {
+    const handler = (_: unknown, action: string, ...args: any[]) => callback(action, ...args);
+    ipcRenderer.on('app:menu-action', handler);
+    return () => {
+      ipcRenderer.removeListener('app:menu-action', handler);
+    };
+  },
+
+  // Collections API
+  getCollections: () => ipcRenderer.invoke('vault:get-collections'),
+  addCollection: (col: any) => ipcRenderer.invoke('vault:add-collection', col),
+  deleteCollection: (id: string) => ipcRenderer.invoke('vault:delete-collection', id),
+
+  // Import Batches API
+  getImportBatches: () => ipcRenderer.invoke('vault:get-import-batches'),
+
+  // Saved Views API
+  getSavedViews: () => ipcRenderer.invoke('vault:get-saved-views'),
+  addSavedView: (view: any) => ipcRenderer.invoke('vault:add-saved-view', view),
+  deleteSavedView: (id: string) => ipcRenderer.invoke('vault:delete-saved-view', id),
+
+  // Flags & Membership
+  toggleFavorite: (clipId: string) => ipcRenderer.invoke('vault:toggle-favorite', clipId),
+  toggleReviewed: (clipId: string) => ipcRenderer.invoke('vault:toggle-reviewed', clipId),
+  addClipToCollection: (clipId: string, collectionName: string) =>
+    ipcRenderer.invoke('vault:add-clip-to-collection', clipId, collectionName),
+  removeClipFromCollection: (clipId: string, collectionName: string) =>
+    ipcRenderer.invoke('vault:remove-clip-from-collection', clipId, collectionName),
 };
 
 contextBridge.exposeInMainWorld('audioVault', audioVaultApi);

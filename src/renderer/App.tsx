@@ -7,7 +7,9 @@ import {
   VaultSettings,
   PipelineStatusEvent,
   IngestJobProgress,
+  CollectionRecord,
 } from '../shared/types';
+import { commandRegistry } from './commands/command-registry';
 
 // Standalone fallback mock data
 const mockFallbackClips: VirtualClip[] = [
@@ -135,6 +137,14 @@ export default function App() {
   const [deletedFilesCount, setDeletedFilesCount] = useState(0);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const activeIngestingVolumePathRef = useRef<string | null>(null);
+
+  // Redesigned Navigation Workspaces & Scopes
+  const [activeWorkspace, setActiveWorkspace] = useState<'library' | 'imports' | 'settings' | 'record' | 'detail'>('library');
+  const [activeScope, setActiveScope] = useState<'all' | 'recent' | 'review' | 'favorites' | string>('all');
+  const [collections, setCollections] = useState<CollectionRecord[]>([]);
+  const [selectedClipIds, setSelectedClipIds] = useState<Set<string>>(new Set());
+  const [showNewCollectionModal, setShowNewCollectionModal] = useState(false);
+  const [newCollectionName, setNewCollectionName] = useState('');
   
   // Table Sorting state: starts desc on creation / import time
   type SortField = 'title' | 'category' | 'duration' | 'tags' | 'confidence' | 'createdAt';
@@ -428,46 +438,199 @@ export default function App() {
     }
   }, []);
 
-  // Global Keyboard Shortcuts (Space to Play/Pause, Arrow keys to Seek, Cmd+K to Search)
+  // Connect CommandRegistry context to current app state
   useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        searchInputRef.current?.focus();
-        return;
-      }
+    commandRegistry.updateContext({
+      activeView: activeWorkspace,
+      activeClipId: activeClip?.id,
+      hasSelectedClips: selectedClipIds.size > 0,
+      selectedCount: selectedClipIds.size,
+      hasTranscript: !!(activeClip && (activeClip.fullTranscription || activeClip.transcription)),
+      isPlaying,
+      isModalOpen: !!(clipToDelete || editingMetadataClip || showRefreshAiModal || showNewCollectionModal),
+    });
+  }, [
+    activeWorkspace,
+    activeClip,
+    selectedClipIds,
+    isPlaying,
+    clipToDelete,
+    editingMetadataClip,
+    showRefreshAiModal,
+    showNewCollectionModal,
+  ]);
 
-      const activeTag = (document.activeElement?.tagName || '').toLowerCase();
-      if (activeTag === 'input' || activeTag === 'textarea') return;
-
-      if (e.code === 'Space') {
-        e.preventDefault();
-        setIsPlaying((prev) => !prev);
-      } else if (e.code === 'ArrowLeft') {
-        e.preventDefault();
-        if (audioRef.current && activeClip) {
-          const newTime = Math.max(activeClip.startTimeSeconds, audioRef.current.currentTime - 3);
-          audioRef.current.currentTime = newTime;
-          const duration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
-          if (duration > 0) {
-            setPlaybackProgress((newTime - activeClip.startTimeSeconds) / duration);
+  // Register all typed commands with unified handlers
+  useEffect(() => {
+    commandRegistry.register({
+      id: 'search-focus',
+      label: 'Search Library',
+      isEnabled: () => true,
+      execute: () => searchInputRef.current?.focus(),
+    });
+    commandRegistry.register({
+      id: 'nav-library',
+      label: 'All Recordings',
+      isEnabled: () => true,
+      execute: () => {
+        setActiveWorkspace('library');
+        setActiveScope('all');
+      },
+    });
+    commandRegistry.register({
+      id: 'nav-imports',
+      label: 'Imports',
+      isEnabled: () => true,
+      execute: () => setActiveWorkspace('imports'),
+    });
+    commandRegistry.register({
+      id: 'nav-settings',
+      label: 'Settings',
+      isEnabled: () => true,
+      execute: () => setActiveWorkspace('settings'),
+    });
+    commandRegistry.register({
+      id: 'import-audio',
+      label: 'Import Audio…',
+      isEnabled: () => true,
+      execute: async () => {
+        if (window.audioVault) {
+          const res = await window.audioVault.selectAndImport();
+          if (res && res.count > 0) {
+            setToastMessage(`📥 Enqueued ${res.count} audio takes for ingestion!`);
+            setTimeout(() => setToastMessage(null), 3500);
           }
         }
-      } else if (e.code === 'ArrowRight') {
-        e.preventDefault();
-        if (audioRef.current && activeClip) {
-          const newTime = Math.min(activeClip.endTimeSeconds, audioRef.current.currentTime + 3);
-          audioRef.current.currentTime = newTime;
-          const duration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
-          if (duration > 0) {
-            setPlaybackProgress((newTime - activeClip.startTimeSeconds) / duration);
+      },
+    });
+    commandRegistry.register({
+      id: 'import-folder',
+      label: 'Import Folder…',
+      isEnabled: () => true,
+      execute: async () => {
+        if (window.audioVault) {
+          const res = await window.audioVault.selectAndImport();
+          if (res && res.count > 0) {
+            setToastMessage(`📥 Enqueued ${res.count} audio takes for ingestion!`);
+            setTimeout(() => setToastMessage(null), 3500);
           }
         }
-      }
-    }
+      },
+    });
+    commandRegistry.register({
+      id: 'new-recording',
+      label: 'New Recording',
+      isEnabled: () => true,
+      execute: () => {
+        if (!isRecording) startRecording();
+        else stopRecording();
+      },
+    });
+    commandRegistry.register({
+      id: 'new-collection',
+      label: 'New Collection…',
+      isEnabled: () => true,
+      execute: () => setShowNewCollectionModal(true),
+    });
+    commandRegistry.register({
+      id: 'play-pause',
+      label: 'Play / Pause',
+      isEnabled: () => !!activeClip,
+      execute: () => setIsPlaying((prev) => !prev),
+    });
+    commandRegistry.register({
+      id: 'skip-back',
+      label: 'Skip Back 10 Seconds',
+      isEnabled: () => !!activeClip,
+      execute: () => {
+        if (audioRef.current && activeClip) {
+          const newTime = Math.max(activeClip.startTimeSeconds, audioRef.current.currentTime - 10);
+          audioRef.current.currentTime = newTime;
+          const duration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+          if (duration > 0) setPlaybackProgress((newTime - activeClip.startTimeSeconds) / duration);
+        }
+      },
+    });
+    commandRegistry.register({
+      id: 'skip-forward',
+      label: 'Skip Forward 10 Seconds',
+      isEnabled: () => !!activeClip,
+      execute: () => {
+        if (audioRef.current && activeClip) {
+          const newTime = Math.min(activeClip.endTimeSeconds, audioRef.current.currentTime + 10);
+          audioRef.current.currentTime = newTime;
+          const duration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+          if (duration > 0) setPlaybackProgress((newTime - activeClip.startTimeSeconds) / duration);
+        }
+      },
+    });
+    commandRegistry.register({
+      id: 'copy-transcript',
+      label: 'Copy Transcript',
+      isEnabled: (ctx) => ctx.hasTranscript,
+      execute: () => {
+        if (activeClip) handleCopyTranscript(activeClip);
+      },
+    });
+    commandRegistry.register({
+      id: 'export',
+      label: 'Export…',
+      isEnabled: () => !!activeClip,
+      execute: () => {
+        handleExportClip();
+      },
+    });
+    commandRegistry.register({
+      id: 'transcribe',
+      label: 'Transcribe…',
+      isEnabled: () => !!activeClip,
+      execute: () => {
+        if (activeClip) handleReprocessClip(activeClip);
+      },
+    });
+    commandRegistry.register({
+      id: 'show-in-finder',
+      label: 'Show in Finder',
+      isEnabled: () => !!activeClip,
+      execute: () => {
+        if (activeClip) {
+          const p = getClipStoragePath(activeClip);
+          if (p) handleShowInFinder(p);
+        }
+      },
+    });
+    commandRegistry.register({
+      id: 'toggle-favorite',
+      label: 'Toggle Favorite',
+      isEnabled: () => !!activeClip,
+      execute: () => {
+        if (activeClip) handleToggleFavorite(activeClip.id);
+      },
+    });
+    commandRegistry.register({
+      id: 'mark-reviewed',
+      label: 'Mark Reviewed',
+      isEnabled: () => !!activeClip,
+      execute: () => {
+        if (activeClip) handleToggleReviewed(activeClip.id);
+      },
+    });
 
+    const unsubscribeMenu = window.audioVault?.onMenuAction
+      ? window.audioVault.onMenuAction((action) => {
+          commandRegistry.execute(action as any);
+        })
+      : () => {};
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      commandRegistry.handleKeyDown(e);
+    };
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+
+    return () => {
+      unsubscribeMenu();
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, [activeClip]);
 
   // Convert Float32Array PCM samples into a valid 16-bit 48kHz WAV ArrayBuffer
@@ -691,6 +854,13 @@ export default function App() {
       if (window.audioVault.getDeletedFiles) {
         const deleted = await window.audioVault.getDeletedFiles();
         setDeletedFilesCount(deleted.length);
+      }
+
+      if (window.audioVault.getCollections) {
+        const cols = await window.audioVault.getCollections();
+        if (cols && cols.length > 0) {
+          setCollections(cols);
+        }
       }
     } catch (e) {
       console.error('Failed to load AudioVault data:', e);
@@ -1235,6 +1405,53 @@ export default function App() {
     }
   }
 
+  async function handleToggleFavorite(clipId: string) {
+    if (window.audioVault?.toggleFavorite) {
+      const newFav = await window.audioVault.toggleFavorite(clipId);
+      setClips((prev) =>
+        prev.map((c) => (c.id === clipId ? { ...c, favorite: newFav } : c))
+      );
+    } else {
+      setClips((prev) =>
+        prev.map((c) => (c.id === clipId ? { ...c, favorite: !c.favorite } : c))
+      );
+    }
+  }
+
+  async function handleToggleReviewed(clipId: string) {
+    if (window.audioVault?.toggleReviewed) {
+      const newRev = await window.audioVault.toggleReviewed(clipId);
+      setClips((prev) =>
+        prev.map((c) => (c.id === clipId ? { ...c, reviewed: newRev } : c))
+      );
+    } else {
+      setClips((prev) =>
+        prev.map((c) => (c.id === clipId ? { ...c, reviewed: !c.reviewed } : c))
+      );
+    }
+  }
+
+  // Create custom collection
+  async function handleCreateCollection() {
+    const name = newCollectionName.trim();
+    if (!name) return;
+    const newCol: CollectionRecord = {
+      id: `col_${Date.now()}`,
+      name,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      color: '#6366f1',
+    };
+    if (window.audioVault?.addCollection) {
+      await window.audioVault.addCollection(newCol);
+    }
+    setCollections((prev) => [...prev, newCol]);
+    setNewCollectionName('');
+    setShowNewCollectionModal(false);
+    setToastMessage(`Created collection "${name}"`);
+    setTimeout(() => setToastMessage(null), 3000);
+  }
+
   // Open Metadata & Title Editor Modal
   function handleOpenMetadataModal(clip: VirtualClip) {
     setClipContextMenu(null);
@@ -1424,9 +1641,32 @@ export default function App() {
     }
   }
 
-  // Filter clips by category, tag, source, and global search query
+  const allCount = useMemo(() => clips.filter((c) => !c.isExcluded).length, [clips]);
+  const recentCount = useMemo(() => {
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    return clips.filter((c) => !c.isExcluded && new Date(c.recordedAt || c.createdAt).getTime() >= sevenDaysAgo).length;
+  }, [clips]);
+  const reviewCount = useMemo(() => clips.filter((c) => !c.isExcluded && !c.reviewed).length, [clips]);
+  const favoritesCount = useMemo(() => clips.filter((c) => !c.isExcluded && c.favorite).length, [clips]);
+
+  // Filter clips by workspace scope, category, tag, source, and global search query
   const filteredClips = clips.filter((c) => {
     if (c.isExcluded) return false;
+
+    // Redesigned Scope filtering
+    if (activeScope === 'recent') {
+      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const clipTime = new Date(c.recordedAt || c.createdAt).getTime();
+      if (clipTime < sevenDaysAgo) return false;
+    } else if (activeScope === 'review') {
+      if (c.reviewed === true) return false;
+    } else if (activeScope === 'favorites') {
+      if (!c.favorite) return false;
+    } else if (activeScope.startsWith('col:')) {
+      const colName = activeScope.slice(4);
+      if (!c.collections || !c.collections.includes(colName)) return false;
+    }
+
     const matchesCat = selectedCategory === 'all' || c.category === selectedCategory;
     const matchesTag = !selectedTag || c.userTags.includes(selectedTag);
 
@@ -1827,8 +2067,182 @@ export default function App() {
       <div className="app-body">
         {/* Sidebar Navigation */}
         <aside className="app-sidebar">
-          {/* Sources Section (Option 1 & 2) */}
+          {/* Workspaces Switcher (F02) */}
+          <div className="workspace-switcher" data-testid="workspace-switcher">
+            <button
+              type="button"
+              className={`workspace-btn ${activeWorkspace === 'library' ? 'active' : ''}`}
+              onClick={() => {
+                setActiveWorkspace('library');
+                setActiveScope('all');
+              }}
+              title="Library Workspace (⌘1)"
+            >
+              <span>📚 Library</span>
+            </button>
+            <button
+              type="button"
+              className={`workspace-btn ${activeWorkspace === 'imports' ? 'active' : ''}`}
+              onClick={() => setActiveWorkspace('imports')}
+              title="Imports Workspace (⌘2)"
+            >
+              <span>📥 Imports</span>
+              {pipelineStatus && (pipelineStatus.activeCopyJob || pipelineStatus.activeAnalysisJobs.length > 0) && (
+                <span className="source-badge" style={{ background: 'var(--accent-cyan)', color: '#000', padding: '1px 5px', fontWeight: 700 }}>
+                  {pipelineStatus.activeAnalysisJobs.length + (pipelineStatus.activeCopyJob ? 1 : 0)}
+                </span>
+              )}
+            </button>
+          </div>
+
+          {/* Library Views */}
+          <div className="nav-section" style={{ marginBottom: '1rem' }}>
+            <div className="nav-header">Library Views</div>
+            <div
+              className={`nav-item ${activeWorkspace === 'library' && activeScope === 'all' && selectedCategory === 'all' && !selectedTag && selectedSource === 'all' ? 'active' : ''}`}
+              onClick={() => {
+                setActiveWorkspace('library');
+                setActiveScope('all');
+                setSelectedCategory('all');
+                setSelectedTag(null);
+                setSelectedSource('all');
+              }}
+            >
+              <span>All Recordings</span>
+              <span className="counter-pill">{allCount}</span>
+            </div>
+            <div
+              className={`nav-item ${activeWorkspace === 'library' && activeScope === 'recent' ? 'active' : ''}`}
+              onClick={() => {
+                setActiveWorkspace('library');
+                setActiveScope('recent');
+              }}
+            >
+              <span>Recent Takes</span>
+              <span className="counter-pill">{recentCount}</span>
+            </div>
+            <div
+              className={`nav-item ${activeWorkspace === 'library' && activeScope === 'review' ? 'active' : ''}`}
+              onClick={() => {
+                setActiveWorkspace('library');
+                setActiveScope('review');
+              }}
+            >
+              <span>Needs Review</span>
+              <span className="counter-pill">{reviewCount}</span>
+            </div>
+            <div
+              className={`nav-item ${activeWorkspace === 'library' && activeScope === 'favorites' ? 'active' : ''}`}
+              onClick={() => {
+                setActiveWorkspace('library');
+                setActiveScope('favorites');
+              }}
+            >
+              <span>★ Favorites</span>
+              <span className="counter-pill">{favoritesCount}</span>
+            </div>
+          </div>
+
+          {/* Collections Section */}
+          <div className="nav-section" style={{ marginBottom: '1rem' }}>
+            <div className="nav-header-row">
+              <div className="nav-header" style={{ padding: 0 }}>Collections</div>
+              <button
+                type="button"
+                className="nav-header-action"
+                onClick={() => setShowNewCollectionModal(true)}
+                title="Create New Collection (⇧⌘C)"
+              >
+                + New
+              </button>
+            </div>
+            {collections.length === 0 ? (
+              <div style={{ padding: '0.3rem 0.75rem', fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                No custom collections
+              </div>
+            ) : (
+              collections.map((col) => {
+                const count = clips.filter((c) => c.collections?.includes(col.name)).length;
+                const isActive = activeWorkspace === 'library' && activeScope === `col:${col.name}`;
+                return (
+                  <div
+                    key={col.id}
+                    className={`collection-item ${isActive ? 'active' : ''}`}
+                    onClick={() => {
+                      setActiveWorkspace('library');
+                      setActiveScope(`col:${col.name}`);
+                    }}
+                  >
+                    <span>📁 {col.name}</span>
+                    <span className="counter-pill">{count}</span>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Categories Section */}
           <div className="nav-section" style={{ marginBottom: '1.1rem' }}>
+            <div className="nav-header">Categories</div>
+            <div
+              className={`nav-item ${selectedCategory === 'all' && !selectedTag && selectedSource === 'all' && activeScope === 'all' ? 'active' : ''}`}
+              onClick={() => { setSelectedCategory('all'); setSelectedTag(null); setSelectedSource('all'); setActiveScope('all'); }}
+            >
+              <span>Library (All)</span>
+              <span className="counter-pill">{clips.filter((c) => !c.isExcluded).length}</span>
+            </div>
+            <div
+              className={`nav-item ${selectedCategory === 'music' ? 'active' : ''}`}
+              onClick={() => { setSelectedCategory('music'); setSelectedTag(null); }}
+            >
+              <span>🎵 Music & Singing</span>
+              <span className="counter-pill">{clips.filter((c) => c.category === 'music' && !c.isExcluded).length}</span>
+            </div>
+            <div
+              className={`nav-item ${selectedCategory === 'concerts' ? 'active' : ''}`}
+              onClick={() => { setSelectedCategory('concerts'); setSelectedTag(null); }}
+            >
+              <span>🎸 Concerts & Live</span>
+              <span className="counter-pill">{clips.filter((c) => c.category === 'concerts' && !c.isExcluded).length}</span>
+            </div>
+            <div
+              className={`nav-item ${selectedCategory === 'dictaphone' ? 'active' : ''}`}
+              onClick={() => { setSelectedCategory('dictaphone'); setSelectedTag(null); }}
+            >
+              <span>🎙️ Dictaphone Memos</span>
+              <span className="counter-pill">{clips.filter((c) => c.category === 'dictaphone' && !c.isExcluded).length}</span>
+            </div>
+            <div
+              className={`nav-item ${selectedCategory === 'meeting' ? 'active' : ''}`}
+              onClick={() => { setSelectedCategory('meeting'); setSelectedTag(null); }}
+            >
+              <span>👥 Meetings</span>
+              <span className="counter-pill">{clips.filter((c) => c.category === 'meeting' && !c.isExcluded).length}</span>
+            </div>
+            <div
+              className={`nav-item ${selectedCategory === 'ambient' ? 'active' : ''}`}
+              onClick={() => { setSelectedCategory('ambient'); setSelectedTag(null); }}
+            >
+              <span>🌿 Ambient & Sounds</span>
+              <span className="counter-pill">{clips.filter((c) => c.category === 'ambient' && !c.isExcluded).length}</span>
+            </div>
+
+            <div className="nav-header" style={{ marginTop: '0.8rem' }}>User Sub-Tags</div>
+            <div className="tags-cloud">
+              {allTags.map((tag) => (
+                <span
+                  key={tag}
+                  className={`tag-chip ${selectedTag === tag ? 'active' : ''}`}
+                  onClick={() => setSelectedTag(selectedTag === tag ? null : tag)}
+                >
+                  #{tag}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          {/* Sources Section */}
+          <div className="nav-section" style={{ marginBottom: '1rem' }}>
             <div className="nav-header">Sources</div>
             <div
               className={`source-item ${selectedSource === 'in-app' ? 'active' : ''}`}
@@ -1888,45 +2302,6 @@ export default function App() {
               <span>📁 Import folder</span>
             </div>
 
-            {rememberDeleteChoice && (
-              <div
-                style={{
-                  marginTop: '0.6rem',
-                  padding: '0.45rem 0.65rem',
-                  background: 'rgba(239, 68, 68, 0.07)',
-                  border: '1px solid rgba(239, 68, 68, 0.2)',
-                  borderRadius: '6px',
-                  fontSize: '0.68rem',
-                  color: '#fca5a5',
-                  lineHeight: 1.35,
-                }}
-              >
-                <div>⚠️ Delete confirmation skipped</div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    localStorage.removeItem('audiovault_remember_delete_choice');
-                    setRememberDeleteChoice(false);
-                    if (window.audioVault) {
-                      window.audioVault.updateVaultSettings({ rememberDeleteChoice: false });
-                    }
-                  }}
-                  style={{
-                    background: 'transparent',
-                    border: 'none',
-                    color: 'var(--accent-cyan)',
-                    cursor: 'pointer',
-                    padding: 0,
-                    marginTop: '3px',
-                    fontSize: '0.68rem',
-                    textDecoration: 'underline',
-                  }}
-                >
-                  Ask every time
-                </button>
-              </div>
-            )}
-
             {deletedFilesCount > 0 && (
               <div
                 data-testid="deleted-takes-indicator"
@@ -1971,65 +2346,6 @@ export default function App() {
             )}
           </div>
 
-          <div className="nav-section">
-            <div className="nav-header">Library</div>
-            <div
-              className={`nav-item ${selectedCategory === 'all' && !selectedTag && selectedSource === 'all' ? 'active' : ''}`}
-              onClick={() => { setSelectedCategory('all'); setSelectedTag(null); setSelectedSource('all'); }}
-            >
-              <span>Library (All)</span>
-              <span className="counter-pill">{clips.filter((c) => !c.isExcluded).length}</span>
-            </div>
-            <div
-              className={`nav-item ${selectedCategory === 'music' ? 'active' : ''}`}
-              onClick={() => { setSelectedCategory('music'); setSelectedTag(null); }}
-            >
-              <span>🎵 Music & Singing</span>
-              <span className="counter-pill">{clips.filter((c) => c.category === 'music' && !c.isExcluded).length}</span>
-            </div>
-            <div
-              className={`nav-item ${selectedCategory === 'concerts' ? 'active' : ''}`}
-              onClick={() => { setSelectedCategory('concerts'); setSelectedTag(null); }}
-            >
-              <span>🎸 Concerts & Live</span>
-              <span className="counter-pill">{clips.filter((c) => c.category === 'concerts' && !c.isExcluded).length}</span>
-            </div>
-            <div
-              className={`nav-item ${selectedCategory === 'dictaphone' ? 'active' : ''}`}
-              onClick={() => { setSelectedCategory('dictaphone'); setSelectedTag(null); }}
-            >
-              <span>🎙️ Dictaphone Memos</span>
-              <span className="counter-pill">{clips.filter((c) => c.category === 'dictaphone' && !c.isExcluded).length}</span>
-            </div>
-            <div
-              className={`nav-item ${selectedCategory === 'meeting' ? 'active' : ''}`}
-              onClick={() => { setSelectedCategory('meeting'); setSelectedTag(null); }}
-            >
-              <span>👥 Meetings</span>
-              <span className="counter-pill">{clips.filter((c) => c.category === 'meeting' && !c.isExcluded).length}</span>
-            </div>
-            <div
-              className={`nav-item ${selectedCategory === 'ambient' ? 'active' : ''}`}
-              onClick={() => { setSelectedCategory('ambient'); setSelectedTag(null); }}
-            >
-              <span>🌿 Ambient & Sounds</span>
-              <span className="counter-pill">{clips.filter((c) => c.category === 'ambient' && !c.isExcluded).length}</span>
-            </div>
-
-            <div className="nav-header" style={{ marginTop: '1rem' }}>User Sub-Tags</div>
-            <div className="tags-cloud">
-              {allTags.map((tag) => (
-                <span
-                  key={tag}
-                  className={`tag-chip ${selectedTag === tag ? 'active' : ''}`}
-                  onClick={() => setSelectedTag(selectedTag === tag ? null : tag)}
-                >
-                  #{tag}
-                </span>
-              ))}
-            </div>
-          </div>
-
           <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem' }}>
             <div>Local AI: <strong>YAMNet + Whisper</strong></div>
             <div>Raw Audio: <strong>Non-Destructive</strong></div>
@@ -2037,13 +2353,86 @@ export default function App() {
         </aside>
 
         {/* Studio Workspace */}
-        <main className="app-workspace">
-          {/* Top Pane: Virtual Clips Table */}
-          <div className="clips-pane">
-            <div className="table-header-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.15rem' }}>
-                Virtual Clips ({filteredClips.length})
-              </h2>
+        {activeWorkspace === 'imports' ? (
+          <main className="app-workspace imports-workspace-view" data-testid="imports-workspace">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.4rem', fontWeight: 700 }}>
+                  Imports & Sequential Queue
+                </h1>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginTop: '0.2rem' }}>
+                  Sequential external media ingest with local Whisper & acoustic classification
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: '0.6rem' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setActiveWorkspace('library')}
+                >
+                  ← Back to Library
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={() => commandRegistry.execute('import-audio')}
+                >
+                  📥 Select Audio / Folder
+                </button>
+              </div>
+            </div>
+
+            <div
+              className="imports-hero-card"
+              onClick={() => commandRegistry.execute('import-audio')}
+            >
+              <div style={{ fontSize: '2.4rem' }}>📥</div>
+              <div style={{ fontWeight: 600, fontSize: '1.05rem' }}>Drop Audio Files or Folders Here</div>
+              <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', maxWidth: '420px', lineHeight: 1.4 }}>
+                Sequential ingest keeps card transfers reliable while local SSD workers analyze and transcribe in parallel.
+              </div>
+            </div>
+
+            {/* Hardware Media & Ingest Batches */}
+            <div className="batch-list">
+              <div style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Hardware Media & Queue Status
+              </div>
+              {detectedVolume ? (
+                <div className="batch-card">
+                  <div>
+                    <div style={{ fontWeight: 600, color: 'var(--accent-cyan)' }}>
+                      💾 Connected Media: {detectedVolume.volumeName}
+                    </div>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
+                      {detectedVolume.newFilesCount} unimported files ({detectedVolume.totalFilesCount} total files on card)
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={handleConfirmIngest}
+                  >
+                    Import Takes
+                  </button>
+                </div>
+              ) : (
+                <div className="batch-card" style={{ opacity: 0.8 }}>
+                  <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                    No external field recorder connected. Drag audio files or click above to ingest from folders.
+                  </div>
+                </div>
+              )}
+            </div>
+          </main>
+        ) : (
+          <main className="app-workspace">
+            {/* Top Pane: Virtual Clips Table */}
+            <div className="clips-pane">
+              <div className="table-header-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.15rem' }}>
+                  Virtual Clips ({filteredClips.length})
+                </h2>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.8rem' }}>
                 <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                   Right-click waveform selection to categorize or split
@@ -2507,6 +2896,7 @@ export default function App() {
             </div>
           </div>
         </main>
+      )}
       </div>
 
       {/* Floating Right-Click Context Menu */}
@@ -3342,6 +3732,74 @@ export default function App() {
                 onClick={() => setShowRefreshAiModal(false)}
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* New Collection Modal (F02) */}
+      {showNewCollectionModal && (
+        <div className="modal-backdrop" onClick={() => setShowNewCollectionModal(false)}>
+          <div
+            className="modal-card"
+            style={{ maxWidth: '420px' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div className="modal-title">Create New Collection</div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => setShowNewCollectionModal(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="modal-body" style={{ padding: '1.25rem' }}>
+              <label style={{ display: 'block', fontSize: '0.82rem', marginBottom: '0.5rem', color: 'var(--text-secondary)' }}>
+                Collection Name
+              </label>
+              <input
+                type="text"
+                autoFocus
+                className="form-input"
+                style={{
+                  width: '100%',
+                  padding: '0.6rem 0.8rem',
+                  borderRadius: '6px',
+                  background: 'rgba(0,0,0,0.35)',
+                  border: '1px solid var(--border-color)',
+                  color: '#fff',
+                  fontSize: '0.9rem',
+                }}
+                placeholder="e.g. Acoustic Sessions, Field Research"
+                value={newCollectionName}
+                onChange={(e) => setNewCollectionName(e.target.value)}
+                onKeyDown={async (e) => {
+                  if (e.key === 'Enter' && newCollectionName.trim()) {
+                    await handleCreateCollection();
+                  } else if (e.key === 'Escape') {
+                    setShowNewCollectionModal(false);
+                  }
+                }}
+              />
+            </div>
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', padding: '0.85rem 1.25rem' }}>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => setShowNewCollectionModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                disabled={!newCollectionName.trim()}
+                onClick={handleCreateCollection}
+              >
+                Create Collection
               </button>
             </div>
           </div>
