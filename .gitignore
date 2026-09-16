@@ -3,6 +3,7 @@ dist/
 dist-electron/
 out/
 release/
+*.app/
 
 # Dependencies
 node_modules/

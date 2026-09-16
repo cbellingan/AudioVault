@@ -10,6 +10,16 @@ import {
   CollectionRecord,
 } from '../shared/types';
 import { commandRegistry } from './commands/command-registry';
+import {
+  GroupingMode,
+  TranscriptStatusFilter,
+  HierarchyItem,
+  GroupedSection,
+  buildHierarchy,
+  groupLibrary,
+  getClipTranscriptStatus,
+  filterClipsByTranscriptStatus,
+} from './library/grouping-engine';
 
 // Standalone fallback mock data
 const mockFallbackClips: VirtualClip[] = [
@@ -145,6 +155,15 @@ export default function App() {
   const [selectedClipIds, setSelectedClipIds] = useState<Set<string>>(new Set());
   const [showNewCollectionModal, setShowNewCollectionModal] = useState(false);
   const [newCollectionName, setNewCollectionName] = useState('');
+
+  // F03: Scalable Library Grouping, Transcript Filter, and Multi-Selection
+  const [groupingMode, setGroupingMode] = useState<GroupingMode>('none');
+  const [transcriptFilter, setTranscriptFilter] = useState<TranscriptStatusFilter>('all');
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [expandedExcerptClipIds, setExpandedExcerptClipIds] = useState<Set<string>>(new Set());
+  const [showAddToCollectionModal, setShowAddToCollectionModal] = useState(false);
+  const [targetBatchCollection, setTargetBatchCollection] = useState<string>('');
+  const lastClickedClipIdRef = useRef<string | null>(null);
   
   // Table Sorting state: starts desc on creation / import time
   type SortField = 'title' | 'category' | 'duration' | 'tags' | 'confidence' | 'createdAt';
@@ -1696,6 +1715,12 @@ export default function App() {
       }
     }
 
+    // F03 Transcript Status filtering
+    if (transcriptFilter !== 'all') {
+      const status = getClipTranscriptStatus(c);
+      if (status !== transcriptFilter) return false;
+    }
+
     return matchesCat && matchesTag;
   });
 
@@ -1725,6 +1750,113 @@ export default function App() {
       return sortOrder === 'asc' ? diff : -diff;
     });
   }, [filteredClips, sortField, sortOrder]);
+
+  // F03: Hierarchy and Grouping for Library
+  const hierarchyItems = useMemo(() => buildHierarchy(sortedClips), [sortedClips]);
+  const groupedSections = useMemo(
+    () => groupLibrary(hierarchyItems, groupingMode),
+    [hierarchyItems, groupingMode]
+  );
+
+  function toggleExcerptExpansion(clipId: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    setExpandedExcerptClipIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(clipId)) next.delete(clipId);
+      else next.add(clipId);
+      return next;
+    });
+  }
+
+  function toggleGroupCollapse(groupKey: string) {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
+      return next;
+    });
+  }
+
+  function handleRowSelection(clipId: string, e: React.MouseEvent) {
+    if (e.shiftKey && lastClickedClipIdRef.current) {
+      const lastId = lastClickedClipIdRef.current;
+      const idxA = sortedClips.findIndex((c) => c.id === lastId);
+      const idxB = sortedClips.findIndex((c) => c.id === clipId);
+      if (idxA !== -1 && idxB !== -1) {
+        const [start, end] = [Math.min(idxA, idxB), Math.max(idxA, idxB)];
+        const rangeIds = sortedClips.slice(start, end + 1).map((c) => c.id);
+        setSelectedClipIds((prev) => new Set([...prev, ...rangeIds]));
+        setSelectedClipId(clipId);
+        return;
+      }
+    }
+
+    if (e.metaKey || e.ctrlKey) {
+      setSelectedClipIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(clipId)) next.delete(clipId);
+        else next.add(clipId);
+        return next;
+      });
+      setSelectedClipId(clipId);
+      lastClickedClipIdRef.current = clipId;
+      return;
+    }
+
+    setSelectedClipId(clipId);
+    lastClickedClipIdRef.current = clipId;
+  }
+
+  async function handleBatchMarkReviewed() {
+    if (selectedClipIds.size === 0) return;
+    const ids = Array.from(selectedClipIds);
+    for (const id of ids) {
+      if (window.audioVault?.toggleReviewed) {
+        await window.audioVault.toggleReviewed(id);
+      }
+    }
+    setClips((prev) =>
+      prev.map((c) => (selectedClipIds.has(c.id) ? { ...c, reviewed: true } : c))
+    );
+    setToastMessage(`Marked ${ids.length} recording(s) as reviewed`);
+    setTimeout(() => setToastMessage(null), 3000);
+  }
+
+  async function handleBatchToggleFavorite() {
+    if (selectedClipIds.size === 0) return;
+    const ids = Array.from(selectedClipIds);
+    for (const id of ids) {
+      if (window.audioVault?.toggleFavorite) {
+        await window.audioVault.toggleFavorite(id);
+      }
+    }
+    setClips((prev) =>
+      prev.map((c) => (selectedClipIds.has(c.id) ? { ...c, favorite: !c.favorite } : c))
+    );
+    setToastMessage(`Toggled favorite on ${ids.length} recording(s)`);
+    setTimeout(() => setToastMessage(null), 3000);
+  }
+
+  async function handleBatchAddCollection(colName: string) {
+    if (selectedClipIds.size === 0 || !colName.trim()) return;
+    const ids = Array.from(selectedClipIds);
+    for (const id of ids) {
+      if (window.audioVault?.addClipToCollection) {
+        await window.audioVault.addClipToCollection(id, colName.trim());
+      }
+    }
+    setClips((prev) =>
+      prev.map((c) => {
+        if (!selectedClipIds.has(c.id)) return c;
+        const existing = c.collections || [];
+        if (existing.includes(colName.trim())) return c;
+        return { ...c, collections: [...existing, colName.trim()] };
+      })
+    );
+    setShowAddToCollectionModal(false);
+    setToastMessage(`Added ${ids.length} recording(s) to "${colName.trim()}"`);
+    setTimeout(() => setToastMessage(null), 3000);
+  }
 
   function handleSort(field: SortField) {
     if (sortField === field) {
@@ -1760,6 +1892,189 @@ export default function App() {
     const hours = String(d.getHours()).padStart(2, '0');
     const mins = String(d.getMinutes()).padStart(2, '0');
     return `${year}-${month}-${day} ${hours}:${mins}`;
+  }
+
+  function renderClipRow(clip: VirtualClip, isExcerpt = false, excerptCount = 0) {
+    const parentRaw = rawFiles.find((r) => r.id === clip.parentFileId);
+    const isLocalTake =
+      clip.userTags.includes('In-App Take') ||
+      clip.title.toLowerCase().includes('in-app take') ||
+      (parentRaw && parentRaw.sourceDevice === 'In-App Recorder');
+    const sourceSub = isLocalTake
+      ? `in-app take · ${formatCreationDate(clip.createdAt)}`
+      : parentRaw
+      ? `${parentRaw.originalFilename} · ${parentRaw.sourceDevice}`
+      : `take · ${formatCreationDate(clip.createdAt)}`;
+    const isSelected = clip.id === selectedClipId || selectedClipIds.has(clip.id);
+    const isExpanded = expandedExcerptClipIds.has(clip.id);
+    const transcriptStatus = getClipTranscriptStatus(clip);
+
+    return (
+      <tr
+        key={clip.id}
+        className={`${isSelected ? 'selected' : ''} ${isExcerpt ? 'excerpt-subrow' : ''}`}
+        onClick={(e) => handleRowSelection(clip.id, e)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setSelectedClipId(clip.id);
+          const estimatedMenuWidth = 260;
+          const estimatedMenuHeight = 520;
+          const x = Math.max(12, Math.min(e.clientX, window.innerWidth - estimatedMenuWidth - 12));
+          const y = e.clientY + estimatedMenuHeight > window.innerHeight
+            ? Math.max(12, window.innerHeight - estimatedMenuHeight - 12)
+            : Math.max(12, e.clientY);
+          setClipContextMenu({ visible: true, x, y, clip });
+          setContextMenu(null);
+        }}
+        title="Right-click for options (Edit Title, Add Tags, AI Title, Category)"
+      >
+        <td>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.55rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', paddingTop: '2px' }} onClick={(e) => e.stopPropagation()}>
+              <input
+                type="checkbox"
+                checked={selectedClipIds.has(clip.id)}
+                onChange={() => {
+                  setSelectedClipIds((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(clip.id)) next.delete(clip.id);
+                    else next.add(clip.id);
+                    return next;
+                  });
+                }}
+                aria-label={`Select ${clip.title}`}
+              />
+              <button
+                type="button"
+                className={`fav-star-btn ${clip.favorite ? 'active' : ''}`}
+                onClick={() => handleToggleFavorite(clip.id)}
+                title={clip.favorite ? 'Unmark favorite' : 'Mark favorite'}
+              >
+                {clip.favorite ? '★' : '☆'}
+              </button>
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                {isExcerpt && (
+                  <span className="excerpt-badge">Excerpt</span>
+                )}
+            {excerptCount > 0 && !isExcerpt && (
+              <button
+                type="button"
+                className="link"
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--accent-indigo)',
+                  fontSize: '0.74rem',
+                  cursor: 'pointer',
+                  padding: '1px 5px',
+                  fontWeight: 600,
+                  borderRadius: '3px',
+                }}
+                onClick={(e) => toggleExcerptExpansion(clip.id, e)}
+                title={isExpanded ? 'Collapse child excerpts' : 'Expand child excerpts'}
+              >
+                {isExpanded ? '▾' : '▸'} {excerptCount} excerpt{excerptCount === 1 ? '' : 's'}
+              </button>
+            )}
+            <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+              <HighlightMatch text={clip.title} query={searchQuery} />
+            </span>
+            {clip.exportedMp3Path && (
+              <span
+                className="badge-mp3"
+                title={`Exported to MP3: ${clip.exportedMp3Path}\nClick to show in Finder`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleShowInFinder(clip.exportedMp3Path!);
+                }}
+              >
+                MP3
+              </span>
+            )}
+            <button
+              type="button"
+              className="icon-btn-subtle"
+              title="Edit title & metadata (or right-click row)"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleOpenMetadataModal(clip);
+              }}
+              style={{
+                opacity: 0.5,
+                fontSize: '0.78rem',
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                padding: '2px 4px',
+                borderRadius: '3px',
+              }}
+            >
+              ✏️
+            </button>
+          </div>
+          <span className="take-source-sub">
+            <HighlightMatch text={sourceSub} query={searchQuery} />
+          </span>
+          {(clip.transcription || clip.fullTranscription) && (
+            <div
+              className="transcript-snippet"
+              title={clip.fullTranscription || clip.transcription}
+              style={{
+                fontSize: '0.74rem',
+                color: 'var(--accent-cyan)',
+                fontStyle: 'italic',
+                marginTop: '2px',
+                lineHeight: '1.3',
+                maxHeight: '3.9em',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                display: '-webkit-box',
+                WebkitLineClamp: 3,
+                WebkitBoxOrient: 'vertical',
+              }}
+            >
+              <HighlightMatch text={clip.transcription || clip.fullTranscription || ''} query={searchQuery} />
+            </div>
+          )}
+            </div>
+          </div>
+        </td>
+        <td>
+          <span className={`category-pill cat-${clip.category}`}>
+            {clip.category.toUpperCase()}
+          </span>
+        </td>
+        <td style={{ fontFamily: 'var(--font-mono)' }}>
+          {(clip.endTimeSeconds - clip.startTimeSeconds).toFixed(1)}s
+        </td>
+        <td>
+          <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
+            {clip.userTags.map((t, idx) => (
+              <span key={idx} className="tag-chip" style={{ fontSize: '0.7rem' }}>
+                #<HighlightMatch text={t} query={searchQuery} />
+              </span>
+            ))}
+          </div>
+        </td>
+        <td>
+          <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+            {clip.classificationSource === 'yamnet_local' ? 'YAMNet (' : 'Whisper ('}
+            {Math.round(clip.classificationConfidence * 100)}%)
+          </span>
+        </td>
+        <td>
+          <span className={`status-pill ${transcriptStatus === 'ready' ? 'ready' : transcriptStatus === 'failed' ? 'inapp' : 'transcribing'}`}>
+            {transcriptStatus === 'ready' ? 'Ready' : transcriptStatus === 'nospeech' ? 'No Speech' : transcriptStatus === 'failed' ? 'Failed' : 'Pending'}
+          </span>
+        </td>
+        <td style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+          {formatCreationDate(clip.recordedAt || clip.createdAt)}
+        </td>
+      </tr>
+    );
   }
 
   const allTags = Array.from(new Set(clips.flatMap((c) => c.userTags)));
@@ -2431,195 +2746,250 @@ export default function App() {
             <div className="clips-pane">
               <div className="table-header-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.15rem' }}>
-                  Virtual Clips ({filteredClips.length})
+                  {activeScope === 'recent' ? 'Recent Takes' : activeScope === 'review' ? 'Needs Review' : activeScope === 'favorites' ? 'Favorites' : activeScope.startsWith('col:') ? `Collection: ${activeScope.slice(4)}` : 'Virtual Clips'} ({sortedClips.length})
                 </h2>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.8rem' }}>
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  Right-click waveform selection to categorize or split
-                </span>
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-sm"
-                  data-testid="refresh-ai-library-btn"
-                  disabled={isBatchReprocessing}
-                  onClick={() => setShowRefreshAiModal(true)}
-                  title="Re-run audio analysis and Whisper transcription across your library or backfill missing transcripts"
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '0.35rem',
-                    fontSize: '0.75rem',
-                    padding: '0.25rem 0.6rem',
-                    borderRadius: '4px',
-                    border: '1px solid var(--border-color)',
-                    background: 'rgba(255, 255, 255, 0.05)',
-                    color: 'var(--text-primary)',
-                    cursor: isBatchReprocessing ? 'not-allowed' : 'pointer',
-                  }}
-                >
-                  <span>🔄</span>
-                  <span>{isBatchReprocessing ? 'Processing AI...' : 'Refresh AI & Transcripts...'}</span>
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.8rem' }}>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    Shift+click for range · ⌘+click multi-select · Space to play
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    data-testid="refresh-ai-library-btn"
+                    disabled={isBatchReprocessing}
+                    onClick={() => setShowRefreshAiModal(true)}
+                    title="Re-run audio analysis and Whisper transcription across your library or backfill missing transcripts"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '0.35rem',
+                      fontSize: '0.75rem',
+                      padding: '0.25rem 0.6rem',
+                      borderRadius: '4px',
+                      border: '1px solid var(--border-color)',
+                      background: 'rgba(255, 255, 255, 0.05)',
+                      color: 'var(--text-primary)',
+                      cursor: isBatchReprocessing ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    <span>🔄</span>
+                    <span>{isBatchReprocessing ? 'Processing AI...' : 'Refresh AI & Transcripts...'}</span>
+                  </button>
+                </div>
               </div>
-            </div>
 
-            <table className="clips-table">
-              <thead>
-                <tr>
-                  <th onClick={() => handleSort('title')} title="Click to sort by Clip Title">
-                    Clip Title {renderSortIndicator('title')}
-                  </th>
-                  <th onClick={() => handleSort('category')} title="Click to sort by Category">
-                    Category {renderSortIndicator('category')}
-                  </th>
-                  <th onClick={() => handleSort('duration')} title="Click to sort by Duration">
-                    Duration {renderSortIndicator('duration')}
-                  </th>
-                  <th onClick={() => handleSort('tags')} title="Click to sort by Sub-Tags">
-                    Sub-Tags {renderSortIndicator('tags')}
-                  </th>
-                  <th onClick={() => handleSort('confidence')} title="Click to sort by Local AI Signal">
-                    Local AI Signal {renderSortIndicator('confidence')}
-                  </th>
-                  <th>Status</th>
-                  <th onClick={() => handleSort('createdAt')} title="Click to sort by Creation / Import Time">
-                    Created / Recorded {renderSortIndicator('createdAt')}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedClips.map((clip) => {
-                  const parentRaw = rawFiles.find((r) => r.id === clip.parentFileId);
-                  const isLocalTake =
-                    clip.userTags.includes('In-App Take') ||
-                    clip.title.toLowerCase().includes('in-app take') ||
-                    (parentRaw && parentRaw.sourceDevice === 'In-App Recorder');
-                  const sourceSub = isLocalTake
-                    ? `in-app take · ${formatCreationDate(clip.createdAt)}`
-                    : parentRaw
-                    ? `${parentRaw.originalFilename} · ${parentRaw.sourceDevice}`
-                    : `take · ${formatCreationDate(clip.createdAt)}`;
-
-                  return (
-                    <tr
-                      key={clip.id}
-                      className={clip.id === selectedClipId ? 'selected' : ''}
-                      onClick={() => setSelectedClipId(clip.id)}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setSelectedClipId(clip.id);
-                        const estimatedMenuWidth = 260;
-                        const estimatedMenuHeight = 520;
-                        const x = Math.max(12, Math.min(e.clientX, window.innerWidth - estimatedMenuWidth - 12));
-                        const y = e.clientY + estimatedMenuHeight > window.innerHeight
-                          ? Math.max(12, window.innerHeight - estimatedMenuHeight - 12)
-                          : Math.max(12, e.clientY);
-                        setClipContextMenu({ visible: true, x, y, clip });
-                        setContextMenu(null);
-                      }}
-                      title="Right-click for options (Edit Title, Add Tags, AI Title, Category)"
+              {/* F03: Library Toolbar with Grouping and Status Filter */}
+              <div className="library-toolbar" data-testid="library-toolbar">
+                <div className="toolbar-controls">
+                  <label className="toolbar-label">
+                    Group by:
+                    <select
+                      className="toolbar-select"
+                      value={groupingMode}
+                      onChange={(e) => setGroupingMode(e.target.value as GroupingMode)}
+                      data-testid="grouping-select"
                     >
-                      <td>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
-                          <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-                            <HighlightMatch text={clip.title} query={searchQuery} />
-                          </span>
-                          {clip.exportedMp3Path && (
-                            <span
-                              className="badge-mp3"
-                              title={`Exported to MP3: ${clip.exportedMp3Path}\nClick to show in Finder`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleShowInFinder(clip.exportedMp3Path!);
-                              }}
-                            >
-                              MP3
-                            </span>
-                          )}
-                          <button
-                            type="button"
-                            className="icon-btn-subtle"
-                            title="Edit title & metadata (or right-click row)"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleOpenMetadataModal(clip);
-                            }}
-                            style={{
-                              opacity: 0.5,
-                              fontSize: '0.78rem',
-                              background: 'transparent',
-                              border: 'none',
-                              cursor: 'pointer',
-                              padding: '2px 4px',
-                              borderRadius: '3px',
-                            }}
-                          >
-                            ✏️
-                          </button>
-                        </div>
-                        <span className="take-source-sub">
-                          <HighlightMatch text={sourceSub} query={searchQuery} />
-                        </span>
-                        {(clip.transcription || clip.fullTranscription) && (
-                          <div
-                            className="transcript-snippet"
-                            title={clip.fullTranscription || clip.transcription}
-                            style={{
-                              fontSize: '0.74rem',
-                              color: 'var(--accent-cyan)',
-                              fontStyle: 'italic',
-                              marginTop: '2px',
-                              lineHeight: '1.3',
-                              maxHeight: '3.9em',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              display: '-webkit-box',
-                              WebkitLineClamp: 3,
-                              WebkitBoxOrient: 'vertical',
-                            }}
-                          >
-                            <HighlightMatch text={clip.transcription || clip.fullTranscription || ''} query={searchQuery} />
-                          </div>
-                        )}
-                      </td>
-                      <td>
-                        <span className={`category-pill cat-${clip.category}`}>
-                          {clip.category.toUpperCase()}
-                        </span>
-                      </td>
-                      <td style={{ fontFamily: 'var(--font-mono)' }}>
-                        {(clip.endTimeSeconds - clip.startTimeSeconds).toFixed(1)}s
-                      </td>
-                      <td>
-                        <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
-                          {clip.userTags.map((t, idx) => (
-                            <span key={idx} className="tag-chip" style={{ fontSize: '0.7rem' }}>
-                              #<HighlightMatch text={t} query={searchQuery} />
-                            </span>
-                          ))}
-                        </div>
-                      </td>
-                      <td>
-                        <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                          {clip.classificationSource === 'yamnet_local' ? 'YAMNet (' : 'Whisper ('}
-                          {Math.round(clip.classificationConfidence * 100)}%)
-                        </span>
-                      </td>
-                      <td>
-                        <span className={`status-pill ${isLocalTake ? 'inapp' : 'ready'}`}>
-                          {isLocalTake ? '● In-App' : 'Ready'}
-                        </span>
-                      </td>
-                      <td style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                        {formatCreationDate(clip.createdAt)}
+                      <option value="none">None (Flat list)</option>
+                      <option value="month">Recorded month</option>
+                      <option value="batch">Import batch</option>
+                      <option value="collection">Collection</option>
+                    </select>
+                  </label>
+
+                  <label className="toolbar-label">
+                    Transcript:
+                    <select
+                      className="toolbar-select"
+                      value={transcriptFilter}
+                      onChange={(e) => setTranscriptFilter(e.target.value as TranscriptStatusFilter)}
+                      data-testid="transcript-filter-select"
+                    >
+                      <option value="all">Any status</option>
+                      <option value="ready">Transcript ready</option>
+                      <option value="pending">Not transcribed</option>
+                      <option value="nospeech">No speech detected</option>
+                      <option value="failed">Failed</option>
+                    </select>
+                  </label>
+
+                  {transcriptFilter !== 'all' && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      style={{ fontSize: '0.74rem', padding: '2px 8px' }}
+                      onClick={() => setTranscriptFilter('all')}
+                    >
+                      Clear filter
+                    </button>
+                  )}
+                </div>
+
+                {groupingMode !== 'none' && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    style={{ fontSize: '0.74rem', padding: '3px 8px' }}
+                    onClick={() => {
+                      if (collapsedGroups.size > 0) setCollapsedGroups(new Set());
+                      else setCollapsedGroups(new Set(groupedSections.map((g) => g.key)));
+                    }}
+                  >
+                    {collapsedGroups.size > 0 ? 'Expand all' : 'Collapse all'}
+                  </button>
+                )}
+              </div>
+
+              <table className="clips-table">
+                <thead>
+                  <tr>
+                    <th onClick={() => handleSort('title')} title="Click to sort by Clip Title">
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                        <input
+                          type="checkbox"
+                          checked={sortedClips.length > 0 && selectedClipIds.size === sortedClips.length}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={() => {
+                            if (selectedClipIds.size === sortedClips.length) setSelectedClipIds(new Set());
+                            else setSelectedClipIds(new Set(sortedClips.map((c) => c.id)));
+                          }}
+                          title="Select all visible recordings"
+                          aria-label="Select all recordings"
+                        />
+                        <span>Clip Title</span> {renderSortIndicator('title')}
+                      </div>
+                    </th>
+                    <th onClick={() => handleSort('category')} title="Click to sort by Category">
+                      Category {renderSortIndicator('category')}
+                    </th>
+                    <th onClick={() => handleSort('duration')} title="Click to sort by Duration">
+                      Duration {renderSortIndicator('duration')}
+                    </th>
+                    <th onClick={() => handleSort('tags')} title="Click to sort by Sub-Tags">
+                      Sub-Tags {renderSortIndicator('tags')}
+                    </th>
+                    <th onClick={() => handleSort('confidence')} title="Click to sort by Local AI Signal">
+                      Local AI Signal {renderSortIndicator('confidence')}
+                    </th>
+                    <th>Status</th>
+                    <th onClick={() => handleSort('createdAt')} title="Click to sort by Creation / Import Time">
+                      Created / Recorded {renderSortIndicator('createdAt')}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedClips.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--text-muted)' }}>
+                        <div style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>No recordings match these filters</div>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => {
+                            setTranscriptFilter('all');
+                            setSelectedCategory('all');
+                            setSelectedTag(null);
+                            setSearchQuery('');
+                          }}
+                        >
+                          Clear all filters
+                        </button>
                       </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                  ) : groupingMode === 'none' ? (
+                    hierarchyItems.map((item) => {
+                      const primary = item.primaryClip;
+                      const isExpanded = expandedExcerptClipIds.has(primary.id);
+                      return (
+                        <React.Fragment key={primary.id}>
+                          {renderClipRow(primary, false, item.excerpts.length)}
+                          {isExpanded &&
+                            item.excerpts.map((excerpt) => (
+                              <React.Fragment key={excerpt.id}>
+                                {renderClipRow(excerpt, true, 0)}
+                              </React.Fragment>
+                            ))}
+                        </React.Fragment>
+                      );
+                    })
+                  ) : (
+                    groupedSections.map((section) => {
+                      const isCollapsed = collapsedGroups.has(section.key);
+                      return (
+                        <React.Fragment key={section.key}>
+                          <tr className="group-header-row">
+                            <td colSpan={7}>
+                              <button
+                                type="button"
+                                className="group-header-btn"
+                                onClick={() => toggleGroupCollapse(section.key)}
+                              >
+                                <span>{isCollapsed ? '▸' : '▾'} {section.label}</span>
+                                <small>· {section.count} recording{section.count === 1 ? '' : 's'}</small>
+                              </button>
+                            </td>
+                          </tr>
+                          {!isCollapsed &&
+                            section.items.map((item) => {
+                              const primary = item.primaryClip;
+                              const isExpanded = expandedExcerptClipIds.has(primary.id);
+                              return (
+                                <React.Fragment key={primary.id}>
+                                  {renderClipRow(primary, false, item.excerpts.length)}
+                                  {isExpanded &&
+                                    item.excerpts.map((excerpt) => (
+                                      <React.Fragment key={excerpt.id}>
+                                        {renderClipRow(excerpt, true, 0)}
+                                      </React.Fragment>
+                                    ))}
+                                </React.Fragment>
+                              );
+                            })}
+                        </React.Fragment>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+
+              {/* Floating Batch Selection Bar (F03) */}
+              {selectedClipIds.size > 0 && (
+                <div className="batch-selection-bar" data-testid="batch-selection-bar">
+                  <div className="batch-bar-left">
+                    <span>✓ {selectedClipIds.size} recording{selectedClipIds.size === 1 ? '' : 's'} selected</span>
+                  </div>
+                  <div className="batch-bar-actions">
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => setShowAddToCollectionModal(true)}
+                    >
+                      📁 Add to collection…
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={handleBatchMarkReviewed}
+                    >
+                      ✓ Mark reviewed
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={handleBatchToggleFavorite}
+                    >
+                      ★ Toggle favorite
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => setSelectedClipIds(new Set())}
+                    >
+                      Clear selection (Esc)
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
 
           {/* Bottom Pane: Waveform Scrubber Dock */}
           <div className="waveform-dock">
@@ -3800,6 +4170,45 @@ export default function App() {
                 onClick={handleCreateCollection}
               >
                 Create Collection
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add To Collection Modal (F03) */}
+      {showAddToCollectionModal && (
+        <div className="modal-backdrop" onClick={() => setShowAddToCollectionModal(false)}>
+          <div className="modal-card" style={{ maxWidth: '420px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">Add to Collection</div>
+              <button type="button" className="modal-close-btn" onClick={() => setShowAddToCollectionModal(false)}>✕</button>
+            </div>
+            <div className="modal-body" style={{ padding: '1.25rem' }}>
+              <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '0.75rem' }}>
+                Add {selectedClipIds.size} selected recording(s) to:
+              </p>
+              <select
+                className="toolbar-select"
+                style={{ width: '100%', padding: '0.6rem', fontSize: '0.85rem' }}
+                value={targetBatchCollection}
+                onChange={(e) => setTargetBatchCollection(e.target.value)}
+              >
+                <option value="">Select an existing collection…</option>
+                {collections.map((c) => (
+                  <option key={c.id} value={c.name}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', padding: '0.85rem 1.25rem' }}>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowAddToCollectionModal(false)}>Cancel</button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                disabled={!targetBatchCollection}
+                onClick={() => handleBatchAddCollection(targetBatchCollection)}
+              >
+                Add Recordings
               </button>
             </div>
           </div>

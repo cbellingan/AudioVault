@@ -1442,3 +1442,143 @@ mark {
   align-items: center;
   justify-content: space-between;
 }
+
+/* F03: Scalable Library Toolbar, Grouping & Batch Bar */
+.library-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0.85rem 0 1rem 0;
+  padding: 0.65rem 0.9rem;
+  background: rgba(16, 24, 40, 0.45);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+
+.toolbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.toolbar-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.toolbar-select {
+  background: rgba(0, 0, 0, 0.4);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.8rem;
+  outline: none;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.toolbar-select:hover, .toolbar-select:focus {
+  border-color: var(--accent-cyan);
+}
+
+.group-header-row td {
+  background: rgba(11, 17, 32, 0.95);
+  padding: 0.65rem 0.75rem;
+  border-top: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.group-header-btn {
+  background: transparent;
+  border: none;
+  color: var(--accent-cyan);
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.group-header-btn small {
+  color: var(--text-muted);
+  font-weight: 400;
+  font-size: 0.75rem;
+}
+
+.excerpt-subrow td {
+  background: rgba(0, 0, 0, 0.2);
+  padding-left: 2rem !important;
+  font-size: 0.82rem;
+}
+
+.excerpt-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  background: rgba(99, 102, 241, 0.15);
+  color: var(--accent-indigo);
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.fav-star-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  color: var(--text-muted);
+  transition: var(--transition-fast);
+  padding: 2px 4px;
+}
+
+.fav-star-btn.active {
+  color: #fbbf24;
+}
+
+.fav-star-btn:hover {
+  transform: scale(1.15);
+}
+
+/* Floating Batch Bar */
+.batch-selection-bar {
+  position: sticky;
+  bottom: 0.5rem;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.65rem 1.25rem;
+  background: linear-gradient(135deg, rgba(22, 34, 52, 0.95), rgba(11, 17, 32, 0.98));
+  border: 1px solid var(--accent-cyan);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(12px);
+  margin-top: 0.5rem;
+}
+
+.batch-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: #fff;
+}
+
+.batch-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}

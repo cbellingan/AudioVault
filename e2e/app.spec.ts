@@ -728,5 +728,78 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
 
     await app.close();
   });
+
+  test("15. Scalable Library Browsing & Selection: Grouping, Transcript status filtering, and Batch Selection Bar", async () => {
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+
+    // 1. Verify Library Toolbar is present
+    const toolbar = window.locator("[data-testid=\"library-toolbar\"]");
+    await expect(toolbar).toBeVisible();
+
+    // 2. Verify Grouping selector defaults to 'none'
+    const groupingSelect = window.locator("[data-testid=\"grouping-select\"]");
+    await expect(groupingSelect).toBeVisible();
+    expect(await groupingSelect.inputValue()).toBe("none");
+    await expect(window.locator(".group-header-row")).toHaveCount(0);
+
+    // Switch grouping to 'month'
+    await groupingSelect.selectOption("month");
+
+    // Verify group header rows exist in Month grouping mode
+    const groupHeaders = window.locator(".group-header-row");
+    const groupCount = await groupHeaders.count();
+    expect(groupCount).toBeGreaterThanOrEqual(1);
+
+    // 3. Test collapsing a group
+    const firstGroupBtn = groupHeaders.first().locator("button.group-header-btn");
+    await expect(firstGroupBtn).toBeVisible();
+    await firstGroupBtn.click();
+
+    // Switch grouping back to none (flat list)
+    await groupingSelect.selectOption("none");
+    await expect(window.locator(".group-header-row")).toHaveCount(0);
+
+    // 4. Test Multi-Selection and Batch Selection Bar
+    const checkboxes = window.locator(".clips-table tbody tr input[type=\"checkbox\"]");
+    await expect(checkboxes.first()).toBeVisible();
+
+    // Select first and second recordings
+    await checkboxes.nth(0).click();
+    await checkboxes.nth(1).click();
+
+    const batchBar = window.locator("[data-testid=\"batch-selection-bar\"]");
+    await expect(batchBar).toBeVisible();
+    await expect(batchBar).toContainText("2 recordings selected");
+
+    // Test Batch Mark Reviewed
+    const markReviewedBtn = batchBar.locator("button", { hasText: "Mark reviewed" });
+    await markReviewedBtn.click();
+    const toast = window.locator("[data-testid=\"copy-toast\"]");
+    await expect(toast).toBeVisible();
+    await expect(toast).toContainText("Marked 2 recording(s) as reviewed");
+
+    // Test Clear Selection button
+    const clearSelectionBtn = batchBar.locator("button", { hasText: "Clear selection" });
+    await clearSelectionBtn.click();
+    await expect(batchBar).toBeHidden();
+
+    // 5. Test Transcript Status filtering
+    const statusSelect = window.locator("[data-testid=\"transcript-filter-select\"]");
+    await statusSelect.selectOption("ready");
+    
+    // Rows should update to only ready takes
+    const rows = window.locator(".clips-table tbody tr");
+    expect(await rows.count()).toBeGreaterThanOrEqual(1);
+
+    // Clear filter
+    const clearFilterBtn = toolbar.locator("button", { hasText: "Clear filter" });
+    await clearFilterBtn.click();
+    expect(await statusSelect.inputValue()).toBe("all");
+
+    await app.close();
+  });
 });
+
 
