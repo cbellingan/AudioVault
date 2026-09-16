@@ -876,6 +876,104 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
 
     await app.close();
   });
+
+  test("17. Recording & Transcript Workspace: deep-dive navigation, player controls, transcript editing, excerpts and review (Slice F05)", async () => {
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+    await window.waitForSelector(".clips-table tbody tr", { timeout: 8000 });
+
+    // 1. Enter detail workspace by clicking a clip title link
+    const firstTitleLink = window.locator("[data-testid=\"clip-title-link\"]").first();
+    const clipTitle = (await firstTitleLink.innerText()).trim();
+    await firstTitleLink.click();
+
+    // Verify workspace switched to recording workspace
+    const recWorkspace = window.locator("[data-testid=\"recording-workspace\"]");
+    await expect(recWorkspace).toBeVisible();
+    await expect(window.locator("[data-testid=\"detail-title\"]")).toHaveText(clipTitle);
+
+    // Verify two-column layout
+    const transcriptCard = window.locator("[data-testid=\"detail-transcript-card\"]");
+    const sidebarCard = window.locator("[data-testid=\"detail-sidebar-card\"]");
+    await expect(transcriptCard).toBeVisible();
+    await expect(sidebarCard).toBeVisible();
+
+    // 2. Test Player Controls in bottom player bar
+    const playerBar = window.locator("[data-testid=\"detail-player-bar\"]");
+    await expect(playerBar).toBeVisible();
+
+    const playBtn = window.locator("[data-testid=\"detail-play-btn\"]");
+    await expect(playBtn).toBeVisible();
+    await playBtn.click();
+    await expect(playBtn).toHaveText("⏸");
+    await playBtn.click();
+    await expect(playBtn).toHaveText("▶");
+
+    // Skip buttons
+    const skipBackBtn = window.locator("[data-testid=\"detail-skip-back-btn\"]");
+    const skipFwdBtn = window.locator("[data-testid=\"detail-skip-forward-btn\"]");
+    await expect(skipBackBtn).toBeVisible();
+    await expect(skipFwdBtn).toBeVisible();
+    await skipFwdBtn.click();
+
+    // Speed selector
+    const speedSelect = window.locator("[data-testid=\"detail-speed-select\"]");
+    await expect(speedSelect).toBeVisible();
+    await speedSelect.selectOption("1.5");
+    await expect(speedSelect).toHaveValue("1.5");
+
+    // 3. Test Transcript features (if passages exist, or edit text)
+    const editBtn = window.locator("[data-testid=\"detail-edit-transcript-btn\"]");
+    if (await editBtn.isVisible()) {
+      await editBtn.click();
+      const editModal = window.locator("[data-testid=\"edit-transcript-modal\"]");
+      await expect(editModal).toBeVisible();
+      const textarea = window.locator("[data-testid=\"edit-transcript-textarea\"]");
+      await textarea.fill("This is a verified test edit for the transcript.");
+      const confirmSaveBtn = window.locator("[data-testid=\"confirm-save-transcript-btn\"]");
+      await confirmSaveBtn.click();
+      await expect(editModal).toHaveCount(0);
+      const toast = window.locator("[data-testid=\"copy-toast\"]");
+      await expect(toast).toContainText("Transcript updated");
+    }
+
+    // 4. Test Save Excerpt Modal and Child Clip Creation
+    const saveExcerptBtn = window.locator("[data-testid=\"detail-save-excerpt-btn\"]");
+    await expect(saveExcerptBtn).toBeVisible();
+    await saveExcerptBtn.click();
+
+    const excerptModal = window.locator("[data-testid=\"save-excerpt-modal\"]");
+    await expect(excerptModal).toBeVisible();
+
+    const titleInput = window.locator("[data-testid=\"excerpt-title-input\"]");
+    await titleInput.fill("Key Architectural Excerpt");
+    const confirmExcerptBtn = window.locator("[data-testid=\"confirm-save-excerpt-btn\"]");
+    await confirmExcerptBtn.click();
+    await expect(excerptModal).toHaveCount(0);
+
+    // Verify excerpt appears under Saved Excerpts in sidebar card
+    const excerptsList = window.locator("[data-testid=\"detail-excerpts-list\"]");
+    await expect(excerptsList).toBeVisible();
+    await expect(excerptsList).toContainText("Key Architectural Excerpt");
+
+    // 5. Test Review Toggle
+    const reviewBtn = window.locator("[data-testid=\"detail-review-toggle-btn\"]");
+    await expect(reviewBtn).toBeVisible();
+    await reviewBtn.click();
+    await expect(reviewBtn).toContainText("Reviewed");
+
+    // 6. Navigate back to Library
+    const backBtn = window.locator("[data-testid=\"detail-back-btn\"]");
+    await expect(backBtn).toBeVisible();
+    await backBtn.click();
+
+    // Verify we are back in Library workspace
+    await expect(window.locator(".clips-table")).toBeVisible();
+    await expect(window.locator("[data-testid=\"recording-workspace\"]")).toHaveCount(0);
+
+    await app.close();
+  });
 });
 
 

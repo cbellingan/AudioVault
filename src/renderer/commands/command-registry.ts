@@ -19,6 +19,7 @@ export type CommandId =
   | 'nav-library'
   | 'nav-imports'
   | 'nav-settings'
+  | 'show-details'
   | 'search-focus'
   | 'about'
   | 'help-getting-started'
@@ -153,6 +154,10 @@ export class CommandRegistry {
       if (key === 'f' && !e.shiftKey && this.context.activeView === 'detail') {
         e.preventDefault();
         return this.execute('find-in-transcript');
+      }
+      if (key === 'd' && !e.shiftKey) {
+        e.preventDefault();
+        return this.execute('show-details');
       }
       if (e.key === ',') {
         e.preventDefault();

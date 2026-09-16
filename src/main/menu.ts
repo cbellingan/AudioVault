@@ -164,6 +164,11 @@ export function setupApplicationMenu(getMainWindow: () => BrowserWindow | null) 
           accelerator: 'CmdOrCtrl+2',
           click: () => sendAction('nav-imports'),
         },
+        {
+          label: 'Show Recording Details',
+          accelerator: 'CmdOrCtrl+D',
+          click: () => sendAction('show-details'),
+        },
         { type: 'separator' },
         { role: 'togglefullscreen' },
         ...(isDev

@@ -21,6 +21,12 @@ import {
   getClipTranscriptStatus,
   filterClipsByTranscriptStatus,
 } from './library/grouping-engine';
+import {
+  extractTranscriptPassages,
+  findActivePassage,
+  formatTranscriptAsPlainText,
+  TranscriptPassage,
+} from './library/transcript-passages';
 
 // Standalone fallback mock data
 const mockFallbackClips: VirtualClip[] = [
@@ -171,6 +177,19 @@ export default function App() {
   const [showSaveViewModal, setShowSaveViewModal] = useState(false);
   const [newViewName, setNewViewName] = useState('');
   const [activeSavedViewId, setActiveSavedViewId] = useState<string | null>(null);
+
+  // F05: Recording & Transcript Workspace
+  const [playbackSpeed, setPlaybackSpeed] = useState<number>(1);
+  const [followPlayback, setFollowPlayback] = useState<boolean>(true);
+  const [showEditTextModal, setShowEditTextModal] = useState<boolean>(false);
+  const [transcriptEditText, setTranscriptEditText] = useState<string>('');
+  const [transcriptFindQuery, setTranscriptFindQuery] = useState<string>('');
+  const [showExcerptModal, setShowExcerptModal] = useState<boolean>(false);
+  const [excerptTitle, setExcerptTitle] = useState<string>('');
+  const [excerptStart, setExcerptStart] = useState<number>(0);
+  const [excerptEnd, setExcerptEnd] = useState<number>(0);
+  const [transcriptCopiedNotice, setTranscriptCopiedNotice] = useState<boolean>(false);
+  const activePassageRef = useRef<HTMLDivElement | null>(null);
   
   // Table Sorting state: starts desc on creation / import time
   type SortField = 'title' | 'category' | 'duration' | 'tags' | 'confidence' | 'createdAt';
@@ -250,6 +269,37 @@ export default function App() {
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
 
   const activeClip = clips.find((c) => c.id === selectedClipId) || clips[0] || mockFallbackClips[0];
+
+  const passages = useMemo<TranscriptPassage[]>(() => {
+    if (!activeClip) return [];
+    return extractTranscriptPassages(activeClip);
+  }, [activeClip]);
+
+  const activePassage = useMemo(() => {
+    if (!passages.length) return null;
+    return findActivePassage(passages, currentTimeSec);
+  }, [passages, currentTimeSec]);
+
+  const childExcerpts = useMemo(() => {
+    if (!activeClip) return [];
+    return clips.filter(
+      (c) => c.parentFileId === activeClip.parentFileId && c.id !== activeClip.id && !c.isExcluded
+    );
+  }, [clips, activeClip]);
+
+  // Auto-scroll active passage in detail view
+  useEffect(() => {
+    if (activeWorkspace === 'detail' && followPlayback && isPlaying && activePassageRef.current) {
+      activePassageRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [activePassage?.id, followPlayback, isPlaying, activeWorkspace]);
+
+  // Sync playback speed to native audio element
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.playbackRate = playbackSpeed;
+    }
+  }, [playbackSpeed]);
 
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
   const wordRefs = useRef<(HTMLSpanElement | null)[]>([]);
@@ -473,7 +523,15 @@ export default function App() {
       selectedCount: selectedClipIds.size,
       hasTranscript: !!(activeClip && (activeClip.fullTranscription || activeClip.transcription)),
       isPlaying,
-      isModalOpen: !!(clipToDelete || editingMetadataClip || showRefreshAiModal || showNewCollectionModal),
+      isModalOpen: !!(
+        clipToDelete ||
+        editingMetadataClip ||
+        showRefreshAiModal ||
+        showNewCollectionModal ||
+        showSaveViewModal ||
+        showEditTextModal ||
+        showExcerptModal
+      ),
     });
   }, [
     activeWorkspace,
@@ -484,6 +542,9 @@ export default function App() {
     editingMetadataClip,
     showRefreshAiModal,
     showNewCollectionModal,
+    showSaveViewModal,
+    showEditTextModal,
+    showExcerptModal,
   ]);
 
   // Register all typed commands with unified handlers
@@ -641,6 +702,44 @@ export default function App() {
         if (activeClip) handleToggleReviewed(activeClip.id);
       },
     });
+    commandRegistry.register({
+      id: 'show-details',
+      label: 'Show Recording Details',
+      isEnabled: () => !!activeClip,
+      execute: () => {
+        setActiveWorkspace('detail');
+      },
+    });
+    commandRegistry.register({
+      id: 'find-in-transcript',
+      label: 'Find in Transcript…',
+      isEnabled: () => activeWorkspace === 'detail',
+      execute: () => {
+        const input = document.querySelector<HTMLInputElement>('.transcript-find-input');
+        if (input) input.focus();
+      },
+    });
+    commandRegistry.register({
+      id: 'save-excerpt',
+      label: 'Save Excerpt…',
+      isEnabled: () => !!activeClip,
+      execute: () => {
+        if (!activeClip) return;
+        setExcerptTitle(`${activeClip.title} (Excerpt)`);
+        const duration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+        if (selectionRange) {
+          setExcerptStart(Math.round(selectionRange.start * duration));
+          setExcerptEnd(Math.round(selectionRange.end * duration));
+        } else if (activePassage) {
+          setExcerptStart(activePassage.startSec);
+          setExcerptEnd(Math.min(duration, activePassage.endSec));
+        } else {
+          setExcerptStart(Math.floor(currentTimeSec));
+          setExcerptEnd(Math.min(duration, Math.floor(currentTimeSec + 30)));
+        }
+        setShowExcerptModal(true);
+      },
+    });
 
     const unsubscribeMenu = window.audioVault?.onMenuAction
       ? window.audioVault.onMenuAction((action) => {
@@ -657,7 +756,7 @@ export default function App() {
       unsubscribeMenu();
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [activeClip]);
+  }, [activeClip, activeWorkspace, selectionRange, activePassage, currentTimeSec]);
 
   // Convert Float32Array PCM samples into a valid 16-bit 48kHz WAV ArrayBuffer
   function encodeWav(samples: Float32Array, sampleRate = 48000): ArrayBuffer {
@@ -1225,6 +1324,98 @@ export default function App() {
     });
     setClipContextMenu(null);
   }
+
+  // Detail Workspace Helpers (F05)
+  const handleSkipSeconds = (deltaSeconds: number) => {
+    if (!audioRef.current || !activeClip) return;
+    const clipDuration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+    const newCurrentTime = Math.max(0, Math.min(clipDuration, currentTimeSec + deltaSeconds));
+    audioRef.current.currentTime = activeClip.startTimeSeconds + newCurrentTime;
+    setCurrentTimeSec(newCurrentTime);
+    if (clipDuration > 0) {
+      setPlaybackProgress(newCurrentTime / clipDuration);
+    }
+  };
+
+  const handleSeekToPassage = (startSec: number) => {
+    if (!audioRef.current || !activeClip) return;
+    const clipDuration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+    const targetTime = Math.max(0, Math.min(clipDuration, startSec));
+    audioRef.current.currentTime = activeClip.startTimeSeconds + targetTime;
+    setCurrentTimeSec(targetTime);
+    if (clipDuration > 0) {
+      setPlaybackProgress(targetTime / clipDuration);
+    }
+    if (!isPlaying) {
+      setIsPlaying(true);
+      audioRef.current.play().catch(() => {});
+    }
+  };
+
+  const handleCopyDetailTranscript = () => {
+    if (!activeClip) return;
+    const textToCopy =
+      formatTranscriptAsPlainText(passages, false) ||
+      activeClip.editedTranscript ||
+      activeClip.fullTranscription ||
+      activeClip.transcription ||
+      '';
+    if (textToCopy) {
+      navigator.clipboard.writeText(textToCopy);
+      setTranscriptCopiedNotice(true);
+      setTimeout(() => setTranscriptCopiedNotice(false), 2500);
+    }
+  };
+
+  const handleSaveEditedTranscript = async () => {
+    if (!activeClip) return;
+    const newText = transcriptEditText.trim();
+    if (window.audioVault) {
+      await window.audioVault.updateVirtualClip(activeClip.id, { editedTranscript: newText });
+    }
+    setClips((prev) =>
+      prev.map((c) =>
+        c.id === activeClip.id ? { ...c, editedTranscript: newText, updatedAt: new Date().toISOString() } : c
+      )
+    );
+    setShowEditTextModal(false);
+    setToastMessage('✓ Transcript updated');
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const handleSaveExcerpt = async () => {
+    if (!activeClip) return;
+    const duration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+    const s = Math.max(0, Math.min(duration, excerptStart));
+    const e = Math.max(s + 1, Math.min(duration, excerptEnd));
+    const startSec = activeClip.startTimeSeconds + s;
+    const endSec = activeClip.startTimeSeconds + e;
+    const title = excerptTitle.trim() || `${activeClip.title} (Excerpt)`;
+
+    const newClip: VirtualClip = {
+      id: `clip_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      parentFileId: activeClip.parentFileId,
+      title,
+      startTimeSeconds: startSec,
+      endTimeSeconds: endSec,
+      category: activeClip.category,
+      userTags: [...(activeClip.userTags || []), 'Excerpt'],
+      classificationConfidence: activeClip.classificationConfidence,
+      classificationSource: 'user_manual',
+      isExcluded: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      collections: activeClip.collections ? [...activeClip.collections] : undefined,
+    };
+
+    if (window.audioVault) {
+      await window.audioVault.createVirtualClip(newClip);
+    }
+    setClips((prev) => [newClip, ...prev]);
+    setShowExcerptModal(false);
+    setToastMessage(`✓ Saved excerpt: "${title}"`);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
 
   // Context Menu Actions
   async function handleClassifySelection(category: PrimaryCategory) {
@@ -2066,6 +2257,10 @@ export default function App() {
         key={clip.id}
         className={`${isSelected ? 'selected' : ''} ${isExcerpt ? 'excerpt-subrow' : ''}`}
         onClick={(e) => handleRowSelection(clip.id, e)}
+        onDoubleClick={() => {
+          setSelectedClipId(clip.id);
+          setActiveWorkspace('detail');
+        }}
         onContextMenu={(e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -2079,7 +2274,7 @@ export default function App() {
           setClipContextMenu({ visible: true, x, y, clip });
           setContextMenu(null);
         }}
-        title="Right-click for options (Edit Title, Add Tags, AI Title, Category)"
+        title="Double-click to open recording workspace. Right-click for options."
       >
         <td>
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.55rem' }}>
@@ -2131,7 +2326,17 @@ export default function App() {
                 {isExpanded ? '▾' : '▸'} {excerptCount} excerpt{excerptCount === 1 ? '' : 's'}
               </button>
             )}
-            <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+            <span
+              className="clip-title-link"
+              data-testid="clip-title-link"
+              style={{ fontWeight: 600 }}
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedClipId(clip.id);
+                setActiveWorkspace('detail');
+              }}
+              title="Click to open recording workspace"
+            >
               <HighlightMatch text={clip.title} query={searchQuery} />
             </span>
             {clip.exportedMp3Path && (
@@ -2532,6 +2737,27 @@ export default function App() {
 
       {/* Main Studio Body */}
       <div className="app-body">
+        {/* Persistent Native Audio Element across all workspaces */}
+        <audio
+          ref={audioRef}
+          src={`audiovault://file/${activeClip.parentFileId}`}
+          onTimeUpdate={() => {
+            if (audioRef.current && activeClip) {
+              const duration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+              const current = Math.max(0, audioRef.current.currentTime - activeClip.startTimeSeconds);
+              setCurrentTimeSec(current);
+              if (duration > 0) {
+                setPlaybackProgress(Math.min(1, current / duration));
+              }
+            }
+          }}
+          onEnded={() => {
+            setIsPlaying(false);
+            setPlaybackProgress(0);
+            setCurrentTimeSec(0);
+          }}
+        />
+
         {/* Sidebar Navigation */}
         <aside className="app-sidebar">
           {/* Workspaces Switcher (F02) */}
@@ -2972,6 +3198,479 @@ export default function App() {
               )}
             </div>
           </main>
+        ) : activeWorkspace === 'detail' ? (
+          <main className="app-workspace detail-workspace-view" data-testid="recording-workspace">
+            {/* Top Navigation */}
+            <div className="detail-top-nav">
+              <button
+                type="button"
+                className="detail-back-btn"
+                data-testid="detail-back-btn"
+                onClick={() => setActiveWorkspace('library')}
+              >
+                ← Back to {searchQuery ? 'Search Results' : activeScope === 'recent' ? 'Recent' : activeScope === 'review' ? 'Needs Review' : activeScope === 'favorites' ? 'Favorites' : activeScope.startsWith('col:') ? activeScope.slice(4) : 'Library'}
+              </button>
+            </div>
+
+            {/* Header Row: Title, Metadata, Actions */}
+            <div className="detail-header-row">
+              <div className="detail-title-group">
+                <div className="detail-title-row">
+                  <span className={`category-pill cat-${activeClip.category}`}>
+                    {activeClip.category}
+                  </span>
+                  <h1 className="detail-title" data-testid="detail-title">
+                    {activeClip.title}
+                  </h1>
+                </div>
+                <div className="detail-sub-bar">
+                  <span>📅 {activeClip.recordedAt || activeClip.createdAt.slice(0, 10)}</span>
+                  <span>•</span>
+                  <span>⏱️ {Math.floor((activeClip.endTimeSeconds - activeClip.startTimeSeconds) / 60).toString().padStart(2, '0')}:{(Math.floor((activeClip.endTimeSeconds - activeClip.startTimeSeconds) % 60)).toString().padStart(2, '0')}</span>
+                  <span>•</span>
+                  <span>📁 {activeClip.collections && activeClip.collections.length > 0 ? activeClip.collections.join(', ') : 'Unassigned'}</span>
+                  {activeClip.reviewed && (
+                    <>
+                      <span>•</span>
+                      <span style={{ color: 'var(--accent-emerald)', fontWeight: 600 }}>✓ Reviewed</span>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="detail-actions-group">
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  data-testid="detail-transcribe-btn"
+                  onClick={() => handleReprocessClip(activeClip)}
+                >
+                  {passages.length > 0 ? '🔄 Re-transcribe…' : '🎙️ Transcribe…'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  data-testid="detail-copy-btn"
+                  disabled={passages.length === 0}
+                  onClick={handleCopyDetailTranscript}
+                >
+                  {transcriptCopiedNotice ? '✓ Copied!' : '📋 Copy transcript'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  data-testid="detail-export-btn"
+                  onClick={handleExportClip}
+                >
+                  💾 Export…
+                </button>
+              </div>
+            </div>
+
+            {/* Two-Column Detail Grid */}
+            <div className="detail-main-grid">
+              {/* Left Column: Transcript Card */}
+              <div className="detail-transcript-card" data-testid="detail-transcript-card">
+                <div className="detail-transcript-header">
+                  <div className="transcript-header-left">
+                    <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.05rem', margin: 0, fontWeight: 700 }}>
+                      Transcript
+                    </h2>
+                    {passages.length > 0 && (
+                      <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                        ({passages.length} passage{passages.length === 1 ? '' : 's'})
+                      </span>
+                    )}
+                  </div>
+                  <div className="transcript-header-right">
+                    {passages.length > 0 && (
+                      <>
+                        <input
+                          type="text"
+                          placeholder="Find in transcript (⌘F)..."
+                          value={transcriptFindQuery}
+                          onChange={(e) => setTranscriptFindQuery(e.target.value)}
+                          className="transcript-find-input"
+                          data-testid="transcript-find-input"
+                          style={{
+                            background: 'rgba(0, 0, 0, 0.3)',
+                            border: '1px solid var(--border-color)',
+                            borderRadius: '4px',
+                            padding: '0.2rem 0.5rem',
+                            fontSize: '0.78rem',
+                            color: '#fff',
+                            width: '170px',
+                          }}
+                        />
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.78rem', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={followPlayback}
+                            onChange={(e) => setFollowPlayback(e.target.checked)}
+                            data-testid="follow-playback-toggle"
+                          />
+                          Follow playback
+                        </label>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          data-testid="detail-edit-transcript-btn"
+                          onClick={() => {
+                            setTranscriptEditText(
+                              activeClip.editedTranscript ||
+                              formatTranscriptAsPlainText(passages, false) ||
+                              activeClip.fullTranscription ||
+                              activeClip.transcription ||
+                              ''
+                            );
+                            setShowEditTextModal(true);
+                          }}
+                        >
+                          ✏️ Edit text
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {passages.length > 0 ? (
+                  <div className="detail-transcript-scroll" data-testid="detail-transcript-scroll">
+                    {passages.map((passage) => {
+                      const isActive = activePassage?.id === passage.id;
+                      const isSearchHit = transcriptFindQuery.trim()
+                        ? passage.text.toLowerCase().includes(transcriptFindQuery.toLowerCase().trim())
+                        : false;
+
+                      return (
+                        <div
+                          key={passage.id}
+                          ref={isActive ? activePassageRef : undefined}
+                          className={`passage-card ${isActive ? 'active' : ''} ${isSearchHit ? 'search-hit' : ''}`}
+                          data-testid={`passage-${passage.id}`}
+                        >
+                          <button
+                            type="button"
+                            className="passage-time-btn"
+                            data-testid={`passage-time-${passage.timestampLabel}`}
+                            onClick={() => handleSeekToPassage(passage.startSec)}
+                            title={`Seek to ${passage.timestampLabel}`}
+                          >
+                            {passage.timestampLabel}
+                          </button>
+                          <p className="passage-text">
+                            <HighlightMatch text={passage.text} query={transcriptFindQuery} />
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="detail-empty-panel" data-testid="detail-empty-panel">
+                    <div style={{ fontSize: '2.4rem' }}>
+                      {activeClip.transcriptState === 'failed' ? '⚠️' : activeClip.transcriptState === 'no_speech' ? '🔇' : '🎙️'}
+                    </div>
+                    <div className="detail-empty-title">
+                      {activeClip.transcriptState === 'failed'
+                        ? 'Transcription failed'
+                        : activeClip.transcriptState === 'no_speech'
+                        ? 'No speech detected'
+                        : 'No transcript yet'}
+                    </div>
+                    <div className="detail-empty-desc">
+                      {activeClip.transcriptState === 'failed'
+                        ? 'The background Whisper worker encountered an issue. You can retry transcription without re-importing the audio.'
+                        : activeClip.transcriptState === 'no_speech'
+                        ? 'The audio was analyzed but no clear spoken dialogue was detected. You can re-run detection if needed.'
+                        : 'Your audio is safe and ready to play. Generate a transcript when you need it.'}
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => handleReprocessClip(activeClip)}
+                    >
+                      {activeClip.transcriptState === 'failed' ? '🔄 Retry transcription…' : '🎙️ Transcribe…'}
+                    </button>
+                  </div>
+                )}
+
+                <div className="detail-transcript-footer">
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    data-testid="detail-save-excerpt-btn"
+                    onClick={() => {
+                      setExcerptTitle(`${activeClip.title} (Excerpt)`);
+                      const duration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+                      if (selectionRange) {
+                        setExcerptStart(Math.round(selectionRange.start * duration));
+                        setExcerptEnd(Math.round(selectionRange.end * duration));
+                      } else if (activePassage) {
+                        setExcerptStart(activePassage.startSec);
+                        setExcerptEnd(Math.min(duration, activePassage.endSec));
+                      } else {
+                        setExcerptStart(Math.floor(currentTimeSec));
+                        setExcerptEnd(Math.min(duration, Math.floor(currentTimeSec + 30)));
+                      }
+                      setShowExcerptModal(true);
+                    }}
+                  >
+                    ✂️ Save excerpt…
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    data-testid="detail-review-toggle-btn"
+                    onClick={() => handleToggleReviewed(activeClip.id)}
+                  >
+                    {activeClip.reviewed ? '✓ Reviewed' : 'Mark reviewed'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Right Column: Sidebar Details Card */}
+              <div className="detail-sidebar-card" data-testid="detail-sidebar-card">
+                <h3 className="detail-sidebar-title">Recording Details</h3>
+
+                <div className="detail-meta-field">
+                  <span className="detail-meta-label">Collection</span>
+                  <div className="detail-meta-val">
+                    <span>{activeClip.collections && activeClip.collections.length > 0 ? activeClip.collections.join(', ') : 'Unassigned'}</span>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      style={{ fontSize: '0.72rem', padding: '0.15rem 0.45rem' }}
+                      onClick={() => {
+                        setSelectedClipIds(new Set([activeClip.id]));
+                        setShowAddToCollectionModal(true);
+                      }}
+                    >
+                      Change
+                    </button>
+                  </div>
+                </div>
+
+                <div className="detail-meta-field">
+                  <span className="detail-meta-label">Source Device</span>
+                  <span className="detail-meta-val">
+                    {rawFiles.find(f => f.id === activeClip.parentFileId)?.sourceDevice || (activeClip.classificationSource === 'user_manual' ? 'Virtual Take / Excerpt' : 'Imported Media')}
+                  </span>
+                </div>
+
+                <div className="detail-meta-field">
+                  <span className="detail-meta-label">Original Filename</span>
+                  <span className="detail-meta-val" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}>
+                    {rawFiles.find(f => f.id === activeClip.parentFileId)?.originalFilename || activeClip.title}
+                  </span>
+                </div>
+
+                <div className="detail-meta-field">
+                  <span className="detail-meta-label">Audio Specs</span>
+                  <span className="detail-meta-val" style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                    {(() => {
+                      const raw = rawFiles.find(f => f.id === activeClip.parentFileId);
+                      const rate = raw?.sampleRate ? `${(raw.sampleRate / 1000).toFixed(1)} kHz` : '48.0 kHz';
+                      const ch = raw?.channels === 1 ? 'Mono' : 'Stereo';
+                      const size = raw?.fileSizeBytes ? `${(raw.fileSizeBytes / (1024 * 1024)).toFixed(1)} MB` : '';
+                      return `${rate} · ${ch}${size ? ` · ${size}` : ''}`;
+                    })()}
+                  </span>
+                </div>
+
+                <div className="detail-meta-field">
+                  <span className="detail-meta-label">Transcript Status</span>
+                  <span className="detail-meta-val">
+                    <span
+                      className={`status-pill status-${
+                        passages.length > 0 || activeClip.transcriptState === 'ready'
+                          ? 'ready'
+                          : activeClip.transcriptState === 'failed'
+                          ? 'failed'
+                          : activeClip.transcriptState === 'no_speech'
+                          ? 'nospeech'
+                          : 'pending'
+                      }`}
+                    >
+                      {passages.length > 0 || activeClip.transcriptState === 'ready'
+                        ? 'Transcript ready'
+                        : activeClip.transcriptState === 'failed'
+                        ? 'Failed'
+                        : activeClip.transcriptState === 'no_speech'
+                        ? 'No speech'
+                        : 'Not transcribed'}
+                    </span>
+                  </span>
+                </div>
+
+                <div className="detail-meta-field">
+                  <span className="detail-meta-label">Saved Excerpts ({childExcerpts.length})</span>
+                  {childExcerpts.length > 0 ? (
+                    <div className="detail-excerpts-list" data-testid="detail-excerpts-list">
+                      {childExcerpts.map((ex) => (
+                        <div key={ex.id} className="detail-excerpt-item">
+                          <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={ex.title}>
+                            ✂️ {ex.title}
+                          </span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexShrink: 0 }}>
+                            <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                              {Math.floor((ex.endTimeSeconds - ex.startTimeSeconds) / 60)}:{(Math.floor((ex.endTimeSeconds - ex.startTimeSeconds) % 60)).toString().padStart(2, '0')}
+                            </span>
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              style={{ padding: '0.1rem 0.35rem', fontSize: '0.72rem' }}
+                              onClick={() => {
+                                setSelectedClipId(ex.id);
+                              }}
+                              title="Switch to excerpt"
+                            >
+                              ↗
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                      Shown beneath parent recording
+                    </span>
+                  )}
+                </div>
+
+                <div style={{ marginTop: 'auto', paddingTop: '0.5rem' }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    data-testid="detail-finder-btn"
+                    style={{ width: '100%', justifyContent: 'center' }}
+                    onClick={() => {
+                      const path = getClipStoragePath(activeClip);
+                      if (path) handleShowInFinder(path);
+                    }}
+                  >
+                    📂 Show in Finder
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Bottom Player Bar */}
+            <div className="detail-player-bar" data-testid="detail-player-bar">
+              <div className="detail-player-top">
+                <div className="detail-now-playing">
+                  <span>Now playing ·</span>
+                  <span style={{ color: 'var(--accent-cyan)' }}>{activeClip.title}</span>
+                </div>
+
+                {/* Profile pills */}
+                <div className="profile-selector-group" title="Select waveform decimation & dynamic contour profile">
+                  <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    Profile:
+                  </span>
+                  {(['adaptive', 'balanced', 'punchy', 'linear'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={`profile-pill-btn ${waveformProfile === mode ? 'active' : ''}`}
+                      onClick={() => setWaveformProfile(mode)}
+                    >
+                      {mode === 'adaptive' ? '✨ Dynamic' : mode === 'balanced' ? '🌿 Balanced' : mode === 'punchy' ? '🔥 Punchy' : '📏 Linear'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Interactive Waveform Canvas Container */}
+              <div
+                className="waveform-canvas-container"
+                onMouseDown={handleWaveformMouseDown}
+                onMouseMove={handleWaveformMouseMove}
+                onMouseUp={handleWaveformMouseUp}
+                onContextMenu={handleWaveformContextMenu}
+              >
+                <canvas
+                  ref={canvasRef}
+                  className="waveform-canvas"
+                  width={1200}
+                  height={90}
+                />
+                {selectionRange && (
+                  <div
+                    className="selection-overlay"
+                    style={{
+                      left: `${selectionRange.start * 100}%`,
+                      width: `${(selectionRange.end - selectionRange.start) * 100}%`,
+                    }}
+                  />
+                )}
+                <div
+                  className="playback-head"
+                  style={{ left: `${playbackProgress * 100}%` }}
+                />
+              </div>
+
+              {/* Player Controls */}
+              <div className="detail-player-controls" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                  <button
+                    type="button"
+                    className="detail-transport-btn"
+                    data-testid="detail-skip-back-btn"
+                    onClick={() => handleSkipSeconds(-10)}
+                    title="Skip Back 10 Seconds (⌥←)"
+                  >
+                    −10s
+                  </button>
+                  <button
+                    type="button"
+                    className="detail-play-btn"
+                    data-testid="detail-play-btn"
+                    onClick={() => setIsPlaying(!isPlaying)}
+                    title="Play / Pause (Space)"
+                  >
+                    {isPlaying ? '⏸' : '▶'}
+                  </button>
+                  <button
+                    type="button"
+                    className="detail-transport-btn"
+                    data-testid="detail-skip-forward-btn"
+                    onClick={() => handleSkipSeconds(10)}
+                    title="Skip Forward 10 Seconds (⌥→)"
+                  >
+                    +10s
+                  </button>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', color: 'var(--text-secondary)', marginLeft: '0.4rem' }}>
+                    {Math.floor(currentTimeSec / 60).toString().padStart(2, '0')}:{(Math.floor(currentTimeSec % 60)).toString().padStart(2, '0')} / {Math.floor((activeClip.endTimeSeconds - activeClip.startTimeSeconds) / 60).toString().padStart(2, '0')}:{(Math.floor((activeClip.endTimeSeconds - activeClip.startTimeSeconds) % 60)).toString().padStart(2, '0')}
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                    Speed:
+                    <select
+                      className="speed-select"
+                      data-testid="detail-speed-select"
+                      value={playbackSpeed}
+                      onChange={(e) => setPlaybackSpeed(Number(e.target.value))}
+                    >
+                      <option value="0.75">0.75×</option>
+                      <option value="1">1×</option>
+                      <option value="1.25">1.25×</option>
+                      <option value="1.5">1.5×</option>
+                      <option value="2">2×</option>
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => handleExportClipMp3(activeClip, !!selectionRange)}
+                    title="Export to MP3"
+                  >
+                    🎵 Export MP3
+                  </button>
+                </div>
+              </div>
+            </div>
+          </main>
         ) : (
           <main className="app-workspace">
             {/* Top Pane: Virtual Clips Table */}
@@ -3286,11 +3985,29 @@ export default function App() {
 
               <div className="transport-controls">
                 <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  data-testid="skip-back-btn"
+                  onClick={() => handleSkipSeconds(-10)}
+                  title="Skip Back 10 Seconds (⌥←)"
+                >
+                  −10s
+                </button>
+                <button
                   className="play-btn"
                   onClick={() => setIsPlaying(!isPlaying)}
                   title="Play / Pause Spacebar"
                 >
                   {isPlaying ? '⏸' : '▶'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  data-testid="skip-forward-btn"
+                  onClick={() => handleSkipSeconds(10)}
+                  title="Skip Forward 10 Seconds (⌥→)"
+                >
+                  +10s
                 </button>
                 <button
                   className="btn btn-secondary btn-sm"
@@ -3302,6 +4019,19 @@ export default function App() {
                 <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
                   {Math.floor(currentTimeSec / 60).toString().padStart(2, '0')}:{(Math.floor(currentTimeSec % 60)).toString().padStart(2, '0')} / {Math.floor((activeClip.endTimeSeconds - activeClip.startTimeSeconds) / 60).toString().padStart(2, '0')}:{(Math.floor((activeClip.endTimeSeconds - activeClip.startTimeSeconds) % 60)).toString().padStart(2, '0')}
                 </span>
+                <select
+                  className="speed-select"
+                  data-testid="dock-speed-select"
+                  value={playbackSpeed}
+                  onChange={(e) => setPlaybackSpeed(Number(e.target.value))}
+                  title="Playback speed"
+                >
+                  <option value="0.75">0.75×</option>
+                  <option value="1">1×</option>
+                  <option value="1.25">1.25×</option>
+                  <option value="1.5">1.5×</option>
+                  <option value="2">2×</option>
+                </select>
                 <button
                   className="btn btn-secondary btn-sm"
                   onClick={() => {
@@ -3347,27 +4077,6 @@ export default function App() {
                 )}
               </div>
             </div>
-
-            {/* Hidden HTML5 Audio Element for real native audio playback */}
-            <audio
-              ref={audioRef}
-              src={`audiovault://file/${activeClip.parentFileId}`}
-              onTimeUpdate={() => {
-                if (audioRef.current && activeClip) {
-                  const duration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
-                  const current = Math.max(0, audioRef.current.currentTime - activeClip.startTimeSeconds);
-                  setCurrentTimeSec(current);
-                  if (duration > 0) {
-                    setPlaybackProgress(Math.min(1, current / duration));
-                  }
-                }
-              }}
-              onEnded={() => {
-                setIsPlaying(false);
-                setPlaybackProgress(0);
-                setCurrentTimeSec(0);
-              }}
-            />
 
             {/* Interactive Waveform Canvas Container */}
             <div
@@ -4518,6 +5227,122 @@ export default function App() {
                 data-testid="confirm-save-view-btn"
               >
                 Save View
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Transcript Modal (F05) */}
+      {showEditTextModal && (
+        <div className="modal-backdrop" onClick={() => setShowEditTextModal(false)}>
+          <div className="modal-card" style={{ maxWidth: '640px' }} onClick={(e) => e.stopPropagation()} data-testid="edit-transcript-modal">
+            <div className="modal-header">
+              <div className="modal-title">Edit Transcript</div>
+              <button type="button" className="modal-close-btn" onClick={() => setShowEditTextModal(false)}>✕</button>
+            </div>
+            <div className="modal-body" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0 }}>
+                Correct transcript words or edit passages. Your edits are saved to your vault and preserved across sessions.
+              </p>
+              <textarea
+                data-testid="edit-transcript-textarea"
+                rows={10}
+                value={transcriptEditText}
+                onChange={(e) => setTranscriptEditText(e.target.value)}
+                style={{
+                  width: '100%',
+                  background: 'rgba(0, 0, 0, 0.4)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '0.75rem',
+                  color: '#fff',
+                  fontFamily: 'inherit',
+                  fontSize: '0.88rem',
+                  lineHeight: 1.5,
+                  resize: 'vertical',
+                }}
+              />
+            </div>
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', padding: '0.85rem 1.25rem' }}>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowEditTextModal(false)}>Cancel</button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                data-testid="confirm-save-transcript-btn"
+                onClick={handleSaveEditedTranscript}
+              >
+                Save Edits
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Save Excerpt Modal (F05) */}
+      {showExcerptModal && (
+        <div className="modal-backdrop" onClick={() => setShowExcerptModal(false)}>
+          <div className="modal-card" style={{ maxWidth: '460px' }} onClick={(e) => e.stopPropagation()} data-testid="save-excerpt-modal">
+            <div className="modal-header">
+              <div className="modal-title">Save Excerpt</div>
+              <button type="button" className="modal-close-btn" onClick={() => setShowExcerptModal(false)}>✕</button>
+            </div>
+            <div className="modal-body" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+              <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0 }}>
+                Creates a virtual clip referencing the original audio. No disk space duplicated.
+              </p>
+              <div>
+                <label style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '0.25rem' }}>
+                  Excerpt Title
+                </label>
+                <input
+                  type="text"
+                  className="modal-input"
+                  data-testid="excerpt-title-input"
+                  value={excerptTitle}
+                  onChange={(e) => setExcerptTitle(e.target.value)}
+                  placeholder="e.g. Key Decision, Chorus Idea"
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                <div>
+                  <label style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '0.25rem' }}>
+                    Start Time (seconds)
+                  </label>
+                  <input
+                    type="number"
+                    className="modal-input"
+                    data-testid="excerpt-start-input"
+                    value={excerptStart}
+                    onChange={(e) => setExcerptStart(Math.max(0, Number(e.target.value)))}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '0.25rem' }}>
+                    End Time (seconds)
+                  </label>
+                  <input
+                    type="number"
+                    className="modal-input"
+                    data-testid="excerpt-end-input"
+                    value={excerptEnd}
+                    onChange={(e) => setExcerptEnd(Math.max(0, Number(e.target.value)))}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', padding: '0.85rem 1.25rem' }}>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowExcerptModal(false)}>Cancel</button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                data-testid="confirm-save-excerpt-btn"
+                onClick={handleSaveExcerpt}
+              >
+                Save Excerpt
               </button>
             </div>
           </div>
