@@ -230,7 +230,8 @@ export class PipelineOrchestrator extends EventEmitter {
     customTitle?: string,
     sourceDevice = 'In-App Recorder',
     existingClipId?: string,
-    existingRawFileId?: string
+    existingRawFileId?: string,
+    targetCollection?: string
   ): IngestJobProgress | null {
     if (!fs.existsSync(filePath)) return null;
     const stats = fs.statSync(filePath);
@@ -245,6 +246,7 @@ export class PipelineOrchestrator extends EventEmitter {
       copyPercent: 100,
       analysisPercent: 0,
       currentTaskDescription: 'Processing recorded take with local Whisper & acoustic engine...',
+      targetCollection,
     };
     (job as any).targetPath = filePath;
     (job as any).fingerprint = fingerprint;
@@ -252,6 +254,7 @@ export class PipelineOrchestrator extends EventEmitter {
     (job as any).sourceDevice = sourceDevice;
     (job as any).existingClipId = existingClipId;
     (job as any).existingRawFileId = existingRawFileId;
+    (job as any).targetCollection = targetCollection;
 
     this.analysisQueue.push(job);
     this.totalBatchJobsCount++;
@@ -656,6 +659,10 @@ export class PipelineOrchestrator extends EventEmitter {
       });
       if (updated) {
         defaultClip = updated;
+      }
+
+      if (currentJob.targetCollection) {
+        this.dedupEngine.addClipToCollection(defaultClip.id, currentJob.targetCollection);
       }
 
       currentJob.stage = 'completed';

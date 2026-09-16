@@ -76,8 +76,8 @@ const audioVaultApi: AudioVaultAPI = {
     ipcRenderer.invoke('vault:reprocess-all-clips', onlyMissing),
   generateAiTitle: (clipId: string) =>
     ipcRenderer.invoke('vault:generate-ai-title', clipId),
-  saveRecordedTake: (wavBuffer: ArrayBuffer, customTitle?: string, autoTranscribe?: boolean) =>
-    ipcRenderer.invoke('vault:save-recorded-take', wavBuffer, customTitle, autoTranscribe),
+  saveRecordedTake: (wavBuffer: ArrayBuffer, customTitle?: string, autoTranscribe?: boolean, targetCollection?: string) =>
+    ipcRenderer.invoke('vault:save-recorded-take', wavBuffer, customTitle, autoTranscribe, targetCollection),
   getDeletedFiles: () => ipcRenderer.invoke('vault:get-deleted-files'),
   clearDeletedFiles: () => ipcRenderer.invoke('vault:clear-deleted-files'),
   forgetDeletedFile: (idOrFingerprint: string) =>

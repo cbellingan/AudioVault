@@ -1240,6 +1240,19 @@ mark {
   cursor: pointer;
 }
 
+.recbar-input,
+.recbar-select {
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.recbar-input:focus,
+.recbar-select:focus {
+  border-color: var(--accent-emerald) !important;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.25);
+}
+
 /* Sidebar Sources styling */
 .source-item {
   display: flex;

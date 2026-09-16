@@ -768,7 +768,13 @@ function setupIpcHandlers() {
 
   ipcMain.handle(
     'vault:save-recorded-take',
-    async (_, wavBuffer: ArrayBuffer, customTitle?: string, _autoTranscribe = true): Promise<VirtualClip> => {
+    async (
+      _,
+      wavBuffer: ArrayBuffer,
+      customTitle?: string,
+      _autoTranscribe = true,
+      targetCollection?: string
+    ): Promise<VirtualClip> => {
       const rawDir = dedupEngine.getRawDir();
       if (!fs.existsSync(rawDir)) {
         fs.mkdirSync(rawDir, { recursive: true });
@@ -813,6 +819,7 @@ function setupIpcHandlers() {
         endTimeSeconds: Math.max(0.5, analysis.features.durationSeconds),
         category: 'dictaphone',
         userTags: ['In-App Take', 'Voice Memo'],
+        collections: targetCollection ? [targetCollection] : [],
         classificationConfidence: 0.95,
         classificationSource: 'yamnet_local',
         isExcluded: false,
@@ -820,6 +827,10 @@ function setupIpcHandlers() {
         updatedAt: new Date().toISOString(),
       };
       dedupEngine.addVirtualClip(defaultClip);
+
+      if (targetCollection) {
+        dedupEngine.addClipToCollection(defaultClip.id, targetCollection);
+      }
 
       const finalClip =
         dedupEngine.getVirtualClip(clipId) ||
@@ -834,7 +845,8 @@ function setupIpcHandlers() {
         finalClip.title,
         'In-App Recorder',
         finalClip.id,
-        finalRawId
+        finalRawId,
+        targetCollection
       );
 
       return finalClip;

@@ -289,6 +289,8 @@ export default function App() {
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [recordingLevels, setRecordingLevels] = useState<number[]>([15, 25, 45, 60, 35, 20, 10, 30, 50, 65, 40, 25, 15, 45, 70, 55, 30, 20]);
   const [autoTranscribeOnStop, setAutoTranscribeOnStop] = useState(true);
+  const [recordingCustomTitle, setRecordingCustomTitle] = useState('');
+  const [recordingTargetCollection, setRecordingTargetCollection] = useState('');
 
   // In-app audio capture refs
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -1052,11 +1054,17 @@ export default function App() {
 
     const wavBuffer = encodeWav(merged, 48000);
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const takeTitle = `In-App Take · ${timeStr}`;
+    const takeTitle = recordingCustomTitle.trim() || `In-App Take · ${timeStr}`;
+    const targetCol = recordingTargetCollection.trim() || undefined;
 
     try {
       if (window.audioVault) {
-        const newClip = await window.audioVault.saveRecordedTake(wavBuffer, takeTitle, autoTranscribeOnStop);
+        const newClip = await window.audioVault.saveRecordedTake(
+          wavBuffer,
+          takeTitle,
+          autoTranscribeOnStop,
+          targetCol
+        );
         if (newClip) {
           setClips((prev) => {
             const exists = prev.some((c) => c.id === newClip.id);
@@ -1074,6 +1082,7 @@ export default function App() {
           endTimeSeconds: Math.max(1, recordingDuration),
           category: 'dictaphone',
           userTags: ['In-App Take', 'Voice Memo'],
+          collections: targetCol ? [targetCol] : [],
           classificationConfidence: 0.95,
           classificationSource: 'yamnet_local',
           isExcluded: false,
@@ -1083,6 +1092,10 @@ export default function App() {
         setClips((prev) => [mockNew, ...prev]);
         setSelectedClipId(mockNew.id);
       }
+      setToastMessage(`✓ In-App take saved to library${targetCol ? ` [Collection: ${targetCol}]` : ''}`);
+      setTimeout(() => setToastMessage(null), 4000);
+      setRecordingCustomTitle('');
+      setRecordingTargetCollection('');
     } catch (e: any) {
       console.error('Error saving recorded take:', e);
       alert('Failed to save recorded take: ' + (e.message || String(e)));
@@ -2803,6 +2816,7 @@ export default function App() {
           {!isRecording ? (
             <button
               className="btn btn-record"
+              data-testid="header-record-btn"
               onClick={startRecording}
               title="Start recording directly into AudioVault"
             >
@@ -2811,6 +2825,7 @@ export default function App() {
           ) : (
             <button
               className="btn btn-danger"
+              data-testid="header-stop-btn"
               style={{ background: 'linear-gradient(135deg, #f87171, #ef4444)', border: 'none', color: '#1a0505', fontWeight: 700 }}
               onClick={stopRecording}
               title="Stop current recording and save take"
@@ -2875,8 +2890,54 @@ export default function App() {
               {Math.floor(recordingDuration / 60).toString().padStart(2, '0')}:{(recordingDuration % 60).toString().padStart(2, '0')}
             </div>
             <div className="recbar-meta">
-              <b>In-App Recorder</b> · 48 kHz / 16-bit PCM · saving to Vault → Memos
+              <b>In-App Recorder</b> · 48 kHz / 16-bit PCM · saving to Vault
             </div>
+          </div>
+
+          {/* Custom Memo Title Input */}
+          <div style={{ display: 'flex', alignItems: 'center' }}>
+            <input
+              type="text"
+              className="recbar-input"
+              data-testid="recbar-title-input"
+              placeholder="Memo title (optional)..."
+              value={recordingCustomTitle}
+              onChange={(e) => setRecordingCustomTitle(e.target.value)}
+              style={{
+                background: 'rgba(0, 0, 0, 0.4)',
+                border: '1px solid rgba(255, 255, 255, 0.18)',
+                borderRadius: '5px',
+                color: '#fff',
+                fontSize: '0.8rem',
+                padding: '0.3rem 0.6rem',
+                width: '160px',
+              }}
+            />
+          </div>
+
+          {/* Destination Collection Selector */}
+          <div style={{ display: 'flex', alignItems: 'center' }}>
+            <select
+              className="recbar-select"
+              data-testid="recbar-collection-select"
+              value={recordingTargetCollection}
+              onChange={(e) => setRecordingTargetCollection(e.target.value)}
+              style={{
+                background: 'rgba(0, 0, 0, 0.4)',
+                border: '1px solid rgba(255, 255, 255, 0.18)',
+                borderRadius: '5px',
+                color: '#fff',
+                fontSize: '0.8rem',
+                padding: '0.3rem 0.6rem',
+              }}
+            >
+              <option value="">📁 Destination: (None)</option>
+              {collections.map((col) => (
+                <option key={col.id} value={col.name}>
+                  📁 {col.name}
+                </option>
+              ))}
+            </select>
           </div>
 
           {/* Live Level Meter Bars */}
@@ -2894,7 +2955,7 @@ export default function App() {
           </div>
 
           {/* Auto-transcribe checkbox toggle */}
-          <label className="recbar-toggle">
+          <label className="recbar-toggle" data-testid="recbar-autotranscribe-toggle">
             <input
               type="checkbox"
               checked={autoTranscribeOnStop}
@@ -2906,6 +2967,7 @@ export default function App() {
           <button
             type="button"
             className="btn btn-secondary btn-sm"
+            data-testid="recbar-pause-btn"
             onClick={pauseRecording}
           >
             {isRecordingPaused ? '▶ Resume' : '⏸ Pause'}
@@ -2913,6 +2975,7 @@ export default function App() {
           <button
             type="button"
             className="btn btn-danger btn-sm"
+            data-testid="recbar-stop-btn"
             style={{ background: 'linear-gradient(135deg, #f87171, #ef4444)', border: 'none', color: '#1a0505', fontWeight: 700 }}
             onClick={stopRecording}
           >
@@ -3443,6 +3506,17 @@ export default function App() {
                   onClick={() => setActiveWorkspace('library')}
                 >
                   ← Back to Library
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-record btn-sm"
+                  data-testid="imports-record-btn"
+                  onClick={startRecording}
+                  title="Start recording voice memo directly"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
+                >
+                  <span className="rec-pulse-dot" style={{ width: 6, height: 6 }}></span>
+                  🎙️ Record Voice Memo
                 </button>
                 <button
                   type="button"

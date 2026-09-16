@@ -332,7 +332,7 @@ export interface AudioVaultAPI {
   reprocessClip: (clipId: string) => Promise<VirtualClip | null>;
   reprocessAllClips: (onlyMissing?: boolean) => Promise<{ count: number }>;
   generateAiTitle: (clipId: string) => Promise<VirtualClip>;
-  saveRecordedTake: (wavBuffer: ArrayBuffer, customTitle?: string, autoTranscribe?: boolean) => Promise<VirtualClip>;
+  saveRecordedTake: (wavBuffer: ArrayBuffer, customTitle?: string, autoTranscribe?: boolean, targetCollection?: string) => Promise<VirtualClip>;
 
   // Tombstones & Sync Exclusion
   getDeletedFiles: () => Promise<DeletedFileRecord[]>;

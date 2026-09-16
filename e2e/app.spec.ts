@@ -1582,6 +1582,119 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
 
     await app.close();
   });
+
+  test("25. Recording Capture Integration: Recording bar custom title, destination collection assignment, and imports workspace trigger (Slice F13)", async () => {
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+
+    // 1. Create a test collection to target using UI
+    const newColBtn = window.locator("button.nav-header-action", { hasText: "+ New" });
+    await expect(newColBtn).toBeVisible();
+    await newColBtn.click();
+
+    const modalInput = window.locator(".modal-body input");
+    await expect(modalInput).toBeVisible();
+    await modalInput.fill("Field Memos 2026");
+    await window.keyboard.press("Enter");
+
+    const colItem = window.locator(".collection-item", { hasText: "Field Memos 2026" });
+    await expect(colItem).toBeVisible();
+
+    // 2. Switch to Imports workspace
+    const switcher = window.locator("[data-testid=\"workspace-switcher\"]");
+    const importsTab = switcher.locator("button", { hasText: "Imports" });
+    await importsTab.click();
+    const importsWorkspace = window.locator("[data-testid=\"imports-workspace\"]");
+    await expect(importsWorkspace).toBeVisible();
+
+    // 3. Verify Imports Quick Record Button is visible and click it
+    const importsRecordBtn = window.locator("[data-testid=\"imports-record-btn\"]");
+    await expect(importsRecordBtn).toBeVisible();
+    await importsRecordBtn.click();
+
+    // 4. Verify Recording Bar appears
+    const recbar = window.locator("[data-testid=\"recording-bar\"]");
+    await expect(recbar).toBeVisible();
+
+    // Verify Title Input in recording bar
+    const titleInput = window.locator("[data-testid=\"recbar-title-input\"]");
+    await expect(titleInput).toBeVisible();
+    await titleInput.fill("Field Memo Take 1");
+    expect(await titleInput.inputValue()).toBe("Field Memo Take 1");
+
+    // Verify Collection Selector in recording bar
+    const colSelect = window.locator("[data-testid=\"recbar-collection-select\"]");
+    await expect(colSelect).toBeVisible();
+    await colSelect.selectOption("Field Memos 2026");
+    expect(await colSelect.inputValue()).toBe("Field Memos 2026");
+
+    // Verify Auto-transcribe toggle and Pause/Resume button
+    const autoTranscribeToggle = window.locator("[data-testid=\"recbar-autotranscribe-toggle\"]");
+    await expect(autoTranscribeToggle).toBeVisible();
+
+    const pauseBtn = window.locator("[data-testid=\"recbar-pause-btn\"]");
+    await expect(pauseBtn).toBeVisible();
+    await pauseBtn.click();
+    await expect(pauseBtn).toContainText("Resume");
+    await pauseBtn.click();
+    await expect(pauseBtn).toContainText("Pause");
+
+    // 5. Save synthetic take via API into the destination collection
+    const testPcm = new Int16Array(44100 * 1);
+    for (let i = 0; i < testPcm.length; i++) {
+      testPcm[i] = Math.sin((i / 44100) * 440 * 2 * Math.PI) * 12000;
+    }
+    const wavBuffer = new ArrayBuffer(44 + testPcm.length * 2);
+    const view = new DataView(wavBuffer);
+    const writeStr = (pos: number, str: string) => {
+      for (let i = 0; i < str.length; i++) view.setUint8(pos + i, str.charCodeAt(i));
+    };
+    writeStr(0, "RIFF");
+    view.setUint32(4, 36 + testPcm.length * 2, true);
+    writeStr(8, "WAVE");
+    writeStr(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, 44100, true);
+    view.setUint32(28, 44100 * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, "data");
+    view.setUint32(40, testPcm.length * 2, true);
+    new Int16Array(wavBuffer, 44).set(testPcm);
+
+    const savedTake = await window.evaluate(async (buf) => {
+      return (window as any).audioVault.saveRecordedTake(
+        buf,
+        "Field Memo Take 1",
+        false,
+        "Field Memos 2026"
+      );
+    }, Array.from(new Uint8Array(wavBuffer)));
+
+    expect(savedTake).toBeTruthy();
+    expect(savedTake.title).toBe("Field Memo Take 1");
+    expect(savedTake.collections).toContain("Field Memos 2026");
+
+    // 6. Navigate back to Library workspace
+    const libraryTab = switcher.locator("button", { hasText: "Library" });
+    await libraryTab.click();
+
+    // 7. Verify new recorded take appears in Library table
+    const newRow = window.locator(".clips-table tbody tr", { hasText: "Field Memo Take 1" });
+    await expect(newRow).toBeVisible();
+
+    // 8. Filter by collection in sidebar and verify the recorded clip is shown
+    const collectionNavItem = window.locator(".collection-item", { hasText: "Field Memos 2026" });
+    await expect(collectionNavItem).toBeVisible();
+    await collectionNavItem.click();
+
+    await expect(window.locator(".clips-table tbody tr", { hasText: "Field Memo Take 1" })).toBeVisible();
+
+    await app.close();
+  });
 });
 
 
