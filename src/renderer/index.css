@@ -1397,6 +1397,18 @@ mark {
   font-weight: 600;
 }
 
+.collection-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.collection-item:hover .collection-actions {
+  opacity: 1;
+}
+
 /* Dedicated Imports Workspace View */
 .imports-workspace-view {
   flex: 1;

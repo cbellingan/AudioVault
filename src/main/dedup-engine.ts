@@ -441,11 +441,74 @@ export class DedupEngine {
   }
 
   public deleteCollection(id: string): boolean {
+    const col = this.collections.get(id);
     const existed = this.collections.delete(id);
     if (existed) {
+      if (col) {
+        for (const clip of this.virtualClips.values()) {
+          if (clip.collections && clip.collections.includes(col.name)) {
+            clip.collections = clip.collections.filter((c) => c !== col.name);
+            clip.updatedAt = new Date().toISOString();
+          }
+        }
+      }
       this.saveRegistry();
     }
     return existed;
+  }
+
+  public renameCollection(id: string, newName: string): boolean {
+    const col = this.collections.get(id);
+    if (!col) return false;
+    const oldName = col.name;
+    col.name = newName;
+    col.updatedAt = new Date().toISOString();
+    for (const clip of this.virtualClips.values()) {
+      if (clip.collections && clip.collections.includes(oldName)) {
+        clip.collections = clip.collections.map((c) => (c === oldName ? newName : c));
+        clip.updatedAt = new Date().toISOString();
+      }
+    }
+    this.saveRegistry();
+    return true;
+  }
+
+  public batchAddClipsToCollection(clipIds: string[], collectionName: string): number {
+    let count = 0;
+    for (const id of clipIds) {
+      const clip = this.virtualClips.get(id);
+      if (clip) {
+        clip.collections = clip.collections || [];
+        if (!clip.collections.includes(collectionName)) {
+          clip.collections.push(collectionName);
+          clip.updatedAt = new Date().toISOString();
+          count++;
+        }
+      }
+    }
+    if (count > 0) {
+      this.saveRegistry();
+    }
+    return count;
+  }
+
+  public batchRemoveClipsFromCollection(clipIds: string[], collectionName: string): number {
+    let count = 0;
+    for (const id of clipIds) {
+      const clip = this.virtualClips.get(id);
+      if (clip && clip.collections) {
+        const idx = clip.collections.indexOf(collectionName);
+        if (idx >= 0) {
+          clip.collections.splice(idx, 1);
+          clip.updatedAt = new Date().toISOString();
+          count++;
+        }
+      }
+    }
+    if (count > 0) {
+      this.saveRegistry();
+    }
+    return count;
   }
 
   public getImportBatches(): ImportBatchRecord[] {

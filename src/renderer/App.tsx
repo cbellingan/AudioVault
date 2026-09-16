@@ -8,6 +8,7 @@ import {
   PipelineStatusEvent,
   IngestJobProgress,
   CollectionRecord,
+  SavedViewRecord,
 } from '../shared/types';
 import { commandRegistry } from './commands/command-registry';
 import {
@@ -164,6 +165,12 @@ export default function App() {
   const [showAddToCollectionModal, setShowAddToCollectionModal] = useState(false);
   const [targetBatchCollection, setTargetBatchCollection] = useState<string>('');
   const lastClickedClipIdRef = useRef<string | null>(null);
+
+  // F04: Collections, Favorites & Saved Views
+  const [savedViews, setSavedViews] = useState<SavedViewRecord[]>([]);
+  const [showSaveViewModal, setShowSaveViewModal] = useState(false);
+  const [newViewName, setNewViewName] = useState('');
+  const [activeSavedViewId, setActiveSavedViewId] = useState<string | null>(null);
   
   // Table Sorting state: starts desc on creation / import time
   type SortField = 'title' | 'category' | 'duration' | 'tags' | 'confidence' | 'createdAt';
@@ -881,6 +888,13 @@ export default function App() {
           setCollections(cols);
         }
       }
+
+      if (window.audioVault.getSavedViews) {
+        const views = await window.audioVault.getSavedViews();
+        if (views && views.length > 0) {
+          setSavedViews(views);
+        }
+      }
     } catch (e) {
       console.error('Failed to load AudioVault data:', e);
     }
@@ -1471,6 +1485,122 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3000);
   }
 
+  async function handleDeleteCollection(id: string, colName: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    if (!window.confirm(`Delete collection "${colName}"? The underlying audio recordings will remain in your library.`)) {
+      return;
+    }
+    if (window.audioVault?.deleteCollection) {
+      await window.audioVault.deleteCollection(id);
+    }
+    setCollections((prev) => prev.filter((c) => c.id !== id));
+    setClips((prev) =>
+      prev.map((c) => {
+        if (!c.collections || !c.collections.includes(colName)) return c;
+        return {
+          ...c,
+          collections: c.collections.filter((name) => name !== colName),
+        };
+      })
+    );
+    if (activeScope === `col:${colName}`) {
+      setActiveScope('all');
+    }
+    setToastMessage(`Deleted collection "${colName}"`);
+    setTimeout(() => setToastMessage(null), 3000);
+  }
+
+  async function handleRenameCollection(id: string, oldName: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    const newName = window.prompt(`Rename collection "${oldName}" to:`, oldName);
+    if (!newName || !newName.trim() || newName.trim() === oldName) return;
+    const trimmed = newName.trim();
+    if (window.audioVault?.renameCollection) {
+      await window.audioVault.renameCollection(id, trimmed);
+    }
+    setCollections((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, name: trimmed, updatedAt: new Date().toISOString() } : c))
+    );
+    setClips((prev) =>
+      prev.map((c) => {
+        if (!c.collections || !c.collections.includes(oldName)) return c;
+        return {
+          ...c,
+          collections: c.collections.map((name) => (name === oldName ? trimmed : name)),
+        };
+      })
+    );
+    if (activeScope === `col:${oldName}`) {
+      setActiveScope(`col:${trimmed}`);
+    }
+    setToastMessage(`Renamed collection to "${trimmed}"`);
+    setTimeout(() => setToastMessage(null), 3000);
+  }
+
+  async function handleRemoveClipFromCollection(clipId: string, colName: string) {
+    if (window.audioVault?.removeClipFromCollection) {
+      await window.audioVault.removeClipFromCollection(clipId, colName);
+    }
+    setClips((prev) =>
+      prev.map((c) => {
+        if (c.id !== clipId || !c.collections) return c;
+        return {
+          ...c,
+          collections: c.collections.filter((name) => name !== colName),
+        };
+      })
+    );
+    setToastMessage(`Removed from "${colName}"`);
+    setTimeout(() => setToastMessage(null), 2500);
+  }
+
+  async function handleSaveCurrentView(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const newView: SavedViewRecord = {
+      id: `view_${Date.now()}`,
+      name: trimmed,
+      scope: activeScope,
+      groupBy: groupingMode,
+      statusFilter: transcriptFilter,
+      searchQuery: searchQuery || undefined,
+      createdAt: new Date().toISOString(),
+    };
+    if (window.audioVault?.addSavedView) {
+      await window.audioVault.addSavedView(newView);
+    }
+    setSavedViews((prev) => [...prev, newView]);
+    setActiveSavedViewId(newView.id);
+    setShowSaveViewModal(false);
+    setNewViewName('');
+    setToastMessage(`Saved view "${trimmed}"`);
+    setTimeout(() => setToastMessage(null), 3000);
+  }
+
+  async function handleDeleteSavedView(id: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    if (window.audioVault?.deleteSavedView) {
+      await window.audioVault.deleteSavedView(id);
+    }
+    setSavedViews((prev) => prev.filter((v) => v.id !== id));
+    if (activeSavedViewId === id) {
+      setActiveSavedViewId(null);
+    }
+    setToastMessage('Saved view removed');
+    setTimeout(() => setToastMessage(null), 2500);
+  }
+
+  function handleApplySavedView(view: SavedViewRecord) {
+    setActiveWorkspace('library');
+    setActiveScope(view.scope as any);
+    setGroupingMode(view.groupBy as any);
+    setTranscriptFilter(view.statusFilter as any);
+    setSearchQuery(view.searchQuery || '');
+    setActiveSavedViewId(view.id);
+    setToastMessage(`Switched to "${view.name}"`);
+    setTimeout(() => setToastMessage(null), 2500);
+  }
+
   // Open Metadata & Title Editor Modal
   function handleOpenMetadataModal(clip: VirtualClip) {
     setClipContextMenu(null);
@@ -1839,22 +1969,44 @@ export default function App() {
 
   async function handleBatchAddCollection(colName: string) {
     if (selectedClipIds.size === 0 || !colName.trim()) return;
+    const trimmed = colName.trim();
     const ids = Array.from(selectedClipIds);
-    for (const id of ids) {
-      if (window.audioVault?.addClipToCollection) {
-        await window.audioVault.addClipToCollection(id, colName.trim());
+
+    // Auto-create collection if it doesn't exist yet
+    if (!collections.some((c) => c.name.toLowerCase() === trimmed.toLowerCase())) {
+      const newCol: CollectionRecord = {
+        id: `col_${Date.now()}`,
+        name: trimmed,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        color: '#6366f1',
+      };
+      if (window.audioVault?.addCollection) {
+        await window.audioVault.addCollection(newCol);
+      }
+      setCollections((prev) => [...prev, newCol]);
+    }
+
+    if (window.audioVault?.batchAddClipsToCollection) {
+      await window.audioVault.batchAddClipsToCollection(ids, trimmed);
+    } else {
+      for (const id of ids) {
+        if (window.audioVault?.addClipToCollection) {
+          await window.audioVault.addClipToCollection(id, trimmed);
+        }
       }
     }
     setClips((prev) =>
       prev.map((c) => {
         if (!selectedClipIds.has(c.id)) return c;
         const existing = c.collections || [];
-        if (existing.includes(colName.trim())) return c;
-        return { ...c, collections: [...existing, colName.trim()] };
+        if (existing.includes(trimmed)) return c;
+        return { ...c, collections: [...existing, trimmed] };
       })
     );
     setShowAddToCollectionModal(false);
-    setToastMessage(`Added ${ids.length} recording(s) to "${colName.trim()}"`);
+    setTargetBatchCollection('');
+    setToastMessage(`Added ${ids.length} recording(s) to "${trimmed}"`);
     setTimeout(() => setToastMessage(null), 3000);
   }
 
@@ -2459,7 +2611,7 @@ export default function App() {
           </div>
 
           {/* Collections Section */}
-          <div className="nav-section" style={{ marginBottom: '1rem' }}>
+          <div className="nav-section" style={{ marginBottom: '1rem' }} data-testid="collections-section">
             <div className="nav-header-row">
               <div className="nav-header" style={{ padding: 0 }}>Collections</div>
               <button
@@ -2477,7 +2629,7 @@ export default function App() {
               </div>
             ) : (
               collections.map((col) => {
-                const count = clips.filter((c) => c.collections?.includes(col.name)).length;
+                const count = clips.filter((c) => c.collections?.includes(col.name) && !c.isExcluded).length;
                 const isActive = activeWorkspace === 'library' && activeScope === `col:${col.name}`;
                 return (
                   <div
@@ -2486,10 +2638,90 @@ export default function App() {
                     onClick={() => {
                       setActiveWorkspace('library');
                       setActiveScope(`col:${col.name}`);
+                      setActiveSavedViewId(null);
                     }}
+                    title={`Collection: ${col.name} (${count} recordings)`}
                   >
-                    <span>📁 {col.name}</span>
-                    <span className="counter-pill">{count}</span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      📁 {col.name}
+                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <span className="counter-pill">{count}</span>
+                      <div className="collection-actions">
+                        <button
+                          type="button"
+                          className="icon-btn-subtle"
+                          onClick={(e) => handleRenameCollection(col.id, col.name, e)}
+                          title="Rename collection"
+                          style={{ padding: '0 2px', fontSize: '0.65rem' }}
+                        >
+                          ✏️
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-btn-subtle"
+                          onClick={(e) => handleDeleteCollection(col.id, col.name, e)}
+                          title="Delete collection"
+                          style={{ padding: '0 2px', fontSize: '0.65rem' }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Saved Views Section */}
+          <div className="nav-section" style={{ marginBottom: '1rem' }} data-testid="saved-views-section">
+            <div className="nav-header-row">
+              <div className="nav-header" style={{ padding: 0 }}>Saved Views</div>
+              <button
+                type="button"
+                className="nav-header-action"
+                onClick={() => {
+                  setNewViewName(
+                    activeScope !== 'all'
+                      ? `${activeScope} view`
+                      : groupingMode !== 'none'
+                      ? `Grouped by ${groupingMode}`
+                      : 'My Custom View'
+                  );
+                  setShowSaveViewModal(true);
+                }}
+                title="Save Current View"
+              >
+                + Save
+              </button>
+            </div>
+            {savedViews.length === 0 ? (
+              <div style={{ padding: '0.3rem 0.75rem', fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                No saved views
+              </div>
+            ) : (
+              savedViews.map((view) => {
+                const isActive = activeSavedViewId === view.id;
+                return (
+                  <div
+                    key={view.id}
+                    className={`collection-item ${isActive ? 'active' : ''}`}
+                    onClick={() => handleApplySavedView(view)}
+                    title={`Saved View: ${view.name} (${view.scope}, ${view.groupBy}, ${view.statusFilter})`}
+                  >
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      👁️ {view.name}
+                    </span>
+                    <button
+                      type="button"
+                      className="icon-btn-subtle"
+                      onClick={(e) => handleDeleteSavedView(view.id, e)}
+                      title="Delete saved view"
+                      style={{ padding: '0 2px', fontSize: '0.65rem', opacity: 0.6 }}
+                    >
+                      ✕
+                    </button>
                   </div>
                 );
               })
@@ -2822,6 +3054,26 @@ export default function App() {
                       Clear filter
                     </button>
                   )}
+
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    style={{ fontSize: '0.74rem', padding: '2px 8px' }}
+                    onClick={() => {
+                      setNewViewName(
+                        activeScope !== 'all'
+                          ? `${activeScope} view`
+                          : groupingMode !== 'none'
+                          ? `Grouped by ${groupingMode}`
+                          : 'Custom View'
+                      );
+                      setShowSaveViewModal(true);
+                    }}
+                    data-testid="save-view-btn"
+                    title="Save current filters, grouping, and scope as a named view"
+                  >
+                    💾 Save this view…
+                  </button>
                 </div>
 
                 {groupingMode !== 'none' && (
@@ -4190,25 +4442,82 @@ export default function App() {
               </p>
               <select
                 className="toolbar-select"
-                style={{ width: '100%', padding: '0.6rem', fontSize: '0.85rem' }}
+                style={{ width: '100%', padding: '0.6rem', fontSize: '0.85rem', marginBottom: '0.6rem' }}
                 value={targetBatchCollection}
                 onChange={(e) => setTargetBatchCollection(e.target.value)}
+                data-testid="batch-collection-select"
               >
                 <option value="">Select an existing collection…</option>
                 {collections.map((c) => (
                   <option key={c.id} value={c.name}>{c.name}</option>
                 ))}
               </select>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+                Or create and add to a new collection:
+              </div>
+              <input
+                type="text"
+                className="modal-input"
+                placeholder="New collection name…"
+                value={targetBatchCollection}
+                onChange={(e) => setTargetBatchCollection(e.target.value)}
+                data-testid="batch-collection-input"
+                style={{ width: '100%' }}
+              />
             </div>
             <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', padding: '0.85rem 1.25rem' }}>
               <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowAddToCollectionModal(false)}>Cancel</button>
               <button
                 type="button"
                 className="btn btn-primary btn-sm"
-                disabled={!targetBatchCollection}
+                disabled={!targetBatchCollection.trim()}
                 onClick={() => handleBatchAddCollection(targetBatchCollection)}
+                data-testid="confirm-add-collection-btn"
               >
                 Add Recordings
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Save View Modal (F04) */}
+      {showSaveViewModal && (
+        <div className="modal-backdrop" onClick={() => setShowSaveViewModal(false)}>
+          <div className="modal-card" style={{ maxWidth: '420px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">Save View</div>
+              <button type="button" className="modal-close-btn" onClick={() => setShowSaveViewModal(false)}>✕</button>
+            </div>
+            <div className="modal-body" style={{ padding: '1.25rem' }}>
+              <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '0.75rem' }}>
+                Save the current scope (<code>{activeScope}</code>), grouping (<code>{groupingMode}</code>), and filter settings as a custom view.
+              </p>
+              <input
+                type="text"
+                className="modal-input"
+                placeholder="e.g. Needs Review (Month)"
+                value={newViewName}
+                onChange={(e) => setNewViewName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSaveCurrentView(newViewName);
+                  if (e.key === 'Escape') setShowSaveViewModal(false);
+                }}
+                autoFocus
+                style={{ width: '100%' }}
+                data-testid="save-view-name-input"
+              />
+            </div>
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', padding: '0.85rem 1.25rem' }}>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowSaveViewModal(false)}>Cancel</button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                disabled={!newViewName.trim()}
+                onClick={() => handleSaveCurrentView(newViewName)}
+                data-testid="confirm-save-view-btn"
+              >
+                Save View
               </button>
             </div>
           </div>

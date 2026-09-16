@@ -144,8 +144,8 @@ export interface SavedViewRecord {
   id: string;
   name: string;
   scope: 'all' | 'recent' | 'review' | 'favorites' | string;
-  groupBy: 'date' | 'batch' | 'collection' | 'none';
-  statusFilter: 'all' | 'ready' | 'not_transcribed' | 'no_speech' | 'failed';
+  groupBy: 'date' | 'month' | 'batch' | 'collection' | 'none';
+  statusFilter: 'all' | 'ready' | 'pending' | 'not_transcribed' | 'nospeech' | 'no_speech' | 'failed';
   searchQuery?: string;
   createdAt: string;
 }
@@ -282,6 +282,9 @@ export interface AudioVaultAPI {
   getCollections?: () => Promise<CollectionRecord[]>;
   addCollection?: (col: CollectionRecord) => Promise<CollectionRecord>;
   deleteCollection?: (id: string) => Promise<boolean>;
+  renameCollection?: (id: string, newName: string) => Promise<boolean>;
+  batchAddClipsToCollection?: (clipIds: string[], collectionName: string) => Promise<number>;
+  batchRemoveClipsFromCollection?: (clipIds: string[], collectionName: string) => Promise<number>;
 
   // Import Batches API
   getImportBatches?: () => Promise<ImportBatchRecord[]>;

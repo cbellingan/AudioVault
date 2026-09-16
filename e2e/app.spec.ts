@@ -800,6 +800,82 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
 
     await app.close();
   });
+
+  test("16. Collections, Batch Assignments, and Saved Views: Batch assignment to collection, sidebar collection filtering, saving custom view, applying and deleting view", async () => {
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+
+    // 1. Select two recordings using row checkboxes
+    const checkboxes = window.locator(".clips-table tbody tr input[type=\"checkbox\"]");
+    await expect(checkboxes.first()).toBeVisible();
+    await checkboxes.nth(0).click();
+    await checkboxes.nth(1).click();
+
+    // 2. Open Batch Add to Collection modal
+    const batchBar = window.locator("[data-testid=\"batch-selection-bar\"]");
+    await expect(batchBar).toBeVisible();
+    const addToColBtn = batchBar.locator("button", { hasText: "Add to collection…" });
+    await addToColBtn.click();
+
+    // Fill collection name and confirm
+    const colInput = window.locator("[data-testid=\"batch-collection-input\"]");
+    await expect(colInput).toBeVisible();
+    await colInput.fill("Field Experiments");
+    const confirmAddBtn = window.locator("[data-testid=\"confirm-add-collection-btn\"]");
+    await confirmAddBtn.click();
+
+    // Verify toast notification
+    const toast = window.locator("[data-testid=\"copy-toast\"]");
+    await expect(toast).toBeVisible();
+    await expect(toast).toContainText('Added 2 recording(s) to "Field Experiments"');
+
+    // 3. Verify collection appears in the sidebar Collections section
+    const colSection = window.locator("[data-testid=\"collections-section\"]");
+    await expect(colSection).toBeVisible();
+    const colItem = colSection.locator(".collection-item", { hasText: "Field Experiments" });
+    await expect(colItem).toBeVisible();
+    await expect(colItem).toContainText("2");
+
+    // Click collection in sidebar to view its recordings
+    await colItem.click();
+    await expect(window.locator(".clips-table tbody tr")).toHaveCount(2);
+
+    // 4. Save current view via Library Toolbar
+    const saveViewBtn = window.locator("[data-testid=\"save-view-btn\"]");
+    await expect(saveViewBtn).toBeVisible();
+    await saveViewBtn.click();
+
+    const viewNameInput = window.locator("[data-testid=\"save-view-name-input\"]");
+    await expect(viewNameInput).toBeVisible();
+    await viewNameInput.fill("Field Experiments View");
+    const confirmSaveBtn = window.locator("[data-testid=\"confirm-save-view-btn\"]");
+    await confirmSaveBtn.click();
+
+    await expect(toast).toContainText('Saved view "Field Experiments View"');
+
+    // 5. Verify Saved View appears in the sidebar Saved Views section
+    const savedViewsSection = window.locator("[data-testid=\"saved-views-section\"]");
+    await expect(savedViewsSection).toBeVisible();
+    const savedViewItem = savedViewsSection.locator(".collection-item", { hasText: "Field Experiments View" });
+    await expect(savedViewItem).toBeVisible();
+
+    // Switch back to "All Recordings"
+    const allRecordingsBtn = window.locator(".app-sidebar .nav-item", { hasText: "All Recordings" });
+    await allRecordingsBtn.click();
+    expect(await window.locator(".clips-table tbody tr").count()).toBeGreaterThan(2);
+
+    // Click saved view in sidebar: immediately restores filtered view
+    await savedViewItem.click();
+    await expect(window.locator(".clips-table tbody tr")).toHaveCount(2);
+
+    // 6. Delete the saved view
+    const deleteViewBtn = savedViewItem.locator("button[title=\"Delete saved view\"]");
+    await deleteViewBtn.click();
+    await expect(savedViewsSection.locator(".collection-item", { hasText: "Field Experiments View" })).toHaveCount(0);
+
+    await app.close();
+  });
 });
 
 

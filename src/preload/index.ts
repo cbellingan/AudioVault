@@ -89,6 +89,11 @@ const audioVaultApi: AudioVaultAPI = {
   getCollections: () => ipcRenderer.invoke('vault:get-collections'),
   addCollection: (col: any) => ipcRenderer.invoke('vault:add-collection', col),
   deleteCollection: (id: string) => ipcRenderer.invoke('vault:delete-collection', id),
+  renameCollection: (id: string, newName: string) => ipcRenderer.invoke('vault:rename-collection', id, newName),
+  batchAddClipsToCollection: (clipIds: string[], collectionName: string) =>
+    ipcRenderer.invoke('vault:batch-add-clips-to-collection', clipIds, collectionName),
+  batchRemoveClipsFromCollection: (clipIds: string[], collectionName: string) =>
+    ipcRenderer.invoke('vault:batch-remove-clips-from-collection', clipIds, collectionName),
 
   // Import Batches API
   getImportBatches: () => ipcRenderer.invoke('vault:get-import-batches'),

@@ -728,6 +728,18 @@ function setupIpcHandlers() {
     return dedupEngine.deleteCollection(id);
   });
 
+  ipcMain.handle('vault:rename-collection', async (_, id: string, newName: string): Promise<boolean> => {
+    return dedupEngine.renameCollection(id, newName);
+  });
+
+  ipcMain.handle('vault:batch-add-clips-to-collection', async (_, clipIds: string[], collectionName: string): Promise<number> => {
+    return dedupEngine.batchAddClipsToCollection(clipIds, collectionName);
+  });
+
+  ipcMain.handle('vault:batch-remove-clips-from-collection', async (_, clipIds: string[], collectionName: string): Promise<number> => {
+    return dedupEngine.batchRemoveClipsFromCollection(clipIds, collectionName);
+  });
+
   // Import Batches IPC Handlers
   ipcMain.handle('vault:get-import-batches', async (): Promise<ImportBatchRecord[]> => {
     return dedupEngine.getImportBatches();
