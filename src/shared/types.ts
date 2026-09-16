@@ -249,6 +249,15 @@ export interface BatchExportResult {
   destinationDir: string;
 }
 
+export interface VaultStats {
+  vaultDirectory: string;
+  totalRecordings: number;
+  excludedCount: number;
+  totalSizeBytes: number;
+  rawFilesCount: number;
+  exportsCount: number;
+}
+
 // ==========================================
 // 3. Non-Blocking Pipeline & Queue Types
 // ==========================================
@@ -357,6 +366,12 @@ export interface AudioVaultAPI {
 
   // Unified Batch Export API (F11)
   batchExport?: (options: BatchExportOptions) => Promise<BatchExportResult>;
+
+  // Storage Management & Exclusions (F12)
+  moveVault?: (targetDir?: string) => Promise<{ success: boolean; newPath: string }>;
+  openVault?: (targetDir?: string) => Promise<{ success: boolean; newPath: string }>;
+  restoreExcludedClip?: (clipId: string) => Promise<VirtualClip | null>;
+  getVaultStats?: () => Promise<VaultStats>;
 }
 
 declare global {

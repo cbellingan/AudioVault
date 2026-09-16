@@ -9,6 +9,7 @@ import {
   CollectionRecord,
   ImportBatchRecord,
   SavedViewRecord,
+  VaultStats,
 } from '../shared/types';
 
 export class DedupEngine {
@@ -953,6 +954,140 @@ export class DedupEngine {
     const existed = this.virtualClips.delete(id);
     if (existed) this.saveRegistry();
     return existed;
+  }
+
+  public restoreExcludedClip(id: string): VirtualClip | null {
+    return this.updateVirtualClip(id, { isExcluded: false }) ?? null;
+  }
+
+  public getVaultStats(): VaultStats {
+    let totalSizeBytes = 0;
+    let rawFilesCount = 0;
+    let exportsCount = 0;
+
+    const rawDir = this.getRawDir();
+    if (fs.existsSync(rawDir)) {
+      const files = fs.readdirSync(rawDir);
+      rawFilesCount = files.filter((f) => !f.startsWith('.')).length;
+      for (const f of files) {
+        try {
+          const st = fs.statSync(path.join(rawDir, f));
+          totalSizeBytes += st.size;
+        } catch {}
+      }
+    }
+
+    const exportsDir = this.getExportsDir();
+    if (fs.existsSync(exportsDir)) {
+      const files = fs.readdirSync(exportsDir);
+      exportsCount = files.filter((f) => !f.startsWith('.')).length;
+      for (const f of files) {
+        try {
+          const st = fs.statSync(path.join(exportsDir, f));
+          totalSizeBytes += st.size;
+        } catch {}
+      }
+    }
+
+    if (fs.existsSync(this.registryFile)) {
+      try {
+        const st = fs.statSync(this.registryFile);
+        totalSizeBytes += st.size;
+      } catch {}
+    }
+
+    const clips = Array.from(this.virtualClips.values());
+    const excludedCount = clips.filter((c) => c.isExcluded).length;
+
+    return {
+      vaultDirectory: this.vaultDir,
+      totalRecordings: clips.length - excludedCount,
+      excludedCount,
+      totalSizeBytes,
+      rawFilesCount,
+      exportsCount,
+    };
+  }
+
+  public async moveVault(targetDir: string): Promise<boolean> {
+    const homeDir = process.env.HOME || process.env.USERPROFILE || '.';
+    const prodVault = path.join(homeDir, 'Music', 'AudioVault');
+    const isTestMode =
+      process.env.AUDIOVAULT_TEST_MODE === '1' ||
+      process.env.NODE_ENV === 'test' ||
+      process.env.VITEST === 'true';
+
+    if (isTestMode && path.resolve(targetDir) === path.resolve(prodVault)) {
+      throw new Error(
+        `[AudioVault Hard Guard] Attempted to move vault to production vault during test mode: "${targetDir}". Strictly forbidden.`
+      );
+    }
+
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+
+    const oldVaultDir = this.vaultDir;
+    const oldRawDir = this.getRawDir();
+    const oldExportsDir = this.getExportsDir();
+
+    const newRawDir = path.join(targetDir, 'raw');
+    const newExportsDir = path.join(targetDir, 'exports');
+
+    if (!fs.existsSync(newRawDir)) fs.mkdirSync(newRawDir, { recursive: true });
+    if (!fs.existsSync(newExportsDir)) fs.mkdirSync(newExportsDir, { recursive: true });
+
+    // 1. Copy raw audio files and sidecars
+    if (fs.existsSync(oldRawDir)) {
+      const rawEntries = fs.readdirSync(oldRawDir);
+      for (const entry of rawEntries) {
+        const srcFile = path.join(oldRawDir, entry);
+        const destFile = path.join(newRawDir, entry);
+        if (fs.statSync(srcFile).isFile()) {
+          fs.copyFileSync(srcFile, destFile);
+        }
+      }
+    }
+
+    // 2. Copy exports files
+    if (fs.existsSync(oldExportsDir)) {
+      const exportEntries = fs.readdirSync(oldExportsDir);
+      for (const entry of exportEntries) {
+        const srcFile = path.join(oldExportsDir, entry);
+        const destFile = path.join(newExportsDir, entry);
+        if (fs.statSync(srcFile).isFile()) {
+          fs.copyFileSync(srcFile, destFile);
+        }
+      }
+    }
+
+    // 3. Update paths in memory
+    for (const rawFile of this.rawFiles.values()) {
+      if (rawFile.storagePath.startsWith(oldVaultDir)) {
+        rawFile.storagePath = path.join(targetDir, path.relative(oldVaultDir, rawFile.storagePath));
+      }
+    }
+    for (const clip of this.virtualClips.values()) {
+      if (clip.transcriptPath && clip.transcriptPath.startsWith(oldVaultDir)) {
+        clip.transcriptPath = path.join(targetDir, path.relative(oldVaultDir, clip.transcriptPath));
+      }
+      if (clip.exportedMp3Path && clip.exportedMp3Path.startsWith(oldVaultDir)) {
+        clip.exportedMp3Path = path.join(targetDir, path.relative(oldVaultDir, clip.exportedMp3Path));
+      }
+    }
+
+    // 4. Update vaultDir and save registry atomically at new location
+    this.vaultDir = targetDir;
+    this.registryFile = path.join(targetDir, 'registry.json');
+    this.settings.vaultDirectory = targetDir;
+    this.saveRegistry();
+
+    return true;
+  }
+
+  public async openVault(targetDir: string): Promise<boolean> {
+    this.updateSettings({ vaultDirectory: targetDir });
+    return true;
   }
 }
 

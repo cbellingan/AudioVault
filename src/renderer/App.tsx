@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useMemo } from 'react';
+import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import {
   PrimaryCategory,
   RawAudioFile,
@@ -11,6 +11,7 @@ import {
   SavedViewRecord,
   ImportPlan,
   ImportBatchRecord,
+  VaultStats,
 } from '../shared/types';
 import { commandRegistry } from './commands/command-registry';
 import {
@@ -213,6 +214,9 @@ export default function App() {
   const [exportAudioFormat, setExportAudioFormat] = useState<'wav' | 'mp3' | 'none'>('mp3');
   const [exportTranscriptFormat, setExportTranscriptFormat] = useState<'txt' | 'srt' | 'none'>('txt');
   const [isBatchExporting, setIsBatchExporting] = useState<boolean>(false);
+
+  // F12: Storage Management & Exclusions
+  const [vaultStats, setVaultStats] = useState<VaultStats | null>(null);
   
   // Table Sorting state: starts desc on creation / import time
   type SortField = 'title' | 'category' | 'duration' | 'tags' | 'confidence' | 'createdAt';
@@ -562,6 +566,24 @@ export default function App() {
       });
     }
   }, [activeWorkspace, pipelineStatus?.completedJobs, pipelineStatus?.totalJobs]);
+
+  // Fetch Vault Stats when entering Settings workspace (Slice F12)
+  const fetchVaultStats = useCallback(async () => {
+    if (window.audioVault?.getVaultStats) {
+      try {
+        const stats = await window.audioVault.getVaultStats();
+        setVaultStats(stats);
+      } catch (err) {
+        console.warn('Failed to load vault stats:', err);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeWorkspace === 'settings') {
+      fetchVaultStats();
+    }
+  }, [activeWorkspace, fetchVaultStats]);
 
   // Connect CommandRegistry context to current app state
   useEffect(() => {
@@ -2331,6 +2353,54 @@ export default function App() {
     }
   }
 
+  async function handleMoveVault() {
+    if (!window.audioVault?.moveVault) return;
+    try {
+      const res = await window.audioVault.moveVault('');
+      if (res.success && res.newPath) {
+        setToastMessage(`✓ Vault moved to: ${res.newPath}`);
+        setTimeout(() => setToastMessage(null), 4000);
+        if (window.audioVault?.getVirtualClips) {
+          const freshClips = await window.audioVault.getVirtualClips();
+          setClips(freshClips);
+        }
+        await fetchVaultStats();
+      }
+    } catch (err: any) {
+      alert(`Move vault failed: ${err.message || String(err)}`);
+    }
+  }
+
+  async function handleOpenExistingVault() {
+    if (!window.audioVault?.openVault) return;
+    try {
+      const res = await window.audioVault.openVault('');
+      if (res.success && res.newPath) {
+        setToastMessage(`✓ Opened vault: ${res.newPath}`);
+        setTimeout(() => setToastMessage(null), 4000);
+        if (window.audioVault?.getVirtualClips) {
+          const freshClips = await window.audioVault.getVirtualClips();
+          setClips(freshClips);
+        }
+        await fetchVaultStats();
+      }
+    } catch (err: any) {
+      alert(`Open vault failed: ${err.message || String(err)}`);
+    }
+  }
+
+  async function handleRestoreExcludedClip(clipId: string) {
+    if (window.audioVault?.restoreExcludedClip) {
+      await window.audioVault.restoreExcludedClip(clipId);
+    }
+    setClips((prev) =>
+      prev.map((c) => (c.id === clipId ? { ...c, isExcluded: false } : c))
+    );
+    setToastMessage('✓ Restored recording to library');
+    setTimeout(() => setToastMessage(null), 3000);
+    await fetchVaultStats();
+  }
+
   async function handleBatchMarkReviewed() {
     if (selectedClipIds.size === 0) return;
     const ids = Array.from(selectedClipIds);
@@ -2785,13 +2855,11 @@ export default function App() {
             📥 Import Folder / SD Card
           </button>
           <button
+            type="button"
             className="btn btn-primary"
-            onClick={async () => {
-              if (window.audioVault) {
-                const dir = await window.audioVault.selectVaultDirectory();
-                if (dir) alert(`Storage vault configured: ${dir}`);
-              }
-            }}
+            data-testid="header-storage-vault-btn"
+            onClick={() => setActiveWorkspace('settings')}
+            title="Manage storage vault & settings"
           >
             📁 Storage Vault
           </button>
@@ -3007,6 +3075,15 @@ export default function App() {
                   {pipelineStatus.activeAnalysisJobs.length + (pipelineStatus.activeCopyJob ? 1 : 0)}
                 </span>
               )}
+            </button>
+            <button
+              type="button"
+              data-testid="workspace-settings-btn"
+              className={`workspace-btn ${activeWorkspace === 'settings' ? 'active' : ''}`}
+              onClick={() => setActiveWorkspace('settings')}
+              title="Settings & Storage"
+            >
+              <span>⚙️ Settings</span>
             </button>
           </div>
 
@@ -4110,6 +4187,164 @@ export default function App() {
               </div>
             </div>
           </main>
+        ) : activeWorkspace === 'settings' ? (
+          <main className="app-workspace settings-workspace-view" data-testid="settings-workspace">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.4rem', fontWeight: 700 }}>
+                  Settings & Storage Management
+                </h1>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginTop: '0.2rem' }}>
+                  Manage active storage directory, disk usage, and recoverable excluded recordings.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                data-testid="settings-back-btn"
+                onClick={() => setActiveWorkspace('library')}
+              >
+                ← Back to Library
+              </button>
+            </div>
+
+            {/* Storage Vault Location Card */}
+            <div className="settings-card" data-testid="vault-location-card">
+              <div className="settings-card-header">
+                <div>
+                  <h2 className="settings-card-title">Storage Vault Location</h2>
+                  <div className="settings-card-desc">
+                    Your local-first non-destructive repository where raw audio, sidecar transcripts, and registry are stored.
+                  </div>
+                </div>
+              </div>
+
+              <div className="vault-path-banner" data-testid="vault-path-display">
+                📁 {vaultStats?.vaultDirectory || '~/Music/AudioVault'}
+              </div>
+
+              {vaultStats && (
+                <div className="stats-grid">
+                  <div className="stats-card-mini">
+                    <div className="stats-card-mini-num">
+                      {(vaultStats.totalSizeBytes / (1024 * 1024)).toFixed(1)} MB
+                    </div>
+                    <div className="stats-card-mini-label">Total Disk Size</div>
+                  </div>
+                  <div className="stats-card-mini">
+                    <div className="stats-card-mini-num">{vaultStats.totalRecordings}</div>
+                    <div className="stats-card-mini-label">Active Recordings</div>
+                  </div>
+                  <div className="stats-card-mini">
+                    <div className="stats-card-mini-num">{vaultStats.rawFilesCount}</div>
+                    <div className="stats-card-mini-label">Raw Audio Takes</div>
+                  </div>
+                  <div className="stats-card-mini">
+                    <div className="stats-card-mini-num">{vaultStats.excludedCount}</div>
+                    <div className="stats-card-mini-label">Excluded Takes</div>
+                  </div>
+                </div>
+              )}
+
+              <div className="settings-action-row">
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  data-testid="move-vault-btn"
+                  onClick={handleMoveVault}
+                >
+                  📦 Move Current Vault…
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  data-testid="open-vault-btn"
+                  onClick={handleOpenExistingVault}
+                >
+                  📁 Open Existing Vault…
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  data-testid="reveal-vault-btn"
+                  onClick={() => {
+                    if (vaultStats?.vaultDirectory && window.audioVault?.showInFinder) {
+                      window.audioVault.showInFinder(vaultStats.vaultDirectory);
+                    }
+                  }}
+                >
+                  📂 Reveal in Finder
+                </button>
+              </div>
+            </div>
+
+            {/* Excluded Recordings Card */}
+            <div className="settings-card" data-testid="excluded-recordings-panel">
+              <div className="settings-card-header">
+                <div>
+                  <h2 className="settings-card-title">
+                    Excluded Recordings ({clips.filter((c) => c.isExcluded).length})
+                  </h2>
+                  <div className="settings-card-desc">
+                    Recordings hidden from library browsing. Restore them at any time to reappear in views, or permanently delete them.
+                  </div>
+                </div>
+              </div>
+
+              {clips.filter((c) => c.isExcluded).length === 0 ? (
+                <div
+                  className="batch-card"
+                  style={{ opacity: 0.8 }}
+                  data-testid="no-excluded-recordings"
+                >
+                  <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                    ✓ No excluded recordings. All recordings are visible in your library.
+                  </div>
+                </div>
+              ) : (
+                <div className="excluded-items-list" data-testid="excluded-items-list">
+                  {clips
+                    .filter((c) => c.isExcluded)
+                    .map((clip) => (
+                      <div key={clip.id} className="excluded-item-row" data-testid="excluded-item-row">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                          <span className={`category-pill cat-${clip.category}`}>
+                            {clip.category}
+                          </span>
+                          <div>
+                            <div style={{ fontWeight: 600, color: '#fff', fontSize: '0.9rem' }}>
+                              {clip.title}
+                            </div>
+                            <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
+                              {(clip.endTimeSeconds - clip.startTimeSeconds).toFixed(1)}s · {new Date(clip.createdAt).toLocaleDateString()}
+                            </div>
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            data-testid="restore-clip-btn"
+                            onClick={() => handleRestoreExcludedClip(clip.id)}
+                          >
+                            🔄 Restore to Library
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            data-testid="purge-clip-btn"
+                            style={{ color: '#ef4444' }}
+                            onClick={() => handlePromptDeleteClip(clip)}
+                          >
+                            🗑️ Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          </main>
         ) : (
           <main className="app-workspace">
             {/* Top Pane: Virtual Clips Table */}
@@ -5190,12 +5425,17 @@ export default function App() {
           <div
             className="context-menu-item"
             data-testid="ctx-toggle-hide"
-            onClick={() => {
+            onClick={async () => {
               const c = clipContextMenu.clip;
+              const nextVal = !c.isExcluded;
+              if (window.audioVault?.updateVirtualClip) {
+                await window.audioVault.updateVirtualClip(c.id, { isExcluded: nextVal });
+              }
               setClips((prev) =>
-                prev.map((item) => (item.id === c.id ? { ...item, isExcluded: !item.isExcluded } : item))
+                prev.map((item) => (item.id === c.id ? { ...item, isExcluded: nextVal } : item))
               );
               setClipContextMenu(null);
+              fetchVaultStats();
             }}
           >
             {clipContextMenu.clip.isExcluded ? '🔄 Include in Library' : '👁️ Hide from Library'}

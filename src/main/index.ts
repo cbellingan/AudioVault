@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, protocol, net, shell } from 'electron';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { execFile } from 'child_process';
 import util from 'util';
 
@@ -39,6 +40,7 @@ import {
   ExecuteImportOptions,
   BatchExportOptions,
   BatchExportResult,
+  VaultStats,
 } from '../shared/types';
 
 // Configure isolated test sandbox if running in automated test mode
@@ -203,6 +205,53 @@ function setupIpcHandlers() {
     });
     if (res.canceled || res.filePaths.length === 0) return null;
     return res.filePaths[0];
+  });
+
+  // Storage Management & Exclusions (F12)
+  ipcMain.handle('vault:move-vault', async (_, targetDir?: string): Promise<{ success: boolean; newPath: string }> => {
+    let dest = targetDir;
+    if (!dest) {
+      if (process.env.AUDIOVAULT_TEST_MODE === '1') {
+        dest = fs.mkdtempSync(path.join(os.tmpdir(), 'audiovault-moved-vault-'));
+      } else if (mainWindow) {
+        const res = await dialog.showOpenDialog(mainWindow, {
+          title: 'Select Destination Directory to Move Vault',
+          properties: ['openDirectory', 'createDirectory'],
+        });
+        if (res.canceled || res.filePaths.length === 0) return { success: false, newPath: '' };
+        dest = res.filePaths[0];
+      }
+    }
+    if (!dest) return { success: false, newPath: '' };
+    const ok = await dedupEngine.moveVault(dest);
+    return { success: ok, newPath: dest };
+  });
+
+  ipcMain.handle('vault:open-vault', async (_, targetDir?: string): Promise<{ success: boolean; newPath: string }> => {
+    let dest = targetDir;
+    if (!dest) {
+      if (process.env.AUDIOVAULT_TEST_MODE === '1') {
+        dest = dedupEngine.getVaultDir();
+      } else if (mainWindow) {
+        const res = await dialog.showOpenDialog(mainWindow, {
+          title: 'Select Audio Vault Directory to Open',
+          properties: ['openDirectory', 'createDirectory'],
+        });
+        if (res.canceled || res.filePaths.length === 0) return { success: false, newPath: '' };
+        dest = res.filePaths[0];
+      }
+    }
+    if (!dest) return { success: false, newPath: '' };
+    const ok = await dedupEngine.openVault(dest);
+    return { success: ok, newPath: dest };
+  });
+
+  ipcMain.handle('vault:restore-excluded-clip', async (_, clipId: string): Promise<VirtualClip | null> => {
+    return dedupEngine.restoreExcludedClip(clipId);
+  });
+
+  ipcMain.handle('vault:get-vault-stats', async (): Promise<VaultStats> => {
+    return dedupEngine.getVaultStats();
   });
 
   ipcMain.handle('vault:scan-volumes', async (): Promise<VolumeDetectedEvent[]> => {

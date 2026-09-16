@@ -1492,6 +1492,96 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
 
     await app.close();
   });
+
+  test("24. Storage Management & Exclusions: Workspace settings, disk stats, recoverable exclusions, and vault moving", async () => {
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+
+    // 1. Verify Header Storage Button is present and click to open Settings workspace
+    const headerStorageBtn = window.locator("[data-testid=\"header-storage-vault-btn\"]");
+    await expect(headerStorageBtn).toBeVisible();
+    await headerStorageBtn.click();
+
+    // 2. Verify Settings Workspace is active
+    const settingsWorkspace = window.locator("[data-testid=\"settings-workspace\"]");
+    await expect(settingsWorkspace).toBeVisible();
+
+    // Verify vault location card and path display
+    const vaultCard = window.locator("[data-testid=\"vault-location-card\"]");
+    await expect(vaultCard).toBeVisible();
+
+    const pathDisplay = window.locator("[data-testid=\"vault-path-display\"]");
+    await expect(pathDisplay).toBeVisible();
+    await expect(pathDisplay).toContainText(sandbox.sandboxDir);
+
+    // Verify Excluded Recordings Card is present and initially empty
+    const excludedPanel = window.locator("[data-testid=\"excluded-recordings-panel\"]");
+    await expect(excludedPanel).toBeVisible();
+
+    const emptyExcluded = window.locator("[data-testid=\"no-excluded-recordings\"]");
+    await expect(emptyExcluded).toBeVisible();
+
+    // 3. Navigate back to Library workspace
+    const backBtn = window.locator("[data-testid=\"settings-back-btn\"]");
+    await expect(backBtn).toBeVisible();
+    await backBtn.click();
+
+    const clipsPane = window.locator(".clips-pane");
+    await expect(clipsPane).toBeVisible();
+
+    // 4. Hide a recording via row context menu
+    const targetRow = window.locator(".clips-table tbody tr", { hasText: "STE-003 - Product Standup" });
+    await expect(targetRow).toBeVisible();
+    await targetRow.click({ button: "right" });
+
+    const hideItem = window.locator("[data-testid=\"ctx-toggle-hide\"]");
+    await expect(hideItem).toBeVisible();
+    await expect(hideItem).toContainText("Hide from Library");
+    await hideItem.click();
+
+    // Recording should now be hidden from Library table
+    await expect(window.locator(".clips-table tbody tr", { hasText: "STE-003 - Product Standup" })).toHaveCount(0);
+
+    // 5. Navigate to Settings workspace via sidebar nav button
+    const sidebarSettingsBtn = window.locator("[data-testid=\"workspace-settings-btn\"]");
+    await expect(sidebarSettingsBtn).toBeVisible();
+    await sidebarSettingsBtn.click();
+    await expect(settingsWorkspace).toBeVisible();
+
+    // 6. Verify excluded recording appears in the Excluded list
+    const excludedList = window.locator("[data-testid=\"excluded-items-list\"]");
+    await expect(excludedList).toBeVisible();
+    await expect(excludedList).toContainText("STE-003 - Product Standup");
+
+    // 7. Click Restore to Library
+    const restoreBtn = window.locator("[data-testid=\"restore-clip-btn\"]").first();
+    await expect(restoreBtn).toBeVisible();
+    await restoreBtn.click();
+
+    // Verify empty state returns
+    await expect(emptyExcluded).toBeVisible();
+
+    // 8. Return to Library and verify recording is visible again
+    await backBtn.click();
+    await expect(window.locator(".clips-table tbody tr", { hasText: "STE-003 - Product Standup" })).toBeVisible();
+
+    // 9. Return to Settings and test Move Vault
+    await sidebarSettingsBtn.click();
+    await expect(settingsWorkspace).toBeVisible();
+
+    const moveVaultBtn = window.locator("[data-testid=\"move-vault-btn\"]");
+    await expect(moveVaultBtn).toBeVisible();
+    await moveVaultBtn.click();
+
+    // In test mode, moveVault automatically moves to a new isolated tmpdir
+    // Verify toast or path display updates
+    const toast = window.locator("[data-testid=\"copy-toast\"]");
+    await expect(toast).toBeVisible();
+    await expect(toast).toContainText("Vault moved to");
+
+    await app.close();
+  });
 });
 
 

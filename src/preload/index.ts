@@ -121,6 +121,12 @@ const audioVaultApi: AudioVaultAPI = {
   // Unified Batch Export API (F11)
   batchExport: (options: BatchExportOptions) =>
     ipcRenderer.invoke('vault:batch-export', options),
+
+  // Storage Management & Exclusions (F12)
+  moveVault: (targetDir?: string) => ipcRenderer.invoke('vault:move-vault', targetDir),
+  openVault: (targetDir?: string) => ipcRenderer.invoke('vault:open-vault', targetDir),
+  restoreExcludedClip: (clipId: string) => ipcRenderer.invoke('vault:restore-excluded-clip', clipId),
+  getVaultStats: () => ipcRenderer.invoke('vault:get-vault-stats'),
 };
 
 contextBridge.exposeInMainWorld('audioVault', audioVaultApi);
