@@ -113,6 +113,43 @@ export interface RawAudioFile {
   waveformPeaks: number[];
 }
 
+export interface CollectionRecord {
+  id: string;
+  name: string;
+  description?: string;
+  color?: string;
+  isPinned?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ImportBatchRecord {
+  id: string;
+  sourceName: string;
+  sourceType: 'folder' | 'files' | 'sd_card' | 'recorder' | 'in_app';
+  importedAt: string;
+  totalFiles: number;
+  importedCount: number;
+  duplicateCount: number;
+  excludedCount: number;
+  failedCount: number;
+  recordingIds: string[];
+  targetCollection?: string;
+  autoTranscribe: boolean;
+  status: 'in_progress' | 'completed' | 'failed' | 'cancelled';
+  error?: string;
+}
+
+export interface SavedViewRecord {
+  id: string;
+  name: string;
+  scope: 'all' | 'recent' | 'review' | 'favorites' | string;
+  groupBy: 'date' | 'batch' | 'collection' | 'none';
+  statusFilter: 'all' | 'ready' | 'not_transcribed' | 'no_speech' | 'failed';
+  searchQuery?: string;
+  createdAt: string;
+}
+
 export interface VirtualClip {
   id: string;
   parentFileId: string;
@@ -133,6 +170,17 @@ export interface VirtualClip {
   exportedAt?: string;
   createdAt: string;
   updatedAt: string;
+
+  // Domain Redesign Extensions
+  recordedAt?: string; // Original recording timestamp if known (never fabricated)
+  reviewed?: boolean; // User review state (default false)
+  favorite?: boolean; // User favorite star
+  collections?: string[]; // Many-to-many collection names/IDs
+  batchId?: string; // ID of acquisition batch
+  transcriptState?: 'not_requested' | 'queued' | 'transcribing' | 'ready' | 'no_speech' | 'failed';
+  userTitle?: string; // Explicit user title (protected from auto-titling)
+  editedTranscript?: string; // Explicit user edits to transcript
+  transcriptVersions?: Array<{ id: string; text: string; source: 'machine' | 'user_edit'; createdAt: string }>;
 }
 
 export interface VaultSettings {

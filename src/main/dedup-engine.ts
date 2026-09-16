@@ -1,7 +1,15 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { RawAudioFile, VirtualClip, VaultSettings, DeletedFileRecord } from '../shared/types';
+import {
+  RawAudioFile,
+  VirtualClip,
+  VaultSettings,
+  DeletedFileRecord,
+  CollectionRecord,
+  ImportBatchRecord,
+  SavedViewRecord,
+} from '../shared/types';
 
 export class DedupEngine {
   private vaultDir: string;
@@ -9,6 +17,10 @@ export class DedupEngine {
   private rawFiles: Map<string, RawAudioFile> = new Map();
   private virtualClips: Map<string, VirtualClip> = new Map();
   private deletedFiles: Map<string, DeletedFileRecord> = new Map();
+  private collections: Map<string, CollectionRecord> = new Map();
+  private importBatches: Map<string, ImportBatchRecord> = new Map();
+  private savedViews: Map<string, SavedViewRecord> = new Map();
+  private schemaVersion: number = 3;
   private settings: VaultSettings;
 
   constructor(customVaultDir?: string) {
@@ -98,172 +110,264 @@ export class DedupEngine {
 
   private loadRegistry() {
     try {
-      if (fs.existsSync(this.registryFile)) {
-        const raw = fs.readFileSync(this.registryFile, 'utf-8');
-        const data = JSON.parse(raw);
-        let registryNeedsSave = false;
+      if (!fs.existsSync(this.registryFile)) {
+        return;
+      }
 
-        // Map duplicate rawFileIds to their primary canonical rawFileId
-        const rawIdRemap = new Map<string, string>();
-        const fingerprintMap = new Map<string, RawAudioFile>();
-        const pathMap = new Map<string, RawAudioFile>();
+      let raw: string;
+      try {
+        raw = fs.readFileSync(this.registryFile, 'utf-8');
+      } catch (readErr) {
+        console.error('[AudioVault Dedup] Failed reading registry file:', readErr);
+        return;
+      }
 
-        if (data.rawFiles) {
-          for (const item of data.rawFiles) {
-            const match =
-              (item.fingerprint && fingerprintMap.get(item.fingerprint)) ||
-              (item.storagePath && pathMap.get(item.storagePath));
-            if (match) {
-              // Found duplicate raw file entry! Map its ID to primary
-              rawIdRemap.set(item.id, match.id);
-              registryNeedsSave = true;
-              if (
-                (!match.waveformPeaks || match.waveformPeaks.length === 0) &&
-                item.waveformPeaks &&
-                item.waveformPeaks.length > 0
-              ) {
-                match.waveformPeaks = item.waveformPeaks;
-              }
-              if (match.durationSeconds === 0 && item.durationSeconds > 0) {
-                match.durationSeconds = item.durationSeconds;
-              }
-            } else {
-              this.rawFiles.set(item.id, item);
-              if (item.fingerprint) fingerprintMap.set(item.fingerprint, item);
-              if (item.storagePath) pathMap.set(item.storagePath, item);
+      let data: any;
+      try {
+        data = JSON.parse(raw);
+      } catch (parseErr) {
+        console.error('[AudioVault Dedup] ⚠️ Corrupt JSON in registry file!', parseErr);
+        const backupFile = `${this.registryFile}.bak`;
+        if (fs.existsSync(backupFile)) {
+          try {
+            const bakRaw = fs.readFileSync(backupFile, 'utf-8');
+            data = JSON.parse(bakRaw);
+            console.log('[AudioVault Dedup] 🔄 Successfully recovered registry from backup:', backupFile);
+          } catch {
+            const corruptPath = `${this.registryFile}.corrupt.${Date.now()}`;
+            fs.copyFileSync(this.registryFile, corruptPath);
+            console.error('[AudioVault Dedup] Preserved corrupt registry at:', corruptPath);
+            return;
+          }
+        } else {
+          const corruptPath = `${this.registryFile}.corrupt.${Date.now()}`;
+          fs.copyFileSync(this.registryFile, corruptPath);
+          console.error('[AudioVault Dedup] Preserved corrupt registry at:', corruptPath);
+          return;
+        }
+      }
+
+      const currentVer = data.version || 1;
+      let registryNeedsSave = false;
+
+      // Pre-migration backup if upgrading from legacy schema (< 3)
+      if (currentVer < 3) {
+        try {
+          fs.writeFileSync(`${this.registryFile}.v2.bak`, raw, 'utf-8');
+          fs.writeFileSync(`${this.registryFile}.bak`, raw, 'utf-8');
+          console.log(`[AudioVault Dedup] 📦 Created migration backup: ${this.registryFile}.v2.bak`);
+        } catch (bakErr) {
+          console.warn('[AudioVault Dedup] Warning: Failed writing pre-migration backup', bakErr);
+        }
+        registryNeedsSave = true;
+      }
+
+      // Map duplicate rawFileIds to their primary canonical rawFileId
+      const rawIdRemap = new Map<string, string>();
+      const fingerprintMap = new Map<string, RawAudioFile>();
+      const pathMap = new Map<string, RawAudioFile>();
+
+      if (data.rawFiles) {
+        for (const item of data.rawFiles) {
+          const match =
+            (item.fingerprint && fingerprintMap.get(item.fingerprint)) ||
+            (item.storagePath && pathMap.get(item.storagePath));
+          if (match) {
+            rawIdRemap.set(item.id, match.id);
+            registryNeedsSave = true;
+            if (
+              (!match.waveformPeaks || match.waveformPeaks.length === 0) &&
+              item.waveformPeaks &&
+              item.waveformPeaks.length > 0
+            ) {
+              match.waveformPeaks = item.waveformPeaks;
             }
+            if (match.durationSeconds === 0 && item.durationSeconds > 0) {
+              match.durationSeconds = item.durationSeconds;
+            }
+          } else {
+            this.rawFiles.set(item.id, item);
+            if (item.fingerprint) fingerprintMap.set(item.fingerprint, item);
+            if (item.storagePath) pathMap.set(item.storagePath, item);
           }
         }
+      }
 
-        if (data.virtualClips) {
-          for (const item of data.virtualClips) {
-            // Remap parentFileId if referencing a duplicate raw file
-            if (rawIdRemap.has(item.parentFileId)) {
-              item.parentFileId = rawIdRemap.get(item.parentFileId)!;
-              registryNeedsSave = true;
+      if (data.virtualClips) {
+        for (const item of data.virtualClips) {
+          if (rawIdRemap.has(item.parentFileId)) {
+            item.parentFileId = rawIdRemap.get(item.parentFileId)!;
+            registryNeedsSave = true;
+          }
+
+          // Schema V3 field normalization (do not fabricate unknown dates!)
+          item.reviewed = item.reviewed ?? false;
+          item.favorite = item.favorite ?? false;
+          item.collections = Array.isArray(item.collections) ? item.collections : [];
+
+          const existing = Array.from(this.virtualClips.values()).find(
+            (c) =>
+              c.parentFileId === item.parentFileId &&
+              Math.abs(c.startTimeSeconds - item.startTimeSeconds) < 0.05 &&
+              Math.abs(c.endTimeSeconds - item.endTimeSeconds) < 0.05
+          );
+
+          if (existing) {
+            registryNeedsSave = true;
+            if (item.transcription && !existing.transcription) {
+              existing.transcription = item.transcription;
             }
-
-            // Look for existing clip for this raw file covering the exact same span (within 0.05s)
-            const existing = Array.from(this.virtualClips.values()).find(
-              (c) =>
-                c.parentFileId === item.parentFileId &&
-                Math.abs(c.startTimeSeconds - item.startTimeSeconds) < 0.05 &&
-                Math.abs(c.endTimeSeconds - item.endTimeSeconds) < 0.05
-            );
-
-            if (existing) {
-              registryNeedsSave = true;
-              // Merge details: retain best title, transcription, tags, notes, export path
-              if (item.transcription && !existing.transcription) {
-                existing.transcription = item.transcription;
-              }
-              if (
-                item.transcriptionChunks &&
-                item.transcriptionChunks.length > 0 &&
-                (!existing.transcriptionChunks || existing.transcriptionChunks.length === 0)
-              ) {
-                existing.transcriptionChunks = item.transcriptionChunks;
-              }
-              if (
-                item.title &&
-                !item.title.startsWith('In-App Take') &&
-                existing.title.startsWith('In-App Take')
-              ) {
-                existing.title = item.title;
-              }
-              if (item.userTags && item.userTags.length > 0) {
-                existing.userTags = Array.from(new Set([...existing.userTags, ...item.userTags]));
-              }
-              if (item.notes && !existing.notes) {
-                existing.notes = item.notes;
-              }
-              if (item.exportedMp3Path && !existing.exportedMp3Path) {
-                existing.exportedMp3Path = item.exportedMp3Path;
-                existing.exportedAt = item.exportedAt;
-              }
-              if (
-                item.classificationConfidence &&
-                item.classificationConfidence > existing.classificationConfidence
-              ) {
-                existing.classificationConfidence = item.classificationConfidence;
-              }
-            } else {
-              this.virtualClips.set(item.id, item);
+            if (
+              item.transcriptionChunks &&
+              item.transcriptionChunks.length > 0 &&
+              (!existing.transcriptionChunks || existing.transcriptionChunks.length === 0)
+            ) {
+              existing.transcriptionChunks = item.transcriptionChunks;
             }
+            if (
+              item.title &&
+              !item.title.startsWith('In-App Take') &&
+              existing.title.startsWith('In-App Take')
+            ) {
+              existing.title = item.title;
+            }
+            if (item.userTags && item.userTags.length > 0) {
+              existing.userTags = Array.from(new Set([...existing.userTags, ...item.userTags]));
+            }
+            if (item.collections && item.collections.length > 0) {
+              existing.collections = Array.from(new Set([...(existing.collections || []), ...item.collections]));
+            }
+            if (item.notes && !existing.notes) {
+              existing.notes = item.notes;
+            }
+            if (item.exportedMp3Path && !existing.exportedMp3Path) {
+              existing.exportedMp3Path = item.exportedMp3Path;
+              existing.exportedAt = item.exportedAt;
+            }
+            if (
+              item.classificationConfidence &&
+              item.classificationConfidence > existing.classificationConfidence
+            ) {
+              existing.classificationConfidence = item.classificationConfidence;
+            }
+            if (item.reviewed !== undefined) existing.reviewed = item.reviewed;
+            if (item.favorite !== undefined) existing.favorite = item.favorite;
+            if (item.recordedAt && !existing.recordedAt) existing.recordedAt = item.recordedAt;
+            if (item.userTitle && !existing.userTitle) existing.userTitle = item.userTitle;
+            if (item.editedTranscript && !existing.editedTranscript) existing.editedTranscript = item.editedTranscript;
+          } else {
+            this.virtualClips.set(item.id, item);
           }
         }
+      }
 
-        if (data.deletedFiles && Array.isArray(data.deletedFiles)) {
-          for (const item of data.deletedFiles) {
-            if (item && item.fingerprint) {
-              this.deletedFiles.set(item.fingerprint, item);
-            }
+      if (data.deletedFiles && Array.isArray(data.deletedFiles)) {
+        for (const item of data.deletedFiles) {
+          if (item && item.fingerprint) {
+            this.deletedFiles.set(item.fingerprint, item);
           }
         }
+      }
 
-        if (data.settings) {
-          this.settings = { ...this.settings, ...data.settings };
+      if (data.collections && Array.isArray(data.collections)) {
+        for (const col of data.collections) {
+          if (col && col.id) {
+            this.collections.set(col.id, col);
+          }
         }
+      }
 
-        // Check if registry on disk contained legacy embedded transcript bloat
-        const hadLegacyEmbeddedTranscripts = Array.isArray(data.virtualClips) && data.virtualClips.some(
-          (c: any) => c.transcription || c.fullTranscription || (c.transcriptionChunks && c.transcriptionChunks.length > 0)
+      if (data.importBatches && Array.isArray(data.importBatches)) {
+        for (const b of data.importBatches) {
+          if (b && b.id) {
+            this.importBatches.set(b.id, b);
+          }
+        }
+      }
+
+      if (data.savedViews && Array.isArray(data.savedViews)) {
+        for (const v of data.savedViews) {
+          if (v && v.id) {
+            this.savedViews.set(v.id, v);
+          }
+        }
+      }
+
+      if (data.settings) {
+        this.settings = { ...this.settings, ...data.settings };
+      }
+
+      // Check if registry on disk contained legacy embedded transcript bloat
+      const hadLegacyEmbeddedTranscripts =
+        Array.isArray(data.virtualClips) &&
+        data.virtualClips.some(
+          (c: any) =>
+            c.transcription ||
+            c.fullTranscription ||
+            (c.transcriptionChunks && c.transcriptionChunks.length > 0)
         );
-        if (hadLegacyEmbeddedTranscripts) {
-          registryNeedsSave = true;
-        }
+      if (hadLegacyEmbeddedTranscripts) {
+        registryNeedsSave = true;
+      }
 
-        // Sidecar Migration & Backfill: ensure every clip with a transcript has a sidecar .txt file
-        for (const clip of this.virtualClips.values()) {
-          const rawFile = this.rawFiles.get(clip.parentFileId);
-          if (rawFile && rawFile.storagePath) {
-            const ext = path.extname(rawFile.storagePath);
-            const txtPath = rawFile.storagePath.slice(0, -ext.length) + '.txt';
-            const chunksPath = rawFile.storagePath.slice(0, -ext.length) + '.chunks.json';
+      // Sidecar Migration & Backfill: ensure every clip with a transcript has a sidecar .txt file
+      for (const clip of this.virtualClips.values()) {
+        const rawFile = this.rawFiles.get(clip.parentFileId);
+        if (rawFile && rawFile.storagePath) {
+          const ext = path.extname(rawFile.storagePath);
+          const txtPath = rawFile.storagePath.slice(0, -ext.length) + '.txt';
+          const chunksPath = rawFile.storagePath.slice(0, -ext.length) + '.chunks.json';
 
-            if (fs.existsSync(txtPath)) {
-              clip.transcriptPath = txtPath;
-              if (!clip.fullTranscription) {
-                try {
-                  clip.fullTranscription = fs.readFileSync(txtPath, 'utf-8');
-                  const clean = clip.fullTranscription.replace(/^\[(?:Local )?Whisper\]:\s*"?/i, '').replace(/"?$/, '').trim();
-                  const snippet = clean.length > 220 ? `${clean.slice(0, 220).trim()}...` : clean;
-                  clip.transcription = `[Whisper]: "${snippet}"`;
-                } catch {}
-              }
-            } else if (clip.fullTranscription || clip.transcription) {
-              // Backfill: write embedded transcript from legacy registry to .txt sidecar
-              const textToWrite = clip.fullTranscription || (clip.transcription ? clip.transcription.replace(/^\[(?:Local )?Whisper\]:\s*"?/i, '').replace(/"?$/, '').trim() : '');
-              if (textToWrite && textToWrite.length > 3 && !textToWrite.startsWith('...')) {
-                try {
-                  fs.writeFileSync(txtPath, textToWrite, 'utf-8');
-                  clip.transcriptPath = txtPath;
-                  registryNeedsSave = true;
-                  console.log(`[AudioVault Dedup] 📝 Backfilled transcript file to: ${txtPath}`);
-                } catch (err) {
-                  console.warn(`[AudioVault Dedup] Failed writing backfilled transcript: ${txtPath}`, err);
-                }
-              }
+          if (fs.existsSync(txtPath)) {
+            clip.transcriptPath = txtPath;
+            if (!clip.fullTranscription) {
+              try {
+                clip.fullTranscription = fs.readFileSync(txtPath, 'utf-8');
+                const clean = clip.fullTranscription
+                  .replace(/^\[(?:Local )?Whisper\]:\s*"?/i, '')
+                  .replace(/"?$/, '')
+                  .trim();
+                const snippet = clean.length > 220 ? `${clean.slice(0, 220).trim()}...` : clean;
+                clip.transcription = `[Whisper]: "${snippet}"`;
+              } catch {}
             }
-
-            // Hydrate chunks from sidecar if present
-            if (fs.existsSync(chunksPath) && (!clip.transcriptionChunks || clip.transcriptionChunks.length === 0)) {
+          } else if (clip.fullTranscription || clip.transcription) {
+            const textToWrite =
+              clip.fullTranscription ||
+              (clip.transcription
+                ? clip.transcription
+                    .replace(/^\[(?:Local )?Whisper\]:\s*"?/i, '')
+                    .replace(/"?$/, '')
+                    .trim()
+                : '');
+            if (textToWrite && textToWrite.length > 3 && !textToWrite.startsWith('...')) {
               try {
-                clip.transcriptionChunks = JSON.parse(fs.readFileSync(chunksPath, 'utf-8'));
-              } catch {}
-            } else if (clip.transcriptionChunks && clip.transcriptionChunks.length > 0 && !fs.existsSync(chunksPath)) {
-              try {
-                fs.writeFileSync(chunksPath, JSON.stringify(clip.transcriptionChunks, null, 2), 'utf-8');
+                fs.writeFileSync(txtPath, textToWrite, 'utf-8');
+                clip.transcriptPath = txtPath;
                 registryNeedsSave = true;
-              } catch {}
+                console.log(`[AudioVault Dedup] 📝 Backfilled transcript file to: ${txtPath}`);
+              } catch (err) {
+                console.warn(`[AudioVault Dedup] Failed writing backfilled transcript: ${txtPath}`, err);
+              }
             }
           }
-        }
 
-        if (registryNeedsSave) {
-          console.log('[AudioVault Dedup] 🧹 Auto-cleaned and migrated registry to sidecar files.');
-          this.saveRegistry();
+          if (fs.existsSync(chunksPath) && (!clip.transcriptionChunks || clip.transcriptionChunks.length === 0)) {
+            try {
+              clip.transcriptionChunks = JSON.parse(fs.readFileSync(chunksPath, 'utf-8'));
+            } catch {}
+          } else if (clip.transcriptionChunks && clip.transcriptionChunks.length > 0 && !fs.existsSync(chunksPath)) {
+            try {
+              fs.writeFileSync(chunksPath, JSON.stringify(clip.transcriptionChunks, null, 2), 'utf-8');
+              registryNeedsSave = true;
+            } catch {}
+          }
         }
+      }
+
+      if (registryNeedsSave) {
+        console.log('[AudioVault Dedup] 🧹 Auto-cleaned and migrated registry to sidecar files & V3 schema.');
+        this.saveRegistry();
       }
     } catch (err) {
       console.error('Failed to load AudioVault registry:', err);
@@ -275,7 +379,6 @@ export class DedupEngine {
       this.ensureDirectories();
 
       // Ensure registry.json remains lean and free of transcript bloat:
-      // Transcripts and chunk timestamps live in sidecar files (.txt, .chunks.json)
       const sanitizedClips = Array.from(this.virtualClips.values()).map((clip) => {
         const rawFile = this.rawFiles.get(clip.parentFileId);
         let transcriptPath = clip.transcriptPath;
@@ -291,7 +394,6 @@ export class DedupEngine {
         delete copy.fullTranscription;
         if (transcriptPath) {
           copy.transcriptPath = transcriptPath;
-          // Keep registry clean: remove large transcript text and chunk objects from JSON
           delete copy.transcription;
           delete copy.transcriptionChunks;
         }
@@ -299,15 +401,129 @@ export class DedupEngine {
       });
 
       const payload = {
+        version: this.schemaVersion,
         settings: this.settings,
         rawFiles: Array.from(this.rawFiles.values()),
         virtualClips: sanitizedClips,
         deletedFiles: Array.from(this.deletedFiles.values()),
+        collections: Array.from(this.collections.values()),
+        importBatches: Array.from(this.importBatches.values()),
+        savedViews: Array.from(this.savedViews.values()),
       };
-      fs.writeFileSync(this.registryFile, JSON.stringify(payload, null, 2), 'utf-8');
+
+      const jsonStr = JSON.stringify(payload, null, 2);
+
+      // Atomic write: write to temp file then renameSync
+      const tempFile = `${this.registryFile}.tmp.${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      fs.writeFileSync(tempFile, jsonStr, 'utf-8');
+      fs.renameSync(tempFile, this.registryFile);
+
+      // Keep a valid backup
+      try {
+        fs.writeFileSync(`${this.registryFile}.bak`, jsonStr, 'utf-8');
+      } catch {}
     } catch (err) {
       console.error('Failed to save AudioVault registry:', err);
     }
+  }
+
+  // ==========================================
+  // Collections, Batches, Views & Review Methods
+  // ==========================================
+
+  public getCollections(): CollectionRecord[] {
+    return Array.from(this.collections.values());
+  }
+
+  public addCollection(col: CollectionRecord): void {
+    this.collections.set(col.id, col);
+    this.saveRegistry();
+  }
+
+  public deleteCollection(id: string): boolean {
+    const existed = this.collections.delete(id);
+    if (existed) {
+      this.saveRegistry();
+    }
+    return existed;
+  }
+
+  public getImportBatches(): ImportBatchRecord[] {
+    return Array.from(this.importBatches.values());
+  }
+
+  public addImportBatch(batch: ImportBatchRecord): void {
+    this.importBatches.set(batch.id, batch);
+    this.saveRegistry();
+  }
+
+  public updateImportBatch(id: string, updates: Partial<ImportBatchRecord>): ImportBatchRecord | undefined {
+    const existing = this.importBatches.get(id);
+    if (!existing) return undefined;
+    const updated = { ...existing, ...updates };
+    this.importBatches.set(id, updated);
+    this.saveRegistry();
+    return updated;
+  }
+
+  public getSavedViews(): SavedViewRecord[] {
+    return Array.from(this.savedViews.values());
+  }
+
+  public addSavedView(view: SavedViewRecord): void {
+    this.savedViews.set(view.id, view);
+    this.saveRegistry();
+  }
+
+  public deleteSavedView(id: string): boolean {
+    const existed = this.savedViews.delete(id);
+    if (existed) {
+      this.saveRegistry();
+    }
+    return existed;
+  }
+
+  public toggleFavorite(clipId: string): boolean {
+    const clip = this.virtualClips.get(clipId);
+    if (!clip) return false;
+    clip.favorite = !clip.favorite;
+    clip.updatedAt = new Date().toISOString();
+    this.saveRegistry();
+    return clip.favorite;
+  }
+
+  public toggleReviewed(clipId: string): boolean {
+    const clip = this.virtualClips.get(clipId);
+    if (!clip) return false;
+    clip.reviewed = !clip.reviewed;
+    clip.updatedAt = new Date().toISOString();
+    this.saveRegistry();
+    return clip.reviewed;
+  }
+
+  public addClipToCollection(clipId: string, collectionName: string): boolean {
+    const clip = this.virtualClips.get(clipId);
+    if (!clip) return false;
+    clip.collections = clip.collections || [];
+    if (!clip.collections.includes(collectionName)) {
+      clip.collections.push(collectionName);
+      clip.updatedAt = new Date().toISOString();
+      this.saveRegistry();
+    }
+    return true;
+  }
+
+  public removeClipFromCollection(clipId: string, collectionName: string): boolean {
+    const clip = this.virtualClips.get(clipId);
+    if (!clip || !clip.collections) return false;
+    const idx = clip.collections.indexOf(collectionName);
+    if (idx >= 0) {
+      clip.collections.splice(idx, 1);
+      clip.updatedAt = new Date().toISOString();
+      this.saveRegistry();
+      return true;
+    }
+    return false;
   }
 
   /**
