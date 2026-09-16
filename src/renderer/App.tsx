@@ -206,6 +206,13 @@ export default function App() {
   const [titleEditText, setTitleEditText] = useState<string>('');
   const [showRevertConfirmModal, setShowRevertConfirmModal] = useState<boolean>(false);
   const [reprocessPromptClip, setReprocessPromptClip] = useState<VirtualClip | null>(null);
+
+  // F11: Unified Batch Export & Actions
+  const [showUnifiedExportModal, setShowUnifiedExportModal] = useState<boolean>(false);
+  const [exportScopeClipIds, setExportScopeClipIds] = useState<string[]>([]);
+  const [exportAudioFormat, setExportAudioFormat] = useState<'wav' | 'mp3' | 'none'>('mp3');
+  const [exportTranscriptFormat, setExportTranscriptFormat] = useState<'txt' | 'srt' | 'none'>('txt');
+  const [isBatchExporting, setIsBatchExporting] = useState<boolean>(false);
   
   // Table Sorting state: starts desc on creation / import time
   type SortField = 'title' | 'category' | 'duration' | 'tags' | 'confidence' | 'createdAt';
@@ -766,9 +773,9 @@ export default function App() {
     commandRegistry.register({
       id: 'export',
       label: 'Export…',
-      isEnabled: () => !!activeClip,
+      isEnabled: () => selectedClipIds.size > 0 || !!activeClip,
       execute: () => {
-        handleExportClip();
+        handleOpenExportModal();
       },
     });
     commandRegistry.register({
@@ -1609,13 +1616,18 @@ export default function App() {
     setContextMenu(null);
   }
 
-  async function handleExportClip() {
-    if (window.audioVault) {
-      await window.audioVault.exportClip(selectedClipId);
-    } else {
-      alert(`Exported "${activeClip?.title}" to disk (simulated).`);
-    }
+  function handleOpenExportModal(clipIds?: string[]) {
+    const ids = clipIds && clipIds.length > 0
+      ? clipIds
+      : (selectedClipIds.size > 0 ? Array.from(selectedClipIds) : (activeClip ? [activeClip.id] : []));
+    if (ids.length === 0) return;
+    setExportScopeClipIds(ids);
+    setShowUnifiedExportModal(true);
     setContextMenu(null);
+  }
+
+  async function handleExportClip() {
+    handleOpenExportModal(selectedClipId ? [selectedClipId] : undefined);
   }
 
   function handlePromptDeleteClip(clip: VirtualClip) {
@@ -2270,6 +2282,53 @@ export default function App() {
 
     setSelectedClipId(clipId);
     lastClickedClipIdRef.current = clipId;
+  }
+
+  async function handleBatchTranscribe() {
+    if (selectedClipIds.size === 0) return;
+    const ids = Array.from(selectedClipIds);
+    let queued = 0;
+    for (const id of ids) {
+      if (window.audioVault?.reprocessClip) {
+        await window.audioVault.reprocessClip(id);
+        queued++;
+      }
+    }
+    setClips((prev) =>
+      prev.map((c) => (selectedClipIds.has(c.id) ? { ...c, transcriptState: 'queued' } : c))
+    );
+    setToastMessage(`✓ Queued ${queued} recording(s) for transcription`);
+    setTimeout(() => setToastMessage(null), 3000);
+  }
+
+  async function handleExecuteUnifiedExport() {
+    if (exportScopeClipIds.length === 0) return;
+    setIsBatchExporting(true);
+    try {
+      if (window.audioVault?.batchExport) {
+        const res = await window.audioVault.batchExport({
+          clipIds: exportScopeClipIds,
+          audioFormat: exportAudioFormat,
+          transcriptFormat: exportTranscriptFormat,
+        });
+        if (res) {
+          setToastMessage(`✓ Exported ${res.succeeded} recording(s) to ${res.destinationDir}`);
+          setTimeout(() => setToastMessage(null), 4000);
+          if (window.audioVault?.getVirtualClips) {
+            const fresh = await window.audioVault.getVirtualClips();
+            setClips(fresh);
+          }
+        }
+      } else {
+        setToastMessage(`✓ Exported ${exportScopeClipIds.length} recording(s) (simulated)`);
+        setTimeout(() => setToastMessage(null), 3000);
+      }
+    } catch (err) {
+      alert(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsBatchExporting(false);
+      setShowUnifiedExportModal(false);
+    }
   }
 
   async function handleBatchMarkReviewed() {
@@ -4388,7 +4447,7 @@ export default function App() {
                 </table>
               )}
 
-              {/* Floating Batch Selection Bar (F03) */}
+              {/* Floating Batch Selection Bar (F03 / F11) */}
               {selectedClipIds.size > 0 && (
                 <div className="batch-selection-bar" data-testid="batch-selection-bar">
                   <div className="batch-bar-left">
@@ -4398,6 +4457,23 @@ export default function App() {
                     <button
                       type="button"
                       className="btn btn-secondary btn-sm"
+                      data-testid="batch-transcribe-btn"
+                      onClick={handleBatchTranscribe}
+                    >
+                      🎙️ Transcribe
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      data-testid="batch-export-btn"
+                      onClick={() => handleOpenExportModal(Array.from(selectedClipIds))}
+                    >
+                      💾 Export…
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      data-testid="batch-add-collection-btn"
                       onClick={() => setShowAddToCollectionModal(true)}
                     >
                       📁 Add to collection…
@@ -4405,6 +4481,7 @@ export default function App() {
                     <button
                       type="button"
                       className="btn btn-secondary btn-sm"
+                      data-testid="batch-reviewed-btn"
                       onClick={handleBatchMarkReviewed}
                     >
                       ✓ Mark reviewed
@@ -4412,6 +4489,7 @@ export default function App() {
                     <button
                       type="button"
                       className="btn btn-secondary btn-sm"
+                      data-testid="batch-favorite-btn"
                       onClick={handleBatchToggleFavorite}
                     >
                       ★ Toggle favorite
@@ -4419,6 +4497,7 @@ export default function App() {
                     <button
                       type="button"
                       className="btn btn-secondary btn-sm"
+                      data-testid="batch-clear-btn"
                       onClick={() => setSelectedClipIds(new Set())}
                     >
                       Clear selection (Esc)
@@ -5819,6 +5898,184 @@ export default function App() {
                 }}
               >
                 Proceed with Re-transcription
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Slice F11: Unified Export Modal */}
+      {showUnifiedExportModal && (
+        <div className="modal-backdrop" onClick={() => setShowUnifiedExportModal(false)}>
+          <div
+            className="modal-card"
+            style={{ maxWidth: '480px' }}
+            onClick={(e) => e.stopPropagation()}
+            data-testid="unified-export-modal"
+          >
+            <div className="modal-header">
+              <div className="modal-title">Export Recordings</div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => setShowUnifiedExportModal(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="modal-body" style={{ padding: '1.25rem' }}>
+              <div className="export-scope-badge" data-testid="export-scope-badge">
+                📦 {exportScopeClipIds.length} recording{exportScopeClipIds.length === 1 ? '' : 's'} selected
+              </div>
+
+              {/* Audio Format Option */}
+              <div className="export-option-group">
+                <div className="export-option-label">Audio Format</div>
+                <div className="export-radio-row">
+                  <label
+                    className={`export-radio-card ${exportAudioFormat === 'wav' ? 'active' : ''}`}
+                    data-testid="export-audio-wav"
+                    onClick={() => setExportAudioFormat('wav')}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <input
+                        type="radio"
+                        name="exportAudioFormat"
+                        checked={exportAudioFormat === 'wav'}
+                        onChange={() => setExportAudioFormat('wav')}
+                      />
+                      <span className="export-card-title">WAV</span>
+                    </div>
+                    <span className="export-card-desc">Lossless 16-bit</span>
+                  </label>
+
+                  <label
+                    className={`export-radio-card ${exportAudioFormat === 'mp3' ? 'active' : ''}`}
+                    data-testid="export-audio-mp3"
+                    onClick={() => setExportAudioFormat('mp3')}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <input
+                        type="radio"
+                        name="exportAudioFormat"
+                        checked={exportAudioFormat === 'mp3'}
+                        onChange={() => setExportAudioFormat('mp3')}
+                      />
+                      <span className="export-card-title">MP3</span>
+                    </div>
+                    <span className="export-card-desc">320k + ID3 tags</span>
+                  </label>
+
+                  <label
+                    className={`export-radio-card ${exportAudioFormat === 'none' ? 'active' : ''}`}
+                    data-testid="export-audio-none"
+                    onClick={() => setExportAudioFormat('none')}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <input
+                        type="radio"
+                        name="exportAudioFormat"
+                        checked={exportAudioFormat === 'none'}
+                        onChange={() => setExportAudioFormat('none')}
+                      />
+                      <span className="export-card-title">None</span>
+                    </div>
+                    <span className="export-card-desc">Skip audio</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Transcript Format Option */}
+              <div className="export-option-group">
+                <div className="export-option-label">Transcript Format</div>
+                <div className="export-radio-row">
+                  <label
+                    className={`export-radio-card ${exportTranscriptFormat === 'txt' ? 'active' : ''}`}
+                    data-testid="export-transcript-txt"
+                    onClick={() => setExportTranscriptFormat('txt')}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <input
+                        type="radio"
+                        name="exportTranscriptFormat"
+                        checked={exportTranscriptFormat === 'txt'}
+                        onChange={() => setExportTranscriptFormat('txt')}
+                      />
+                      <span className="export-card-title">Text (.txt)</span>
+                    </div>
+                    <span className="export-card-desc">Plain transcript</span>
+                  </label>
+
+                  <label
+                    className={`export-radio-card ${exportTranscriptFormat === 'srt' ? 'active' : ''}`}
+                    data-testid="export-transcript-srt"
+                    onClick={() => setExportTranscriptFormat('srt')}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <input
+                        type="radio"
+                        name="exportTranscriptFormat"
+                        checked={exportTranscriptFormat === 'srt'}
+                        onChange={() => setExportTranscriptFormat('srt')}
+                      />
+                      <span className="export-card-title">SRT (.srt)</span>
+                    </div>
+                    <span className="export-card-desc">SubRip subtitles</span>
+                  </label>
+
+                  <label
+                    className={`export-radio-card ${exportTranscriptFormat === 'none' ? 'active' : ''}`}
+                    data-testid="export-transcript-none"
+                    onClick={() => setExportTranscriptFormat('none')}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <input
+                        type="radio"
+                        name="exportTranscriptFormat"
+                        checked={exportTranscriptFormat === 'none'}
+                        onChange={() => setExportTranscriptFormat('none')}
+                      />
+                      <span className="export-card-title">None</span>
+                    </div>
+                    <span className="export-card-desc">Skip transcript</span>
+                  </label>
+                </div>
+              </div>
+
+              <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                Files are exported to the vault exports directory (or chosen folder) using clean naming and collision prevention.
+              </div>
+            </div>
+
+            <div
+              className="modal-footer"
+              style={{
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: '0.6rem',
+                padding: '0.85rem 1.25rem',
+              }}
+            >
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                data-testid="cancel-unified-export-btn"
+                onClick={() => setShowUnifiedExportModal(false)}
+                disabled={isBatchExporting}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                data-testid="confirm-unified-export-btn"
+                onClick={handleExecuteUnifiedExport}
+                disabled={
+                  isBatchExporting ||
+                  (exportAudioFormat === 'none' && exportTranscriptFormat === 'none')
+                }
+              >
+                {isBatchExporting ? '⏳ Exporting...' : 'Export'}
               </button>
             </div>
           </div>

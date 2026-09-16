@@ -1393,6 +1393,105 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
 
     await app.close();
   });
+
+  test("23. Batch Actions, Excerpts & Exports: multi-row selection bar, batch transcribe/review, unified export modal (WAV/MP3/SRT/TXT), and excerpt creation (Slice F11)", async () => {
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+    await window.waitForSelector(".clips-table tbody tr", { timeout: 8000 });
+
+    // 1. Select multiple recordings using table checkboxes
+    const checkboxes = window.locator(".clips-table tbody tr input[type=\"checkbox\"]");
+    await expect(checkboxes.first()).toBeVisible();
+    await checkboxes.nth(0).check();
+    await checkboxes.nth(1).check();
+
+    // 2. Verify floating batch selection bar appears
+    const batchBar = window.locator("[data-testid=\"batch-selection-bar\"]");
+    await expect(batchBar).toBeVisible();
+    await expect(batchBar).toContainText("2 recordings selected");
+
+    // 3. Test Batch Mark Reviewed
+    const batchReviewBtn = window.locator("[data-testid=\"batch-reviewed-btn\"]");
+    await expect(batchReviewBtn).toBeVisible();
+    await batchReviewBtn.click();
+
+    // 4. Test Batch Transcribe
+    const batchTranscribeBtn = window.locator("[data-testid=\"batch-transcribe-btn\"]");
+    await expect(batchTranscribeBtn).toBeVisible();
+    await batchTranscribeBtn.click();
+
+    // 5. Test Unified Export Modal from Batch Bar
+    const batchExportBtn = window.locator("[data-testid=\"batch-export-btn\"]");
+    await expect(batchExportBtn).toBeVisible();
+    await batchExportBtn.click();
+
+    const exportModal = window.locator("[data-testid=\"unified-export-modal\"]");
+    await expect(exportModal).toBeVisible();
+
+    const scopeBadge = window.locator("[data-testid=\"export-scope-badge\"]");
+    await expect(scopeBadge).toContainText("2 recordings selected");
+
+    // Select WAV audio and SRT subtitles
+    const wavOption = window.locator("[data-testid=\"export-audio-wav\"]");
+    await wavOption.click();
+
+    const srtOption = window.locator("[data-testid=\"export-transcript-srt\"]");
+    await srtOption.click();
+
+    const confirmExportBtn = window.locator("[data-testid=\"confirm-unified-export-btn\"]");
+    await expect(confirmExportBtn).toBeEnabled();
+    await confirmExportBtn.click();
+
+    // Modal closes on export completion
+    await expect(exportModal).toHaveCount(0, { timeout: 8000 });
+
+    // 6. Enter Detail Workspace and test Excerpt Creation
+    const firstTitleLink = window.locator("[data-testid=\"clip-title-link\"]").first();
+    await firstTitleLink.click();
+
+    const workspace = window.locator("[data-testid=\"recording-workspace\"]");
+    await expect(workspace).toBeVisible();
+
+    const saveExcerptBtn = window.locator("[data-testid=\"detail-save-excerpt-btn\"]");
+    await expect(saveExcerptBtn).toBeVisible();
+    await saveExcerptBtn.click();
+
+    const excerptModal = window.locator("[data-testid=\"save-excerpt-modal\"]");
+    await expect(excerptModal).toBeVisible();
+
+    const excerptTitleInput = window.locator("[data-testid=\"excerpt-title-input\"]");
+    await excerptTitleInput.fill("Chorus Excerpt Hook");
+
+    const excerptStartInput = window.locator("[data-testid=\"excerpt-start-input\"]");
+    await excerptStartInput.fill("1");
+
+    const excerptEndInput = window.locator("[data-testid=\"excerpt-end-input\"]");
+    await excerptEndInput.fill("4");
+
+    const confirmSaveExcerptBtn = window.locator("[data-testid=\"confirm-save-excerpt-btn\"]");
+    await confirmSaveExcerptBtn.click();
+    await expect(excerptModal).toHaveCount(0);
+
+    // Verify created excerpt appears in sidebar excerpts list
+    const excerptsList = window.locator(".detail-excerpts-list");
+    await expect(excerptsList).toBeVisible();
+    await expect(excerptsList).toContainText("Chorus Excerpt Hook");
+
+    // 7. Test Export Modal from Detail Workspace
+    const detailExportBtn = window.locator("[data-testid=\"detail-export-btn\"]");
+    await expect(detailExportBtn).toBeVisible();
+    await detailExportBtn.click();
+
+    await expect(exportModal).toBeVisible();
+    await expect(scopeBadge).toContainText("1 recording selected");
+
+    const cancelExportBtn = window.locator("[data-testid=\"cancel-unified-export-btn\"]");
+    await cancelExportBtn.click();
+    await expect(exportModal).toHaveCount(0);
+
+    await app.close();
+  });
 });
 
 

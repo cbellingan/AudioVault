@@ -10,6 +10,7 @@ import {
   PipelineStatusEvent,
   ImportPlan,
   ExecuteImportOptions,
+  BatchExportOptions,
 } from '../shared/types';
 
 const audioVaultApi: AudioVaultAPI = {
@@ -116,6 +117,10 @@ const audioVaultApi: AudioVaultAPI = {
     ipcRenderer.invoke('vault:add-clip-to-collection', clipId, collectionName),
   removeClipFromCollection: (clipId: string, collectionName: string) =>
     ipcRenderer.invoke('vault:remove-clip-from-collection', clipId, collectionName),
+
+  // Unified Batch Export API (F11)
+  batchExport: (options: BatchExportOptions) =>
+    ipcRenderer.invoke('vault:batch-export', options),
 };
 
 contextBridge.exposeInMainWorld('audioVault', audioVaultApi);

@@ -226,6 +226,29 @@ export interface IngestResult {
   errors: string[];
 }
 
+export interface BatchExportOptions {
+  clipIds: string[];
+  destinationDir?: string;
+  audioFormat: 'wav' | 'mp3' | 'none';
+  transcriptFormat: 'txt' | 'srt' | 'none';
+}
+
+export interface BatchExportItemResult {
+  clipId: string;
+  title: string;
+  audioPath?: string;
+  transcriptPath?: string;
+  error?: string;
+}
+
+export interface BatchExportResult {
+  totalRequested: number;
+  succeeded: number;
+  failed: number;
+  items: BatchExportItemResult[];
+  destinationDir: string;
+}
+
 // ==========================================
 // 3. Non-Blocking Pipeline & Queue Types
 // ==========================================
@@ -331,6 +354,9 @@ export interface AudioVaultAPI {
   toggleReviewed?: (clipId: string) => Promise<boolean>;
   addClipToCollection?: (clipId: string, collectionName: string) => Promise<boolean>;
   removeClipFromCollection?: (clipId: string, collectionName: string) => Promise<boolean>;
+
+  // Unified Batch Export API (F11)
+  batchExport?: (options: BatchExportOptions) => Promise<BatchExportResult>;
 }
 
 declare global {

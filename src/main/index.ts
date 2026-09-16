@@ -22,6 +22,7 @@ import { PipelineOrchestrator } from './pipeline-orchestrator';
 import { TitleService } from './title-service';
 import { setupApplicationMenu } from './menu';
 import { createImportPlan } from './import-planner';
+import { executeBatchExport } from './export-service';
 import {
   IngestResult,
   PipelineStatusEvent,
@@ -36,6 +37,8 @@ import {
   SavedViewRecord,
   ImportPlan,
   ExecuteImportOptions,
+  BatchExportOptions,
+  BatchExportResult,
 } from '../shared/types';
 
 // Configure isolated test sandbox if running in automated test mode
@@ -565,6 +568,34 @@ function setupIpcHandlers() {
       };
     }
   );
+
+  ipcMain.handle('vault:batch-export', async (_, options: BatchExportOptions): Promise<BatchExportResult> => {
+    let destDir = options.destinationDir;
+    if (!destDir && process.env.AUDIOVAULT_TEST_MODE !== '1' && mainWindow) {
+      const openRes = await dialog.showOpenDialog(mainWindow, {
+        title: 'Select Destination Folder for Export',
+        properties: ['openDirectory', 'createDirectory'],
+      });
+      if (openRes.canceled || openRes.filePaths.length === 0) {
+        return {
+          totalRequested: options.clipIds.length,
+          succeeded: 0,
+          failed: 0,
+          items: [],
+          destinationDir: '',
+        };
+      }
+      destDir = openRes.filePaths[0];
+    }
+    if (!destDir) {
+      destDir = dedupEngine.getExportsDir();
+    }
+    return executeBatchExport(
+      { ...options, destinationDir: destDir },
+      dedupEngine,
+      getFfmpegPath()
+    );
+  });
 
   ipcMain.handle('vault:show-in-finder', async (_, filePath: string): Promise<boolean> => {
     if (filePath && fs.existsSync(filePath)) {
