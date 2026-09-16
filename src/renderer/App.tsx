@@ -883,6 +883,21 @@ export default function App() {
       : () => {};
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowUnifiedExportModal(false);
+        setShowExcerptModal(false);
+        setShowNewCollectionModal(false);
+        setShowAddToCollectionModal(false);
+        setShowSaveViewModal(false);
+        setShowEditTextModal(false);
+        setShowRefreshAiModal(false);
+        setImportPlan(null);
+        setShowRevertConfirmModal(false);
+        setReprocessPromptClip(null);
+        setClipToDelete(null);
+        setContextMenu(null);
+        setClipContextMenu(null);
+      }
       commandRegistry.handleKeyDown(e);
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -5747,6 +5762,9 @@ export default function App() {
         >
           <div
             className="modal-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Delete Clip & Audio File"
             style={{ maxWidth: '480px' }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -5855,6 +5873,9 @@ export default function App() {
         >
           <div
             className="modal-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Refresh AI & Transcripts"
             style={{ maxWidth: '520px' }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -5933,9 +5954,20 @@ export default function App() {
                   </div>
                 </button>
               </div>
+
+              {isBatchReprocessing && (
+                <div style={{ padding: '0.75rem', background: 'rgba(6, 182, 212, 0.1)', border: '1px solid rgba(6, 182, 212, 0.3)', borderRadius: '6px' }}>
+                  <div style={{ fontSize: '0.85rem', color: 'var(--accent-cyan)', fontWeight: 600 }}>
+                    ⏳ Re-analyzing Library takes in background...
+                  </div>
+                  <div style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
+                    Takes are processed sequentially. Check the status indicator for live progress.
+                  </div>
+                </div>
+              )}
             </div>
 
-            <div className="modal-footer">
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', padding: '0.85rem 1.25rem' }}>
               <button
                 type="button"
                 className="btn btn-secondary"
@@ -5953,6 +5985,10 @@ export default function App() {
         <div className="modal-backdrop" onClick={() => setShowNewCollectionModal(false)}>
           <div
             className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Create New Collection"
+            data-testid="new-collection-modal"
             style={{ maxWidth: '420px' }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -6019,7 +6055,15 @@ export default function App() {
       {/* Add To Collection Modal (F03) */}
       {showAddToCollectionModal && (
         <div className="modal-backdrop" onClick={() => setShowAddToCollectionModal(false)}>
-          <div className="modal-card" style={{ maxWidth: '420px' }} onClick={(e) => e.stopPropagation()}>
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Add to Collection"
+            data-testid="add-to-collection-modal"
+            style={{ maxWidth: '420px' }}
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="modal-header">
               <div className="modal-title">Add to Collection</div>
               <button type="button" className="modal-close-btn" onClick={() => setShowAddToCollectionModal(false)}>✕</button>
@@ -6072,7 +6116,15 @@ export default function App() {
       {/* Save View Modal (F04) */}
       {showSaveViewModal && (
         <div className="modal-backdrop" onClick={() => setShowSaveViewModal(false)}>
-          <div className="modal-card" style={{ maxWidth: '420px' }} onClick={(e) => e.stopPropagation()}>
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Save Custom View"
+            data-testid="save-view-modal"
+            style={{ maxWidth: '420px' }}
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="modal-header">
               <div className="modal-title">Save View</div>
               <button type="button" className="modal-close-btn" onClick={() => setShowSaveViewModal(false)}>✕</button>
@@ -6115,7 +6167,15 @@ export default function App() {
       {/* Edit Transcript Modal (F05) */}
       {showEditTextModal && (
         <div className="modal-backdrop" onClick={() => setShowEditTextModal(false)}>
-          <div className="modal-card" style={{ maxWidth: '640px' }} onClick={(e) => e.stopPropagation()} data-testid="edit-transcript-modal">
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Edit Transcript"
+            style={{ maxWidth: '640px' }}
+            onClick={(e) => e.stopPropagation()}
+            data-testid="edit-transcript-modal"
+          >
             <div className="modal-header">
               <div className="modal-title">Edit Transcript</div>
               <button type="button" className="modal-close-btn" onClick={() => setShowEditTextModal(false)}>✕</button>
@@ -6161,7 +6221,15 @@ export default function App() {
       {/* Revert Transcript Modal (F10) */}
       {showRevertConfirmModal && (
         <div className="modal-backdrop" onClick={() => setShowRevertConfirmModal(false)}>
-          <div className="modal-card" style={{ maxWidth: '440px' }} onClick={(e) => e.stopPropagation()} data-testid="revert-confirm-modal">
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Revert to Machine Transcript"
+            style={{ maxWidth: '440px' }}
+            onClick={(e) => e.stopPropagation()}
+            data-testid="revert-confirm-modal"
+          >
             <div className="modal-header">
               <div className="modal-title">Revert to Machine Transcript?</div>
               <button type="button" className="modal-close-btn" onClick={() => setShowRevertConfirmModal(false)}>✕</button>
@@ -6189,7 +6257,15 @@ export default function App() {
       {/* Retranscribe Prompt Modal (F10) */}
       {reprocessPromptClip && (
         <div className="modal-backdrop" onClick={() => setReprocessPromptClip(null)}>
-          <div className="modal-card" style={{ maxWidth: '460px' }} onClick={(e) => e.stopPropagation()} data-testid="retranscribe-confirm-modal">
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Confirm Re-transcription"
+            style={{ maxWidth: '460px' }}
+            onClick={(e) => e.stopPropagation()}
+            data-testid="retranscribe-confirm-modal"
+          >
             <div className="modal-header">
               <div className="modal-title">Re-transcribe Recording?</div>
               <button type="button" className="modal-close-btn" onClick={() => setReprocessPromptClip(null)}>✕</button>
@@ -6223,6 +6299,9 @@ export default function App() {
         <div className="modal-backdrop" onClick={() => setShowUnifiedExportModal(false)}>
           <div
             className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Export Recordings"
             style={{ maxWidth: '480px' }}
             onClick={(e) => e.stopPropagation()}
             data-testid="unified-export-modal"
@@ -6399,7 +6478,15 @@ export default function App() {
       {/* Save Excerpt Modal (F05) */}
       {showExcerptModal && (
         <div className="modal-backdrop" onClick={() => setShowExcerptModal(false)}>
-          <div className="modal-card" style={{ maxWidth: '460px' }} onClick={(e) => e.stopPropagation()} data-testid="save-excerpt-modal">
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Save Excerpt"
+            style={{ maxWidth: '460px' }}
+            onClick={(e) => e.stopPropagation()}
+            data-testid="save-excerpt-modal"
+          >
             <div className="modal-header">
               <div className="modal-title">Save Excerpt</div>
               <button type="button" className="modal-close-btn" onClick={() => setShowExcerptModal(false)}>✕</button>
@@ -6475,6 +6562,9 @@ export default function App() {
         >
           <div
             className="modal-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Import Planning & Review"
             style={{ maxWidth: '580px' }}
             onClick={(e) => e.stopPropagation()}
           >

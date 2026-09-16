@@ -1695,6 +1695,78 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
 
     await app.close();
   });
+
+  test("26. Accessibility, Modal Roles & Keyboard Esc Dismissal (Slice F14)", async () => {
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+
+    // 1. Test New Collection Modal: ARIA dialog attributes & Esc dismissal
+    const newColBtn = window.locator("button.nav-header-action", { hasText: "+ New" });
+    await expect(newColBtn).toBeVisible();
+    await newColBtn.click();
+
+    const newColModal = window.locator("[data-testid=\"new-collection-modal\"]");
+    await expect(newColModal).toBeVisible();
+    await expect(newColModal).toHaveAttribute("role", "dialog");
+    await expect(newColModal).toHaveAttribute("aria-modal", "true");
+    await expect(newColModal).toHaveAttribute("aria-label", "Create New Collection");
+
+    await window.keyboard.press("Escape");
+    await expect(newColModal).toHaveCount(0);
+
+    // 2. Test Refresh AI Modal: ARIA dialog attributes & Esc dismissal
+    const refreshAiBtn = window.locator("[data-testid=\"refresh-ai-library-btn\"]");
+    await expect(refreshAiBtn).toBeVisible();
+    await refreshAiBtn.click();
+
+    const refreshAiModal = window.locator("[data-testid=\"refresh-ai-modal\"]");
+    await expect(refreshAiModal).toBeVisible();
+    const refreshDialog = refreshAiModal.locator(".modal-dialog");
+    await expect(refreshDialog).toHaveAttribute("role", "dialog");
+    await expect(refreshDialog).toHaveAttribute("aria-modal", "true");
+
+    await window.keyboard.press("Escape");
+    await expect(refreshAiModal).toHaveCount(0);
+
+    // 3. Test Unified Export Modal: ARIA dialog attributes & Esc dismissal
+    await window.waitForSelector(".clips-table tbody tr", { timeout: 8000 });
+    const checkboxes = window.locator(".clips-table tbody tr input[type=\"checkbox\"]");
+    await expect(checkboxes.first()).toBeVisible();
+    await checkboxes.first().check();
+
+    const batchExportBtn = window.locator("[data-testid=\"batch-export-btn\"]");
+    await expect(batchExportBtn).toBeVisible();
+    await batchExportBtn.click();
+
+    const exportModal = window.locator("[data-testid=\"unified-export-modal\"]");
+    await expect(exportModal).toBeVisible();
+    await expect(exportModal).toHaveAttribute("role", "dialog");
+    await expect(exportModal).toHaveAttribute("aria-modal", "true");
+    await expect(exportModal).toHaveAttribute("aria-label", "Export Recordings");
+
+    await window.keyboard.press("Escape");
+    await expect(exportModal).toHaveCount(0);
+
+    // 4. Test Delete Confirmation Modal: ARIA dialog attributes & Esc dismissal
+    const firstRow = window.locator(".clips-table tbody tr").first();
+    await firstRow.click({ button: "right" });
+
+    const deleteMenuItem = window.locator("[data-testid=\"delete-clip-menu-item\"]");
+    await expect(deleteMenuItem).toBeVisible();
+    await deleteMenuItem.click();
+
+    const deleteModal = window.locator("[data-testid=\"delete-confirmation-modal\"]");
+    await expect(deleteModal).toBeVisible();
+    const deleteDialog = deleteModal.locator(".modal-dialog");
+    await expect(deleteDialog).toHaveAttribute("role", "dialog");
+    await expect(deleteDialog).toHaveAttribute("aria-modal", "true");
+
+    await window.keyboard.press("Escape");
+    await expect(deleteModal).toHaveCount(0);
+
+    await app.close();
+  });
 });
 
 
