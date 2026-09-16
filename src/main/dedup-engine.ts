@@ -362,6 +362,18 @@ export class DedupEngine {
               registryNeedsSave = true;
             } catch {}
           }
+
+          // Backfill and synchronize .edited.txt sidecar for user transcript edits (Slice F10)
+          const editedTxtPath = rawFile.storagePath.slice(0, -ext.length) + '.edited.txt';
+          if (fs.existsSync(editedTxtPath) && !clip.editedTranscript) {
+            try {
+              clip.editedTranscript = fs.readFileSync(editedTxtPath, 'utf-8');
+            } catch {}
+          } else if (clip.editedTranscript && !fs.existsSync(editedTxtPath)) {
+            try {
+              fs.writeFileSync(editedTxtPath, clip.editedTranscript, 'utf-8');
+            } catch {}
+          }
         }
       }
 
@@ -812,7 +824,53 @@ export class DedupEngine {
   public updateVirtualClip(id: string, updates: Partial<VirtualClip>): VirtualClip | undefined {
     const clip = this.virtualClips.get(id);
     if (!clip) return undefined;
-    const updated = { ...clip, ...updates, updatedAt: new Date().toISOString() };
+
+    let transcriptVersions = updates.transcriptVersions || clip.transcriptVersions || [];
+    if (updates.editedTranscript !== undefined && updates.editedTranscript !== clip.editedTranscript) {
+      const versions = [...transcriptVersions];
+      if (versions.length === 0 && (clip.fullTranscription || clip.transcription)) {
+        versions.push({
+          id: `v_machine_init`,
+          text: clip.fullTranscription || clip.transcription || '',
+          source: 'machine',
+          createdAt: clip.createdAt || new Date().toISOString(),
+        });
+      }
+      if (updates.editedTranscript && updates.editedTranscript.trim()) {
+        versions.push({
+          id: `v_${Date.now()}_user`,
+          text: updates.editedTranscript.trim(),
+          source: 'user_edit',
+          createdAt: new Date().toISOString(),
+        });
+      }
+      transcriptVersions = versions;
+
+      // Synchronize .edited.txt sidecar file
+      const rawFile = this.rawFiles.get(clip.parentFileId);
+      if (rawFile && rawFile.storagePath) {
+        const ext = path.extname(rawFile.storagePath);
+        const editedPath = rawFile.storagePath.slice(0, -ext.length) + '.edited.txt';
+        try {
+          if (updates.editedTranscript && updates.editedTranscript.trim()) {
+            fs.writeFileSync(editedPath, updates.editedTranscript.trim(), 'utf-8');
+            console.log(`[AudioVault Dedup] 📝 Saved edited transcript sidecar: ${editedPath}`);
+          } else if (fs.existsSync(editedPath)) {
+            fs.unlinkSync(editedPath);
+            console.log(`[AudioVault Dedup] 🗑️ Removed edited transcript sidecar: ${editedPath}`);
+          }
+        } catch (err) {
+          console.warn('[AudioVault Dedup] Failed updating .edited.txt sidecar:', err);
+        }
+      }
+    }
+
+    const updated = {
+      ...clip,
+      ...updates,
+      transcriptVersions,
+      updatedAt: new Date().toISOString(),
+    };
     this.virtualClips.set(id, updated);
     this.saveRegistry();
     return updated;
@@ -879,6 +937,11 @@ export class DedupEngine {
               fs.unlinkSync(transcriptPath);
               console.log(`[AudioVault Dedup] 🗑️ Deleted transcript file from disk: ${transcriptPath}`);
             }
+            const editedTranscriptPath = rawFile.storagePath.slice(0, -ext.length) + '.edited.txt';
+            if (fs.existsSync(editedTranscriptPath)) {
+              fs.unlinkSync(editedTranscriptPath);
+              console.log(`[AudioVault Dedup] 🗑️ Deleted edited transcript file from disk: ${editedTranscriptPath}`);
+            }
           } catch (err) {
             console.warn(`[AudioVault Dedup] Failed to delete raw audio file: ${rawFile.storagePath}`, err);
           }
@@ -892,3 +955,4 @@ export class DedupEngine {
     return existed;
   }
 }
+

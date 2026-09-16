@@ -49,8 +49,16 @@ export function parseTimestamp(label: string): number {
  * 2. embedded timestamps in editedTranscript / fullTranscription e.g. [01:24] text
  * 3. paragraphs split across clip duration
  */
-export function extractTranscriptPassages(clip: VirtualClip): TranscriptPassage[] {
+export function extractTranscriptPassages(
+  clip: VirtualClip,
+  preferSource: 'active' | 'machine' = 'active'
+): TranscriptPassage[] {
   const duration = Math.max(1, clip.endTimeSeconds - clip.startTimeSeconds);
+
+  // If active source is preferred and clip has user edits, parse the edited transcript text
+  if (preferSource === 'active' && clip.editedTranscript && clip.editedTranscript.trim()) {
+    return parseTextPassages(clip.editedTranscript.trim(), duration);
+  }
 
   // 1. If transcriptionChunks are available with valid timestamps, group or format them into passages
   if (clip.transcriptionChunks && clip.transcriptionChunks.length > 0) {
@@ -104,11 +112,20 @@ export function extractTranscriptPassages(clip: VirtualClip): TranscriptPassage[
     }
   }
 
-  // 2. Fall back to editedTranscript, fullTranscription, or transcription text
-  const rawText = (clip.editedTranscript || clip.fullTranscription || clip.transcription || "").trim();
+  // 2. Fall back to machine text (fullTranscription or transcription)
+  const rawText = (preferSource === 'machine'
+    ? (clip.fullTranscription || clip.transcription || '')
+    : (clip.editedTranscript || clip.fullTranscription || clip.transcription || '')
+  ).trim();
+
   if (!rawText) {
     return [];
   }
+
+  return parseTextPassages(rawText, duration);
+}
+
+function parseTextPassages(rawText: string, duration: number): TranscriptPassage[] {
 
   // Check if text has embedded timestamps like [01:24] or 01:24
   const timestampRegex = /(?:^|\n)\[?(\d{1,2}:\d{2}(?::\d{2})?)\]?\s*/g;

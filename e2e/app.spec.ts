@@ -1299,7 +1299,102 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
 
     await app.close();
   });
+
+  test("22. Transcript Versions, Corrections & AI Ownership: editing transcript updates passages, supports switching between User Edited and Original Machine versions, reverts safely with confirmation, and allows editing protected user title (Slice F10)", async () => {
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+    await window.waitForSelector(".clips-table tbody tr", { timeout: 8000 });
+
+    // 1. Find and click title link of a recording that has a transcript
+    const targetRow = window.locator(".clips-table tbody tr", { hasText: "STE-003 - Product Standup" }).first();
+    await expect(targetRow).toBeVisible();
+    const titleLink = targetRow.locator("[data-testid=\"clip-title-link\"]");
+    await titleLink.click();
+
+    // 2. Detail workspace is visible
+    const workspace = window.locator("[data-testid=\"recording-workspace\"]");
+    await expect(workspace).toBeVisible();
+
+    // 3. Test Title Editing
+    const editTitleBtn = window.locator("[data-testid=\"edit-title-btn\"]");
+    await expect(editTitleBtn).toBeVisible();
+    await editTitleBtn.click();
+
+    const editTitleInput = window.locator("[data-testid=\"edit-title-input\"]");
+    await expect(editTitleInput).toBeVisible();
+    await editTitleInput.fill("Product Standup (Sprint Retrospective)");
+
+    const saveTitleBtn = window.locator("[data-testid=\"save-title-btn\"]");
+    await saveTitleBtn.click();
+
+    const detailTitle = window.locator("[data-testid=\"detail-title\"]");
+    await expect(detailTitle).toHaveText("Product Standup (Sprint Retrospective)");
+
+    // 4. Test Transcript Editing
+    const editTranscriptBtn = window.locator("[data-testid=\"detail-edit-transcript-btn\"]");
+    await expect(editTranscriptBtn).toBeVisible();
+    await editTranscriptBtn.click();
+
+    const editModal = window.locator("[data-testid=\"edit-transcript-modal\"]");
+    await expect(editModal).toBeVisible();
+
+    const textarea = window.locator("[data-testid=\"edit-transcript-textarea\"]");
+    await expect(textarea).toBeVisible();
+    await textarea.fill("[00:00] City is breaking down on a camel's back.\n[00:08] They just have to go cause they don't know wack.");
+
+    const confirmSaveBtn = window.locator("[data-testid=\"confirm-save-transcript-btn\"]");
+    await confirmSaveBtn.click();
+    await expect(editModal).toHaveCount(0);
+
+    // 5. Verify User Edited badge and passages update immediately
+    const editedBadge = window.locator("[data-testid=\"transcript-edited-badge\"]");
+    await expect(editedBadge).toBeVisible();
+    await expect(editedBadge).toContainText("User Edited");
+
+    const scrollPanel = window.locator("[data-testid=\"detail-transcript-scroll\"]");
+    await expect(scrollPanel).toBeVisible();
+    await expect(scrollPanel).toContainText("City is breaking down on a camel's back");
+    await expect(scrollPanel).toContainText("They just have to go cause they don't know wack");
+
+    // 6. Test version switcher: switch to Original Machine version
+    const versionSwitcher = window.locator("[data-testid=\"transcript-version-switcher\"]");
+    await expect(versionSwitcher).toBeVisible();
+
+    const machineVersionBtn = window.locator("[data-testid=\"version-machine-btn\"]");
+    await machineVersionBtn.click();
+
+    // In machine version view, passages show machine transcript
+    const editedVersionBtn = window.locator("[data-testid=\"version-edited-btn\"]");
+    await editedVersionBtn.click();
+    await expect(scrollPanel).toContainText("City is breaking down");
+
+    // 7. Test Revert to machine transcript with confirmation
+    const revertBtn = window.locator("[data-testid=\"revert-to-machine-btn\"]");
+    await expect(revertBtn).toBeVisible();
+    await revertBtn.click();
+
+    const revertModal = window.locator("[data-testid=\"revert-confirm-modal\"]");
+    await expect(revertModal).toBeVisible();
+
+    const confirmRevertBtn = window.locator("[data-testid=\"confirm-revert-btn\"]");
+    await confirmRevertBtn.click();
+    await expect(revertModal).toHaveCount(0);
+
+    // Edited badge should disappear after reverting
+    await expect(editedBadge).toHaveCount(0);
+
+    // 8. Return to Library and verify updated title is preserved
+    const backBtn = window.locator("[data-testid=\"detail-back-btn\"]");
+    await backBtn.click();
+
+    const updatedRow = window.locator(".clips-table tbody tr", { hasText: "Product Standup (Sprint Retrospective)" });
+    await expect(updatedRow).toBeVisible();
+
+    await app.close();
+  });
 });
+
 
 
 

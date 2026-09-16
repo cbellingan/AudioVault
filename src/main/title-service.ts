@@ -78,7 +78,42 @@ export class TitleService {
           .trim();
 
         // Ensure 2 to 5 words max
-        const words: string[] = cleaned.split(/\s+/).filter(Boolean).slice(0, 5);
+        let words: string[] = cleaned.split(/\s+/).filter(Boolean).slice(0, 5);
+
+        // De-duplicate phrase repetitions e.g. ["Take", "1", "Take", "1"] -> ["Take", "1"]
+        if (words.length >= 2 && words.length % 2 === 0) {
+          const half = words.length / 2;
+          const firstHalf = words.slice(0, half).join(' ').toLowerCase();
+          const secondHalf = words.slice(half).join(' ').toLowerCase();
+          if (firstHalf === secondHalf) {
+            words = words.slice(0, half);
+          }
+        }
+
+        // De-duplicate repeated non-stopword words e.g. ["Guitar", "Chords", "And", "Chords"] -> ["Guitar", "Chords"]
+        const seenWords = new Set<string>();
+        const conjunctions = new Set(['and', 'the', 'in', 'of', 'to', 'a', 'or']);
+        const deduped: string[] = [];
+        for (const w of words) {
+          const lower = w.toLowerCase();
+          if (conjunctions.has(lower)) {
+            if (deduped.length > 0 && !conjunctions.has(deduped[deduped.length - 1].toLowerCase())) {
+              deduped.push(w);
+            }
+          } else if (!seenWords.has(lower)) {
+            deduped.push(w);
+            seenWords.add(lower);
+          }
+        }
+        // Remove trailing or leading conjunctions e.g. ["Guitar", "Chords", "And"] -> ["Guitar", "Chords"]
+        while (deduped.length > 0 && conjunctions.has(deduped[deduped.length - 1].toLowerCase())) {
+          deduped.pop();
+        }
+        while (deduped.length > 0 && conjunctions.has(deduped[0].toLowerCase())) {
+          deduped.shift();
+        }
+        words = deduped;
+
         if (words.length > 0) {
           // Title Case formatting
           return words
@@ -91,12 +126,14 @@ export class TitleService {
     }
 
     // Heuristic fallback: extract salient content words
-    return this.heuristicTitleFallback(cleanText);
+    const fallback = this.heuristicTitleFallback(cleanText);
+    return fallback;
   }
 
   /**
-   * Formats a composite title combining the hardware filename with the generated title:
+   * Formats an idempotent composite title combining the hardware filename with the generated title:
    * e.g., "260831-185613 - Pushing Feel"
+   * Avoids repeating suffixes if already composite or re-analyzed.
    */
   public async generateCompositeTitle(
     currentTitleOrFilename: string,
@@ -107,6 +144,20 @@ export class TitleService {
 
     if (!shortTitle) {
       return baseName;
+    }
+
+    // Idempotent: If baseName is already identical to shortTitle, or shortTitle starts with baseName
+    if (
+      baseName.toLowerCase() === shortTitle.toLowerCase() ||
+      shortTitle.toLowerCase().startsWith(baseName.toLowerCase())
+    ) {
+      return shortTitle;
+    }
+
+    // Idempotent: If currentTitle already ends with this short title, return currentTitle
+    const cleanCurrent = path.basename(currentTitleOrFilename).replace(/\.[^/.]+$/, '');
+    if (cleanCurrent.toLowerCase().endsWith(shortTitle.toLowerCase())) {
+      return cleanCurrent;
     }
 
     return `${baseName} - ${shortTitle}`;
@@ -144,7 +195,26 @@ export class TitleService {
 
     if (words.length === 0) return '';
 
-    const selected = words.slice(0, 3);
+    // De-duplicate adjacent words
+    const uniqueWords: string[] = [];
+    for (const w of words) {
+      if (uniqueWords.length === 0 || uniqueWords[uniqueWords.length - 1] !== w) {
+        uniqueWords.push(w);
+      }
+    }
+
+    // De-duplicate repeated phrase halves e.g. ["guitar", "chords", "guitar", "chords"] -> ["guitar", "chords"]
+    let candidate = uniqueWords;
+    if (candidate.length >= 2 && candidate.length % 2 === 0) {
+      const half = candidate.length / 2;
+      const firstHalf = candidate.slice(0, half).join(' ');
+      const secondHalf = candidate.slice(half).join(' ');
+      if (firstHalf === secondHalf) {
+        candidate = candidate.slice(0, half);
+      }
+    }
+
+    const selected = candidate.slice(0, 3);
     return selected
       .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
       .join(' ');

@@ -607,15 +607,35 @@ export class PipelineOrchestrator extends EventEmitter {
       currentJob.analysisPercent = 95;
       this.throttleBroadcastStatus();
 
-      // 5. Composite title if speech transcribed and not custom title
-      let finalTitle = (currentJob as any).customTitle ? defaultClip.title : initialTitle;
-      const speechToSummarize = transcript || classification.transcriptionSnippet;
-      if (speechToSummarize && speechToSummarize.length > 5 && !(currentJob as any).customTitle) {
-        try {
-          finalTitle = await this.titleService.generateCompositeTitle(initialTitle, speechToSummarize);
-        } catch (titleErr) {
-          console.warn('[AudioVault Pipeline] Title generation fallback:', titleErr);
+      // 5. Composite title if speech transcribed and not custom / user-owned title
+      let finalTitle = defaultClip.title;
+      if (defaultClip.userTitle) {
+        finalTitle = defaultClip.userTitle;
+      } else if ((currentJob as any).customTitle) {
+        finalTitle = (currentJob as any).customTitle;
+      } else {
+        const speechToSummarize = transcript || classification.transcriptionSnippet;
+        if (speechToSummarize && speechToSummarize.length > 5) {
+          try {
+            finalTitle = await this.titleService.generateCompositeTitle(initialTitle, speechToSummarize);
+          } catch (titleErr) {
+            console.warn('[AudioVault Pipeline] Title generation fallback:', titleErr);
+          }
+        } else {
+          finalTitle = initialTitle;
         }
+      }
+
+      // Record transcript version history (Slice F10)
+      const existingVersions = defaultClip.transcriptVersions || [];
+      const newVersions = [...existingVersions];
+      if (transcript) {
+        newVersions.push({
+          id: `v_${Date.now()}_machine`,
+          text: transcript,
+          source: 'machine',
+          createdAt: new Date().toISOString(),
+        });
       }
 
       // 6. Update clip in registry with transcript, chunks, tags, category, and composite title
@@ -627,9 +647,11 @@ export class PipelineOrchestrator extends EventEmitter {
         classificationConfidence: classification.confidence,
         classificationSource: 'yamnet_local',
         transcription: classification.transcriptionSnippet,
-        fullTranscription: transcript || undefined,
-        transcriptPath: (transcript && fs.existsSync(transcriptPath)) ? transcriptPath : undefined,
+        fullTranscription: transcript || defaultClip.fullTranscription,
+        transcriptPath: (transcript && fs.existsSync(transcriptPath)) ? transcriptPath : defaultClip.transcriptPath,
         transcriptionChunks: transcriptChunks,
+        transcriptVersions: newVersions,
+        transcriptState: transcript ? 'ready' : (classification.category === 'music' || classification.category === 'ambient' ? 'no_speech' : 'ready'),
         updatedAt: new Date().toISOString(),
       });
       if (updated) {

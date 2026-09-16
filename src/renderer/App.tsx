@@ -199,6 +199,13 @@ export default function App() {
   const [excerptEnd, setExcerptEnd] = useState<number>(0);
   const [transcriptCopiedNotice, setTranscriptCopiedNotice] = useState<boolean>(false);
   const activePassageRef = useRef<HTMLDivElement | null>(null);
+
+  // F10: Transcript Versions, Corrections & AI Ownership
+  const [transcriptVersionView, setTranscriptVersionView] = useState<'edited' | 'machine'>('edited');
+  const [isEditingTitle, setIsEditingTitle] = useState<boolean>(false);
+  const [titleEditText, setTitleEditText] = useState<string>('');
+  const [showRevertConfirmModal, setShowRevertConfirmModal] = useState<boolean>(false);
+  const [reprocessPromptClip, setReprocessPromptClip] = useState<VirtualClip | null>(null);
   
   // Table Sorting state: starts desc on creation / import time
   type SortField = 'title' | 'category' | 'duration' | 'tags' | 'confidence' | 'createdAt';
@@ -289,8 +296,8 @@ export default function App() {
 
   const passages = useMemo<TranscriptPassage[]>(() => {
     if (!activeClip) return [];
-    return extractTranscriptPassages(activeClip);
-  }, [activeClip]);
+    return extractTranscriptPassages(activeClip, transcriptVersionView === 'machine' ? 'machine' : 'active');
+  }, [activeClip, transcriptVersionView]);
 
   const activePassage = useMemo(() => {
     if (!passages.length) return null;
@@ -1468,8 +1475,40 @@ export default function App() {
         c.id === activeClip.id ? { ...c, editedTranscript: newText, updatedAt: new Date().toISOString() } : c
       )
     );
+    setTranscriptVersionView('edited');
     setShowEditTextModal(false);
     setToastMessage('✓ Transcript updated');
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const handleSaveTitle = async () => {
+    if (!activeClip || !titleEditText.trim()) {
+      setIsEditingTitle(false);
+      return;
+    }
+    const newTitle = titleEditText.trim();
+    if (window.audioVault) {
+      await window.audioVault.updateVirtualClip(activeClip.id, { title: newTitle, userTitle: newTitle });
+    }
+    setClips((prev) =>
+      prev.map((c) => (c.id === activeClip.id ? { ...c, title: newTitle, userTitle: newTitle, updatedAt: new Date().toISOString() } : c))
+    );
+    setIsEditingTitle(false);
+    setToastMessage('✓ Title updated');
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const handleRevertToMachine = async () => {
+    if (!activeClip) return;
+    if (window.audioVault) {
+      await window.audioVault.updateVirtualClip(activeClip.id, { editedTranscript: '' });
+    }
+    setClips((prev) =>
+      prev.map((c) => (c.id === activeClip.id ? { ...c, editedTranscript: undefined, updatedAt: new Date().toISOString() } : c))
+    );
+    setShowRevertConfirmModal(false);
+    setTranscriptVersionView('machine');
+    setToastMessage('✓ Reverted to machine transcript');
     setTimeout(() => setToastMessage(null), 3000);
   };
 
@@ -2036,6 +2075,14 @@ export default function App() {
   // On-demand single clip re-processing (audio analysis, YAMNet classification, full Whisper transcription)
   async function handleReprocessClip(clip: VirtualClip) {
     setClipContextMenu(null);
+    if (clip.editedTranscript) {
+      setReprocessPromptClip(clip);
+      return;
+    }
+    await executeReprocessClip(clip);
+  }
+
+  async function executeReprocessClip(clip: VirtualClip) {
     setToastMessage(`🔄 Re-processing "${clip.title}" (Whisper + Audio)...`);
     try {
       const updated = await window.audioVault.reprocessClip(clip.id);
@@ -3434,13 +3481,71 @@ export default function App() {
             {/* Header Row: Title, Metadata, Actions */}
             <div className="detail-header-row">
               <div className="detail-title-group">
-                <div className="detail-title-row">
+                <div className="detail-title-row" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
                   <span className={`category-pill cat-${activeClip.category}`}>
                     {activeClip.category}
                   </span>
-                  <h1 className="detail-title" data-testid="detail-title">
-                    {activeClip.title}
-                  </h1>
+                  {isEditingTitle ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flex: 1 }}>
+                      <input
+                        type="text"
+                        className="form-control"
+                        data-testid="edit-title-input"
+                        value={titleEditText}
+                        onChange={(e) => setTitleEditText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSaveTitle();
+                          if (e.key === 'Escape') setIsEditingTitle(false);
+                        }}
+                        autoFocus
+                        style={{
+                          fontSize: '1.2rem',
+                          fontWeight: 700,
+                          padding: '0.2rem 0.5rem',
+                          background: 'rgba(0, 0, 0, 0.5)',
+                          color: '#fff',
+                          border: '1px solid var(--accent-cyan)',
+                          borderRadius: 'var(--radius-sm)',
+                          width: '100%',
+                          maxWidth: '500px',
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        data-testid="save-title-btn"
+                        onClick={handleSaveTitle}
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => setIsEditingTitle(false)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <h1 className="detail-title" data-testid="detail-title" style={{ margin: 0 }}>
+                        {activeClip.title}
+                      </h1>
+                      <button
+                        type="button"
+                        className="btn btn-icon btn-sm"
+                        data-testid="edit-title-btn"
+                        title="Edit title"
+                        onClick={() => {
+                          setTitleEditText(activeClip.title);
+                          setIsEditingTitle(true);
+                        }}
+                        style={{ opacity: 0.7, cursor: 'pointer', background: 'transparent', border: 'none', color: 'var(--text-muted)' }}
+                      >
+                        ✏️
+                      </button>
+                    </div>
+                  )}
                 </div>
                 <div className="detail-sub-bar">
                   <span>📅 {activeClip.recordedAt || activeClip.createdAt.slice(0, 10)}</span>
@@ -3491,10 +3596,55 @@ export default function App() {
               {/* Left Column: Transcript Card */}
               <div className="detail-transcript-card" data-testid="detail-transcript-card">
                 <div className="detail-transcript-header">
-                  <div className="transcript-header-left">
+                  <div className="transcript-header-left" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
                     <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.05rem', margin: 0, fontWeight: 700 }}>
                       Transcript
                     </h2>
+                    {activeClip.editedTranscript && (
+                      <span className="badge badge-cyan" data-testid="transcript-edited-badge">
+                        ✏️ User Edited
+                      </span>
+                    )}
+                    {activeClip.editedTranscript && (
+                      <div className="segmented-control" data-testid="transcript-version-switcher" style={{ display: 'inline-flex', background: 'rgba(255,255,255,0.06)', borderRadius: '4px', padding: '2px' }}>
+                        <button
+                          type="button"
+                          className={`segmented-btn ${transcriptVersionView === 'edited' ? 'active' : ''}`}
+                          data-testid="version-edited-btn"
+                          onClick={() => setTranscriptVersionView('edited')}
+                          style={{
+                            padding: '2px 8px',
+                            fontSize: '0.72rem',
+                            fontWeight: transcriptVersionView === 'edited' ? 600 : 400,
+                            background: transcriptVersionView === 'edited' ? 'var(--accent-cyan)' : 'transparent',
+                            color: transcriptVersionView === 'edited' ? '#000' : 'var(--text-secondary)',
+                            border: 'none',
+                            borderRadius: '3px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Edited
+                        </button>
+                        <button
+                          type="button"
+                          className={`segmented-btn ${transcriptVersionView === 'machine' ? 'active' : ''}`}
+                          data-testid="version-machine-btn"
+                          onClick={() => setTranscriptVersionView('machine')}
+                          style={{
+                            padding: '2px 8px',
+                            fontSize: '0.72rem',
+                            fontWeight: transcriptVersionView === 'machine' ? 600 : 400,
+                            background: transcriptVersionView === 'machine' ? 'var(--accent-cyan)' : 'transparent',
+                            color: transcriptVersionView === 'machine' ? '#000' : 'var(--text-secondary)',
+                            border: 'none',
+                            borderRadius: '3px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Original Machine
+                        </button>
+                      </div>
+                    )}
                     {passages.length > 0 && (
                       <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
                         ({passages.length} passage{passages.length === 1 ? '' : 's'})
@@ -3547,6 +3697,17 @@ export default function App() {
                         >
                           ✏️ Edit text
                         </button>
+                        {activeClip.editedTranscript && (
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            data-testid="revert-to-machine-btn"
+                            onClick={() => setShowRevertConfirmModal(true)}
+                            title="Revert user edits and restore original machine transcription"
+                          >
+                            ↺ Revert to machine
+                          </button>
+                        )}
                       </>
                     )}
                   </div>
@@ -5598,6 +5759,66 @@ export default function App() {
                 onClick={handleSaveEditedTranscript}
               >
                 Save Edits
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Revert Transcript Modal (F10) */}
+      {showRevertConfirmModal && (
+        <div className="modal-backdrop" onClick={() => setShowRevertConfirmModal(false)}>
+          <div className="modal-card" style={{ maxWidth: '440px' }} onClick={(e) => e.stopPropagation()} data-testid="revert-confirm-modal">
+            <div className="modal-header">
+              <div className="modal-title">Revert to Machine Transcript?</div>
+              <button type="button" className="modal-close-btn" onClick={() => setShowRevertConfirmModal(false)}>✕</button>
+            </div>
+            <div className="modal-body" style={{ padding: '1.25rem' }}>
+              <p style={{ fontSize: '0.88rem', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.5 }}>
+                Your custom edits will be removed, and the recording will restore the original Whisper machine transcription.
+              </p>
+            </div>
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', padding: '0.85rem 1.25rem' }}>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowRevertConfirmModal(false)}>Cancel</button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                data-testid="confirm-revert-btn"
+                onClick={handleRevertToMachine}
+              >
+                Confirm Revert
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Retranscribe Prompt Modal (F10) */}
+      {reprocessPromptClip && (
+        <div className="modal-backdrop" onClick={() => setReprocessPromptClip(null)}>
+          <div className="modal-card" style={{ maxWidth: '460px' }} onClick={(e) => e.stopPropagation()} data-testid="retranscribe-confirm-modal">
+            <div className="modal-header">
+              <div className="modal-title">Re-transcribe Recording?</div>
+              <button type="button" className="modal-close-btn" onClick={() => setReprocessPromptClip(null)}>✕</button>
+            </div>
+            <div className="modal-body" style={{ padding: '1.25rem' }}>
+              <p style={{ fontSize: '0.88rem', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.5 }}>
+                This recording contains user edits. Re-transcribing will run Whisper to create a new machine transcript version, while keeping your edited transcript safe as the active version.
+              </p>
+            </div>
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', padding: '0.85rem 1.25rem' }}>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setReprocessPromptClip(null)}>Cancel</button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                data-testid="confirm-retranscribe-btn"
+                onClick={() => {
+                  const clipToRun = reprocessPromptClip;
+                  setReprocessPromptClip(null);
+                  executeReprocessClip(clipToRun);
+                }}
+              >
+                Proceed with Re-transcription
               </button>
             </div>
           </div>
