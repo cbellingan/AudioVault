@@ -429,5 +429,22 @@ describe('Pipeline Orchestrator (Serial SD Reader & Parallel Worker Pool)', () =
       } catch {}
     }
   });
+
+  it('correctly tracks isVolumeInProgress and isFileInProgress', () => {
+    const testVol = path.join(tempSdCardDir, 'TEST_VOL');
+    const testFile = path.join(testVol, 'TEST_TAKE.WAV');
+
+    expect(orchestrator.isVolumeInProgress(testVol)).toBe(false);
+    expect(orchestrator.isFileInProgress(testFile)).toBe(false);
+
+    // Enqueue
+    fs.mkdirSync(testVol, { recursive: true });
+    fs.writeFileSync(testFile, generateSyntheticWavBuffer({ durationSeconds: 0.2 }));
+
+    orchestrator.enqueueBatch([testFile], testVol);
+    // Now volume and file should be in progress
+    expect(orchestrator.isVolumeInProgress(testVol)).toBe(true);
+    expect(orchestrator.isFileInProgress(testFile)).toBe(true);
+  });
 });
 

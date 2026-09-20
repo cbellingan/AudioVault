@@ -354,19 +354,27 @@ export class PipelineOrchestrator extends EventEmitter {
   }
 
   public isFileInProgress(filePath: string): boolean {
-    if (this.activeCopyJob && this.activeCopyJob.sourcePath === filePath) return true;
-    if (this.copyQueue.some((j) => j.sourcePath === filePath)) return true;
-    if (this.analysisQueue.some((j) => j.sourcePath === filePath)) return true;
-    if (Array.from(this.activeAnalysisJobs.values()).some((j) => j.sourcePath === filePath)) return true;
+    const norm = path.resolve(filePath).toLowerCase();
+    const matchesFile = (p?: string) => Boolean(p && path.resolve(p).toLowerCase() === norm);
+    if (matchesFile(this.activeCopyJob?.sourcePath)) return true;
+    if (this.copyQueue.some((j) => matchesFile(j.sourcePath))) return true;
+    if (this.analysisQueue.some((j) => matchesFile(j.sourcePath) || matchesFile((j as any).targetPath))) return true;
+    if (Array.from(this.activeAnalysisJobs.values()).some((j) => matchesFile(j.sourcePath) || matchesFile((j as any).targetPath))) return true;
     return false;
   }
 
   public isVolumeInProgress(volumePath: string): boolean {
-    if (this.pendingUnmountVolumePath && this.pendingUnmountVolumePath === volumePath && !this.sdCardCopyFinished) {
-      return true;
+    const normVol = path.resolve(volumePath).toLowerCase();
+    if (this.pendingUnmountVolumePath && path.resolve(this.pendingUnmountVolumePath).toLowerCase() === normVol) {
+      if (!this.sdCardCopyFinished) {
+        return true;
+      }
     }
-    if (this.activeCopyJob && this.activeCopyJob.sourcePath.startsWith(volumePath)) return true;
-    if (this.copyQueue.some((j) => j.sourcePath.startsWith(volumePath))) return true;
+    const matchesVol = (p?: string) => Boolean(p && path.resolve(p).toLowerCase().startsWith(normVol));
+    if (matchesVol(this.activeCopyJob?.sourcePath)) return true;
+    if (this.copyQueue.some((j) => matchesVol(j.sourcePath))) return true;
+    if (this.analysisQueue.some((j) => matchesVol(j.sourcePath))) return true;
+    if (Array.from(this.activeAnalysisJobs.values()).some((j) => matchesVol(j.sourcePath))) return true;
     return false;
   }
 

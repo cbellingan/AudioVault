@@ -529,10 +529,18 @@ export default function App() {
           (!status.activeAnalysisJobs || status.activeAnalysisJobs.length === 0)
         ) {
           activeIngestingVolumePathRef.current = null;
-          // Refresh clips once pipeline becomes idle
+          // Refresh clips and rawFiles once pipeline becomes idle
           window.audioVault.getVirtualClips().then((all) => {
             if (all && all.length > 0) setClips(all);
           });
+          if (window.audioVault.getRawFiles) {
+            window.audioVault.getRawFiles().then((raws) => {
+              if (raws && raws.length > 0) setRawFiles(raws);
+            });
+          }
+        }
+        if (status?.canUnmountSdCard) {
+          setDetectedVolume(null);
         }
       });
 
@@ -547,6 +555,11 @@ export default function App() {
               }
               return [newClip, ...prev];
             });
+            if (window.audioVault?.getRawFiles) {
+              window.audioVault.getRawFiles().then((raws) => {
+                if (raws && raws.length > 0) setRawFiles(raws);
+              });
+            }
           })
         : () => {};
 
@@ -666,14 +679,19 @@ export default function App() {
         setImportPlan(null);
         return;
       }
+      const ingestingVol = detectedVolume?.volumePath || (window as any).__testUnmountVolumePath;
       if (window.audioVault?.executeImportPlan) {
         const res = await window.audioVault.executeImportPlan({
           filePaths: newPaths,
           targetCollection: importTargetCollection.trim() || undefined,
           autoTranscribe: importAutoTranscribe,
-          unmountVolumePath: detectedVolume?.volumePath || (window as any).__testUnmountVolumePath,
+          unmountVolumePath: ingestingVol,
         });
         setImportPlan(null);
+        setDetectedVolume(null);
+        if (ingestingVol) {
+          activeIngestingVolumePathRef.current = ingestingVol;
+        }
         setActiveWorkspace('imports');
         if (res && res.count > 0) {
           setToastMessage(`📥 Enqueued ${res.count} audio take${res.count === 1 ? '' : 's'} for ingestion!`);
@@ -5157,14 +5175,19 @@ export default function App() {
             const parentRaw = rawFiles.find((r) => r.id === clip.parentFileId);
             const isTranscribing = Boolean(
               pipelineStatus && (
-                pipelineStatus.activeCopyJob?.sourcePath === parentRaw?.storagePath ||
-                pipelineStatus.activeAnalysisJobs?.some((j) => j.sourcePath === parentRaw?.storagePath)
+                (Boolean(parentRaw?.storagePath) && (
+                  pipelineStatus.activeCopyJob?.sourcePath === parentRaw!.storagePath ||
+                  pipelineStatus.activeAnalysisJobs?.some((j) =>
+                    j.sourcePath === parentRaw!.storagePath || (j as any).targetPath === parentRaw!.storagePath
+                  )
+                )) ||
+                clip.transcriptState === 'transcribing' ||
+                clip.transcriptState === 'queued'
               )
             );
             const hasTranscript = Boolean(
               (clip.fullTranscription || clip.transcription) &&
-              (clip.fullTranscription || clip.transcription)!.trim().length > 0 &&
-              !isTranscribing
+              (clip.fullTranscription || clip.transcription)!.trim().length > 0
             );
 
             return (
@@ -5173,19 +5196,19 @@ export default function App() {
                 aria-disabled={!hasTranscript}
                 onClick={hasTranscript ? () => handleCopyTranscript(clip) : undefined}
                 title={
-                  isTranscribing
-                    ? 'Transcription is currently being processed...'
-                    : hasTranscript
+                  hasTranscript
                     ? 'Copy full transcript text to clipboard'
+                    : isTranscribing
+                    ? 'Transcription is currently being processed...'
                     : 'No transcript available or still being processed'
                 }
               >
                 <span>📋</span>
                 <span>
-                  {isTranscribing
-                    ? 'Copy Transcript (Processing...)'
-                    : hasTranscript
+                  {hasTranscript
                     ? 'Copy Transcript'
+                    : isTranscribing
+                    ? 'Copy Transcript (Processing...)'
                     : 'Copy Transcript'}
                 </span>
               </div>
@@ -5332,8 +5355,14 @@ export default function App() {
             const parentRaw = rawFiles.find((r) => r.id === clip.parentFileId);
             const isTranscribing = Boolean(
               pipelineStatus && (
-                pipelineStatus.activeCopyJob?.sourcePath === parentRaw?.storagePath ||
-                pipelineStatus.activeAnalysisJobs?.some((j) => j.sourcePath === parentRaw?.storagePath)
+                (Boolean(parentRaw?.storagePath) && (
+                  pipelineStatus.activeCopyJob?.sourcePath === parentRaw!.storagePath ||
+                  pipelineStatus.activeAnalysisJobs?.some((j) =>
+                    j.sourcePath === parentRaw!.storagePath || (j as any).targetPath === parentRaw!.storagePath
+                  )
+                )) ||
+                clip.transcriptState === 'transcribing' ||
+                clip.transcriptState === 'queued'
               )
             );
 
@@ -5385,14 +5414,19 @@ export default function App() {
             const parentRaw = rawFiles.find((r) => r.id === clip.parentFileId);
             const isTranscribing = Boolean(
               pipelineStatus && (
-                pipelineStatus.activeCopyJob?.sourcePath === parentRaw?.storagePath ||
-                pipelineStatus.activeAnalysisJobs?.some((j) => j.sourcePath === parentRaw?.storagePath)
+                (Boolean(parentRaw?.storagePath) && (
+                  pipelineStatus.activeCopyJob?.sourcePath === parentRaw!.storagePath ||
+                  pipelineStatus.activeAnalysisJobs?.some((j) =>
+                    j.sourcePath === parentRaw!.storagePath || (j as any).targetPath === parentRaw!.storagePath
+                  )
+                )) ||
+                clip.transcriptState === 'transcribing' ||
+                clip.transcriptState === 'queued'
               )
             );
             const hasTranscript = Boolean(
               (clip.fullTranscription || clip.transcription) &&
-              (clip.fullTranscription || clip.transcription)!.trim().length > 0 &&
-              !isTranscribing
+              (clip.fullTranscription || clip.transcription)!.trim().length > 0
             );
 
             return (
@@ -5402,19 +5436,19 @@ export default function App() {
                 aria-disabled={!hasTranscript}
                 onClick={hasTranscript ? () => handleCopyTranscript(clip) : undefined}
                 title={
-                  isTranscribing
-                    ? 'Transcription is currently being processed...'
-                    : hasTranscript
+                  hasTranscript
                     ? 'Copy full transcript text to clipboard'
+                    : isTranscribing
+                    ? 'Transcription is currently being processed...'
                     : 'No transcript available or still being processed'
                 }
               >
                 <span>📋</span>
                 <span>
-                  {isTranscribing
-                    ? 'Copy Transcript (Processing...)'
-                    : hasTranscript
+                  {hasTranscript
                     ? 'Copy Full Transcript'
+                    : isTranscribing
+                    ? 'Copy Transcript (Processing...)'
                     : 'Copy Full Transcript'}
                 </span>
               </div>

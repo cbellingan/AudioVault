@@ -55,6 +55,24 @@ if (customVaultArg) {
 }
 
 let mainWindow: BrowserWindow | null = null;
+
+if (process.env.AUDIOVAULT_TEST_MODE !== '1') {
+  const gotTheLock = app.requestSingleInstanceLock();
+  if (!gotTheLock) {
+    app.quit();
+  } else {
+    app.on('second-instance', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      } else {
+        createWindow();
+      }
+    });
+  }
+}
+
 const dedupEngine = new DedupEngine();
 const volumeWatcher = new VolumeWatcher(dedupEngine);
 const audioEngine = new AudioEngine();
@@ -165,15 +183,32 @@ app.whenReady().then(() => {
   });
 
 
-  // Background check for mounted external media
+  // Background check for mounted external media with signature deduplication
+  const notifiedVolumeSignatures = new Map<string, string>();
+
   const volumeInterval = setInterval(async () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       try {
         const events = await volumeWatcher.scanConnectedVolumes();
-        if (events.length > 0 && events.some((e) => e.newFilesCount > 0)) {
+        // Clean up unmounted or ejected volumes from tracked signatures
+        const currentPaths = new Set(events.map((e) => path.resolve(e.volumePath)));
+        for (const trackedPath of notifiedVolumeSignatures.keys()) {
+          if (!currentPaths.has(trackedPath)) {
+            notifiedVolumeSignatures.delete(trackedPath);
+          }
+        }
+
+        if (events.length > 0) {
           for (const ev of events) {
+            const normPath = path.resolve(ev.volumePath);
+            const sig = `${ev.totalFilesCount}:${ev.newFilesCount}`;
             if (ev.newFilesCount > 0 && !pipelineOrchestrator.isVolumeInProgress(ev.volumePath)) {
-              mainWindow.webContents.send('vault:volume-detected', ev);
+              if (notifiedVolumeSignatures.get(normPath) !== sig) {
+                notifiedVolumeSignatures.set(normPath, sig);
+                mainWindow.webContents.send('vault:volume-detected', ev);
+              }
+            } else if (ev.newFilesCount === 0) {
+              notifiedVolumeSignatures.set(normPath, sig);
             }
           }
         }
@@ -183,8 +218,12 @@ app.whenReady().then(() => {
   volumeInterval.unref();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (BrowserWindow.getAllWindows().length === 0 || !mainWindow || mainWindow.isDestroyed()) {
       createWindow();
+    } else {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
     }
   });
 });
