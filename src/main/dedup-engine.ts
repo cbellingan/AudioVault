@@ -12,6 +12,7 @@ import {
   VaultStats,
 } from '../shared/types';
 import { taggerService } from './tagger-service';
+import { AudioEngine } from './audio-engine';
 
 export class DedupEngine {
   private vaultDir: string;
@@ -385,6 +386,28 @@ export class DedupEngine {
             try {
               fs.writeFileSync(editedTxtPath, clip.editedTranscript, 'utf-8');
             } catch {}
+          }
+        }
+      }
+
+      // Auto-Repair Saturated Waveform Peaks (detect files where > 30% of peaks are flat at >= 0.99)
+      for (const rawFile of this.rawFiles.values()) {
+        if (rawFile.storagePath && fs.existsSync(rawFile.storagePath)) {
+          const peaks = rawFile.waveformPeaks || [];
+          const saturatedCount = peaks.filter((p) => p >= 0.99).length;
+          const isSaturated = peaks.length > 0 && saturatedCount / peaks.length > 0.3;
+          if (isSaturated) {
+            try {
+              const audioEngine = new AudioEngine();
+              const analysis = audioEngine.analyzeWavFile(rawFile.storagePath);
+              if (analysis.peaks && analysis.peaks.length > 0) {
+                rawFile.waveformPeaks = analysis.peaks;
+                registryNeedsSave = true;
+                console.log(`[AudioVault Dedup] 📊 Repaired saturated waveform peaks for: ${rawFile.originalFilename}`);
+              }
+            } catch (err) {
+              console.warn(`[AudioVault Dedup] Failed repairing peaks for: ${rawFile.originalFilename}`, err);
+            }
           }
         }
       }

@@ -92,8 +92,13 @@ export class AudioEngine {
       const subSliceByteSize = subSliceSamples * blockAlign;
       const sliceBuf = Buffer.alloc(subSliceByteSize);
 
+      const rawBlockPeaks: number[] = [];
+      const rawBlockRms: number[] = [];
+
       for (let b = 0; b < numBlocks; b++) {
         let blockMax = 0;
+        let blockSumSquares = 0;
+        let blockSampleCount = 0;
         const subStep = Math.floor(blockSize / subSlicesPerBlock);
 
         for (let sub = 0; sub < subSlicesPerBlock; sub++) {
@@ -126,11 +131,14 @@ export class AudioEngine {
             }
 
             if (isNaN(val) || !isFinite(val)) val = 0;
-            const absVal = Math.min(1.0, Math.abs(val));
+            const absVal = Math.abs(val);
             if (absVal > blockMax) blockMax = absVal;
             if (absVal > maxVal) maxVal = absVal;
 
             sumSquares += val * val;
+            blockSumSquares += val * val;
+            blockSampleCount++;
+
             if ((val >= 0 && prevVal < 0) || (val < 0 && prevVal >= 0)) {
               zeroCrossings++;
             }
@@ -142,7 +150,21 @@ export class AudioEngine {
           }
         }
 
-        peaks.push(parseFloat(blockMax.toFixed(3)));
+        rawBlockPeaks.push(blockMax);
+        rawBlockRms.push(blockSampleCount > 0 ? Math.sqrt(blockSumSquares / blockSampleCount) : 0);
+      }
+
+      // Compute crest-factor adjusted dynamic envelope normalized to full-scale / float headroom
+      const floatScale = Math.max(1.0, maxVal);
+      const maxBlockRms = Math.max(...rawBlockRms, 0.0001);
+      const crestFactor = Math.min(3.0, Math.max(1.0, maxVal / maxBlockRms));
+
+      for (let b = 0; b < numBlocks; b++) {
+        const normPeak = rawBlockPeaks[b] / floatScale;
+        const normRms = Math.min(1.0, (rawBlockRms[b] * crestFactor) / floatScale);
+        // Blend 60% normalized peak transient with 40% normalized RMS acoustic body
+        const envelope = 0.6 * normPeak + 0.4 * normRms;
+        peaks.push(parseFloat(Math.min(1.0, Math.max(0.01, envelope)).toFixed(3)));
       }
 
       while (peaks.length < maxPeaks) {

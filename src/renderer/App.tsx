@@ -308,7 +308,7 @@ export default function App() {
   const [toastUndoAction, setToastUndoAction] = useState<(() => void) | null>(null);
 
   const [isGeneratingTitleForClipId, setIsGeneratingTitleForClipId] = useState<string | null>(null);
-  const [waveformProfile, setWaveformProfile] = useState<'adaptive' | 'balanced' | 'punchy' | 'linear'>('adaptive');
+  const [waveformProfile, setWaveformProfile] = useState<'adaptive' | 'balanced' | 'punchy' | 'linear' | 'normalized'>('adaptive');
 
   // Delete clip confirmation modal state
   const [clipToDelete, setClipToDelete] = useState<VirtualClip | null>(null);
@@ -1396,9 +1396,21 @@ export default function App() {
 
     const activeClip = clips.find((c) => c.id === selectedClipId);
     const activeRaw = rawFiles.find((r) => r.id === activeClip?.parentFileId);
-    const rawPeaks = activeRaw?.waveformPeaks && activeRaw.waveformPeaks.length > 0
+    const fullPeaks = activeRaw?.waveformPeaks && activeRaw.waveformPeaks.length > 0
       ? activeRaw.waveformPeaks
       : mockFallbackPeaks;
+
+    // Slice peaks proportionally when active clip is a sub-region / virtual excerpt
+    let rawPeaks = fullPeaks;
+    if (activeClip && activeRaw && activeRaw.durationSeconds > 0) {
+      const parentDuration = activeRaw.durationSeconds;
+      const startFrac = Math.max(0, Math.min(1, activeClip.startTimeSeconds / parentDuration));
+      const endFrac = Math.max(startFrac + 0.001, Math.min(1, activeClip.endTimeSeconds / parentDuration));
+      const startIdx = Math.floor(startFrac * fullPeaks.length);
+      const endIdx = Math.max(startIdx + 2, Math.ceil(endFrac * fullPeaks.length));
+      rawPeaks = fullPeaks.slice(startIdx, endIdx);
+      if (rawPeaks.length === 0) rawPeaks = fullPeaks;
+    }
 
     // Profile tuning parameters for decimation and amplitude contour
     let step = 2.6;
@@ -1429,6 +1441,13 @@ export default function App() {
       scaleHeadroom = false;
       peakWeight = 1.0;
       meanWeight = 0.0;
+    } else if (waveformProfile === 'normalized') {
+      step = 2.6;
+      gamma = 1.0;
+      headroomFloor = 0.01;
+      scaleHeadroom = true;
+      peakWeight = 0.75;
+      meanWeight = 0.25;
     }
 
     const totalBars = Math.max(80, Math.floor(displayWidth / step));
@@ -5265,14 +5284,25 @@ export default function App() {
                   <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                     Profile:
                   </span>
-                  {(['adaptive', 'balanced', 'punchy', 'linear'] as const).map((mode) => (
+                  {(['adaptive', 'balanced', 'punchy', 'linear', 'normalized'] as const).map((mode) => (
                     <button
                       key={mode}
                       type="button"
                       className={`profile-pill-btn ${waveformProfile === mode ? 'active' : ''}`}
                       onClick={() => setWaveformProfile(mode)}
+                      title={
+                        mode === 'adaptive'
+                          ? 'Dynamic Adaptive: Headroom scaling + perceptual companding curve (Recommended)'
+                          : mode === 'balanced'
+                          ? 'Balanced: Natural acoustic depth with moderate headroom scaling'
+                          : mode === 'punchy'
+                          ? 'Punchy: Studio companded body for speech & voice notes'
+                          : mode === 'linear'
+                          ? 'Linear: Raw uncompressed linear PCM amplitude'
+                          : 'Normalized: Scales track peak to 100% full scale with faithful linear dynamics'
+                      }
                     >
-                      {mode === 'adaptive' ? '✨ Dynamic' : mode === 'balanced' ? '🌿 Balanced' : mode === 'punchy' ? '🔥 Punchy' : '📏 Linear'}
+                      {mode === 'adaptive' ? '✨ Dynamic' : mode === 'balanced' ? '🌿 Balanced' : mode === 'punchy' ? '🔥 Punchy' : mode === 'linear' ? '📏 Linear' : '🎚️ Normalized'}
                     </button>
                   ))}
                 </div>
@@ -6011,7 +6041,7 @@ export default function App() {
                 <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                   Profile:
                 </span>
-                {(['adaptive', 'balanced', 'punchy', 'linear'] as const).map((mode) => (
+                {(['adaptive', 'balanced', 'punchy', 'linear', 'normalized'] as const).map((mode) => (
                   <button
                     key={mode}
                     type="button"
@@ -6024,10 +6054,12 @@ export default function App() {
                         ? 'Balanced: Natural acoustic depth with moderate headroom scaling'
                         : mode === 'punchy'
                         ? 'Punchy: Studio companded body for speech & voice notes'
-                        : 'Linear: Raw uncompressed linear PCM amplitude'
+                        : mode === 'linear'
+                        ? 'Linear: Raw uncompressed linear PCM amplitude'
+                        : 'Normalized: Scales track peak to 100% full scale with faithful linear dynamics'
                     }
                   >
-                    {mode === 'adaptive' ? '✨ Dynamic (Rec)' : mode === 'balanced' ? '🌿 Balanced' : mode === 'punchy' ? '🔥 Punchy' : '📏 Linear'}
+                    {mode === 'adaptive' ? '✨ Dynamic (Rec)' : mode === 'balanced' ? '🌿 Balanced' : mode === 'punchy' ? '🔥 Punchy' : mode === 'linear' ? '📏 Linear' : '🎚️ Normalized'}
                   </button>
                 ))}
               </div>
