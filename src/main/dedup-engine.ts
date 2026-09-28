@@ -11,6 +11,7 @@ import {
   SavedViewRecord,
   VaultStats,
 } from '../shared/types';
+import { taggerService } from './tagger-service';
 
 export class DedupEngine {
   private vaultDir: string;
@@ -210,6 +211,8 @@ export class DedupEngine {
             item.rating = Math.max(0, Math.min(5, Math.round(item.rating)));
           }
           item.collections = Array.isArray(item.collections) ? item.collections : [];
+          item.artist = typeof item.artist === 'string' && item.artist.trim() ? item.artist.trim() : undefined;
+          item.location = typeof item.location === 'string' && item.location.trim() ? item.location.trim() : undefined;
 
           const existing = Array.from(this.virtualClips.values()).find(
             (c) =>
@@ -259,6 +262,8 @@ export class DedupEngine {
             if (item.reviewed !== undefined) existing.reviewed = item.reviewed;
             if (item.favorite !== undefined) existing.favorite = item.favorite;
             if (item.rating !== undefined) existing.rating = Math.max(0, Math.min(5, Math.round(item.rating)));
+            if (item.artist && !existing.artist) existing.artist = item.artist;
+            if (item.location && !existing.location) existing.location = item.location;
             if (item.recordedAt && !existing.recordedAt) existing.recordedAt = item.recordedAt;
             if (item.userTitle && !existing.userTitle) existing.userTitle = item.userTitle;
             if (item.editedTranscript && !existing.editedTranscript) existing.editedTranscript = item.editedTranscript;
@@ -805,6 +810,12 @@ export class DedupEngine {
       clip.rating = Math.max(0, Math.min(5, Math.round(clip.rating)));
     }
     clip.favorite = clip.rating > 0;
+    if (clip.artist !== undefined) {
+      clip.artist = typeof clip.artist === 'string' && clip.artist.trim() ? clip.artist.trim() : undefined;
+    }
+    if (clip.location !== undefined) {
+      clip.location = typeof clip.location === 'string' && clip.location.trim() ? clip.location.trim() : undefined;
+    }
 
     const existing = Array.from(this.virtualClips.values()).find(
       (c) =>
@@ -825,6 +836,8 @@ export class DedupEngine {
             ? clip.transcriptionChunks
             : existing.transcriptionChunks,
         userTags: mergedTags,
+        artist: clip.artist !== undefined ? clip.artist : existing.artist,
+        location: clip.location !== undefined ? clip.location : existing.location,
         rating: clip.rating !== undefined ? clip.rating : existing.rating,
         favorite: clip.rating !== undefined ? clip.rating > 0 : existing.favorite,
         updatedAt: new Date().toISOString(),
@@ -904,9 +917,17 @@ export class DedupEngine {
       finalRating = finalFavorite ? (finalRating > 0 ? finalRating : 5) : 0;
     }
 
+    const sanitizedUpdates = { ...updates };
+    if (sanitizedUpdates.artist !== undefined) {
+      sanitizedUpdates.artist = typeof sanitizedUpdates.artist === 'string' && sanitizedUpdates.artist.trim() ? sanitizedUpdates.artist.trim() : undefined;
+    }
+    if (sanitizedUpdates.location !== undefined) {
+      sanitizedUpdates.location = typeof sanitizedUpdates.location === 'string' && sanitizedUpdates.location.trim() ? sanitizedUpdates.location.trim() : undefined;
+    }
+
     const updated = {
       ...clip,
-      ...updates,
+      ...sanitizedUpdates,
       rating: finalRating,
       favorite: finalFavorite,
       transcriptVersions,
@@ -914,7 +935,87 @@ export class DedupEngine {
     };
     this.virtualClips.set(id, updated);
     this.saveRegistry();
+
+    // In-file audio tagging (Slice 2)
+    if (updates.artist !== undefined || updates.location !== undefined || updates.title !== undefined) {
+      const rawFile = this.rawFiles.get(updated.parentFileId);
+      if (rawFile && rawFile.storagePath && fs.existsSync(rawFile.storagePath)) {
+        taggerService
+          .tagAudioFile(rawFile.storagePath, {
+            title: updated.title,
+            artist: updated.artist,
+            location: updated.location,
+          })
+          .catch((err) => console.warn('[AudioVault Dedup] Background tagging raw file warning:', err));
+      }
+      if (updated.exportedMp3Path && fs.existsSync(updated.exportedMp3Path)) {
+        taggerService
+          .tagAudioFile(updated.exportedMp3Path, {
+            title: updated.title,
+            artist: updated.artist,
+            location: updated.location,
+          })
+          .catch((err) => console.warn('[AudioVault Dedup] Background tagging MP3 warning:', err));
+      }
+    }
+
     return updated;
+  }
+
+  public getKnownArtists(): string[] {
+    const set = new Set<string>();
+    for (const clip of this.virtualClips.values()) {
+      if (clip.artist && clip.artist.trim()) {
+        set.add(clip.artist.trim());
+      }
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  }
+
+  public getKnownLocations(): string[] {
+    const set = new Set<string>();
+    for (const clip of this.virtualClips.values()) {
+      if (clip.location && clip.location.trim()) {
+        set.add(clip.location.trim());
+      }
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  }
+
+  public batchUpdateMetadata(
+    clipIds: string[],
+    updates: {
+      artist?: string;
+      location?: string;
+      category?: any;
+      addTags?: string[];
+      notes?: string;
+      rating?: number;
+    }
+  ): VirtualClip[] {
+    const results: VirtualClip[] = [];
+    for (const id of clipIds) {
+      const existing = this.virtualClips.get(id);
+      if (!existing) continue;
+
+      const clipUpdates: Partial<VirtualClip> = {};
+      if (updates.artist !== undefined) {
+        clipUpdates.artist = typeof updates.artist === 'string' && updates.artist.trim() ? updates.artist.trim() : undefined;
+      }
+      if (updates.location !== undefined) {
+        clipUpdates.location = typeof updates.location === 'string' && updates.location.trim() ? updates.location.trim() : undefined;
+      }
+      if (updates.category !== undefined) clipUpdates.category = updates.category;
+      if (updates.notes !== undefined) clipUpdates.notes = updates.notes;
+      if (updates.rating !== undefined) clipUpdates.rating = updates.rating;
+      if (updates.addTags && updates.addTags.length > 0) {
+        clipUpdates.userTags = Array.from(new Set([...existing.userTags, ...updates.addTags]));
+      }
+
+      const updated = this.updateVirtualClip(id, clipUpdates);
+      if (updated) results.push(updated);
+    }
+    return results;
   }
 
   public deleteVirtualClip(id: string, deleteFromDisk: boolean = true): boolean {

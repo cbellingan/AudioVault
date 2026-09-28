@@ -119,6 +119,12 @@ const audioVaultApi: AudioVaultAPI = {
   removeClipFromCollection: (clipId: string, collectionName: string) =>
     ipcRenderer.invoke('vault:remove-clip-from-collection', clipId, collectionName),
 
+  // Metadata Suggestions & Batch Updates (Slice 2)
+  getKnownArtists: () => ipcRenderer.invoke('vault:get-known-artists'),
+  getKnownLocations: () => ipcRenderer.invoke('vault:get-known-locations'),
+  batchUpdateMetadata: (clipIds: string[], metadata: any) =>
+    ipcRenderer.invoke('vault:batch-update-metadata', clipIds, metadata),
+
   // Unified Batch Export API (F11)
   batchExport: (options: BatchExportOptions) =>
     ipcRenderer.invoke('vault:batch-export', options),
