@@ -112,6 +112,7 @@ const audioVaultApi: AudioVaultAPI = {
 
   // Flags & Membership
   toggleFavorite: (clipId: string) => ipcRenderer.invoke('vault:toggle-favorite', clipId),
+  setClipRating: (clipId: string, rating: number) => ipcRenderer.invoke('vault:set-clip-rating', clipId, rating),
   toggleReviewed: (clipId: string) => ipcRenderer.invoke('vault:toggle-reviewed', clipId),
   addClipToCollection: (clipId: string, collectionName: string) =>
     ipcRenderer.invoke('vault:add-clip-to-collection', clipId, collectionName),

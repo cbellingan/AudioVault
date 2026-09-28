@@ -204,6 +204,11 @@ export class DedupEngine {
           // Schema V3 field normalization (do not fabricate unknown dates!)
           item.reviewed = item.reviewed ?? false;
           item.favorite = item.favorite ?? false;
+          if (item.rating === undefined) {
+            item.rating = item.favorite ? 5 : 0;
+          } else {
+            item.rating = Math.max(0, Math.min(5, Math.round(item.rating)));
+          }
           item.collections = Array.isArray(item.collections) ? item.collections : [];
 
           const existing = Array.from(this.virtualClips.values()).find(
@@ -253,6 +258,7 @@ export class DedupEngine {
             }
             if (item.reviewed !== undefined) existing.reviewed = item.reviewed;
             if (item.favorite !== undefined) existing.favorite = item.favorite;
+            if (item.rating !== undefined) existing.rating = Math.max(0, Math.min(5, Math.round(item.rating)));
             if (item.recordedAt && !existing.recordedAt) existing.recordedAt = item.recordedAt;
             if (item.userTitle && !existing.userTitle) existing.userTitle = item.userTitle;
             if (item.editedTranscript && !existing.editedTranscript) existing.editedTranscript = item.editedTranscript;
@@ -565,9 +571,21 @@ export class DedupEngine {
     const clip = this.virtualClips.get(clipId);
     if (!clip) return false;
     clip.favorite = !clip.favorite;
+    clip.rating = clip.favorite ? (clip.rating && clip.rating > 0 ? clip.rating : 5) : 0;
     clip.updatedAt = new Date().toISOString();
     this.saveRegistry();
     return clip.favorite;
+  }
+
+  public setClipRating(clipId: string, rating: number): number {
+    const clip = this.virtualClips.get(clipId);
+    if (!clip) return 0;
+    const clamped = Math.max(0, Math.min(5, Math.round(rating)));
+    clip.rating = clamped;
+    clip.favorite = clamped > 0;
+    clip.updatedAt = new Date().toISOString();
+    this.saveRegistry();
+    return clip.rating;
   }
 
   public toggleReviewed(clipId: string): boolean {
@@ -781,6 +799,13 @@ export class DedupEngine {
   }
 
   public addVirtualClip(clip: VirtualClip): void {
+    if (clip.rating === undefined) {
+      clip.rating = clip.favorite ? 5 : 0;
+    } else {
+      clip.rating = Math.max(0, Math.min(5, Math.round(clip.rating)));
+    }
+    clip.favorite = clip.rating > 0;
+
     const existing = Array.from(this.virtualClips.values()).find(
       (c) =>
         c.parentFileId === clip.parentFileId &&
@@ -800,6 +825,8 @@ export class DedupEngine {
             ? clip.transcriptionChunks
             : existing.transcriptionChunks,
         userTags: mergedTags,
+        rating: clip.rating !== undefined ? clip.rating : existing.rating,
+        favorite: clip.rating !== undefined ? clip.rating > 0 : existing.favorite,
         updatedAt: new Date().toISOString(),
       };
       this.virtualClips.set(existing.id, updated);
@@ -866,9 +893,22 @@ export class DedupEngine {
       }
     }
 
+    let finalRating = clip.rating ?? (clip.favorite ? 5 : 0);
+    let finalFavorite = clip.favorite ?? false;
+
+    if (updates.rating !== undefined) {
+      finalRating = Math.max(0, Math.min(5, Math.round(updates.rating)));
+      finalFavorite = finalRating > 0;
+    } else if (updates.favorite !== undefined) {
+      finalFavorite = updates.favorite;
+      finalRating = finalFavorite ? (finalRating > 0 ? finalRating : 5) : 0;
+    }
+
     const updated = {
       ...clip,
       ...updates,
+      rating: finalRating,
+      favorite: finalFavorite,
       transcriptVersions,
       updatedAt: new Date().toISOString(),
     };

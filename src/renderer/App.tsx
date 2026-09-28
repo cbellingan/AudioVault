@@ -36,6 +36,7 @@ import {
   SearchResultItem,
   SearchPassageHit,
 } from './library/search-engine';
+import { StarRatingWidget } from './components/StarRatingWidget';
 
 // Standalone fallback mock data
 const mockFallbackClips: VirtualClip[] = [
@@ -219,10 +220,11 @@ export default function App() {
   const [vaultStats, setVaultStats] = useState<VaultStats | null>(null);
   
   // Table Sorting state: starts desc on creation / import time
-  type SortField = 'title' | 'category' | 'duration' | 'tags' | 'confidence' | 'createdAt';
+  type SortField = 'title' | 'category' | 'duration' | 'tags' | 'confidence' | 'createdAt' | 'rating';
   type SortOrder = 'asc' | 'desc';
   const [sortField, setSortField] = useState<SortField>('createdAt');
   const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
+  const [ratingFilter, setRatingFilter] = useState<number>(0); // 0 = any rating, 1-5 = min stars
 
   // Selection range on waveform
   const [selectionRange, setSelectionRange] = useState<{ start: number; end: number } | null>({
@@ -253,6 +255,7 @@ export default function App() {
     category: PrimaryCategory;
     userTags: string[];
     notes: string;
+    rating: number;
     newTagInput: string;
     isGeneratingAiTitle: boolean;
   } | null>(null);
@@ -845,6 +848,21 @@ export default function App() {
         if (activeClip) handleToggleFavorite(activeClip.id);
       },
     });
+    for (let r = 0; r <= 5; r++) {
+      commandRegistry.register({
+        id: `rate-${r}` as any,
+        label: r === 0 ? 'Clear Star Rating' : `Rate ${r} Stars`,
+        isEnabled: () => !!activeClip || selectedClipIds.size > 0,
+        execute: () => {
+          const targetIds = selectedClipIds.size > 0 ? Array.from(selectedClipIds) : (activeClip ? [activeClip.id] : []);
+          for (const id of targetIds) {
+            handleSetClipRating(id, r);
+          }
+          setToastMessage(r === 0 ? '☆ Cleared star rating' : `★ Rated ${r} star${r === 1 ? '' : 's'}`);
+          setTimeout(() => setToastMessage(null), 2000);
+        },
+      });
+    }
     commandRegistry.register({
       id: 'mark-reviewed',
       label: 'Mark Reviewed',
@@ -1844,11 +1862,42 @@ export default function App() {
     if (window.audioVault?.toggleFavorite) {
       const newFav = await window.audioVault.toggleFavorite(clipId);
       setClips((prev) =>
-        prev.map((c) => (c.id === clipId ? { ...c, favorite: newFav } : c))
+        prev.map((c) => {
+          if (c.id !== clipId) return c;
+          const newRating = newFav ? (c.rating && c.rating > 0 ? c.rating : 5) : 0;
+          return { ...c, favorite: newFav, rating: newRating };
+        })
       );
     } else {
       setClips((prev) =>
-        prev.map((c) => (c.id === clipId ? { ...c, favorite: !c.favorite } : c))
+        prev.map((c) => {
+          if (c.id !== clipId) return c;
+          const newFav = !c.favorite;
+          const newRating = newFav ? (c.rating && c.rating > 0 ? c.rating : 5) : 0;
+          return { ...c, favorite: newFav, rating: newRating };
+        })
+      );
+    }
+  }
+
+  async function handleSetClipRating(clipId: string, rating: number) {
+    const clamped = Math.max(0, Math.min(5, Math.round(rating)));
+    if (window.audioVault?.setClipRating) {
+      const finalRating = await window.audioVault.setClipRating(clipId, clamped);
+      setClips((prev) =>
+        prev.map((c) =>
+          c.id === clipId
+            ? { ...c, rating: finalRating, favorite: finalRating > 0 }
+            : c
+        )
+      );
+    } else {
+      setClips((prev) =>
+        prev.map((c) =>
+          c.id === clipId
+            ? { ...c, rating: clamped, favorite: clamped > 0 }
+            : c
+        )
       );
     }
   }
@@ -1965,6 +2014,7 @@ export default function App() {
       scope: activeScope,
       groupBy: groupingMode,
       statusFilter: transcriptFilter,
+      ratingFilter: ratingFilter > 0 ? ratingFilter : undefined,
       searchQuery: searchQuery || undefined,
       createdAt: new Date().toISOString(),
     };
@@ -1997,6 +2047,11 @@ export default function App() {
     setActiveScope(view.scope as any);
     setGroupingMode(view.groupBy as any);
     setTranscriptFilter(view.statusFilter as any);
+    if (view.ratingFilter !== undefined) {
+      setRatingFilter(typeof view.ratingFilter === 'number' ? view.ratingFilter : 0);
+    } else {
+      setRatingFilter(0);
+    }
     setSearchQuery(view.searchQuery || '');
     setActiveSavedViewId(view.id);
     setToastMessage(`Switched to "${view.name}"`);
@@ -2013,6 +2068,7 @@ export default function App() {
       category: clip.category,
       userTags: [...clip.userTags],
       notes: clip.notes || '',
+      rating: clip.rating ?? (clip.favorite ? 5 : 0),
       newTagInput: '',
       isGeneratingAiTitle: false,
     });
@@ -2054,24 +2110,42 @@ export default function App() {
 
   // Save metadata changes to vault registry
   async function handleSaveMetadata() {
-    if (!editingMetadataClip || !window.audioVault) {
-      setEditingMetadataClip(null);
+    if (!editingMetadataClip) {
       return;
     }
-    try {
-      const updated = await window.audioVault.updateVirtualClip(editingMetadataClip.id, {
-        title: editingMetadataClip.title.trim() || 'Untitled Take',
-        category: editingMetadataClip.category,
-        userTags: editingMetadataClip.userTags,
-        notes: editingMetadataClip.notes.trim(),
-      });
-      if (updated) {
-        setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+    if (window.audioVault) {
+      try {
+        const updated = await window.audioVault.updateVirtualClip(editingMetadataClip.id, {
+          title: editingMetadataClip.title.trim() || 'Untitled Take',
+          category: editingMetadataClip.category,
+          userTags: editingMetadataClip.userTags,
+          notes: editingMetadataClip.notes.trim(),
+          rating: editingMetadataClip.rating,
+        });
+        if (updated) {
+          setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+        }
+      } catch (err: any) {
+        alert(err.message || 'Failed to save clip metadata.');
       }
-      setEditingMetadataClip(null);
-    } catch (err: any) {
-      alert(err.message || 'Failed to save clip metadata.');
+    } else {
+      setClips((prev) =>
+        prev.map((c) =>
+          c.id === editingMetadataClip.id
+            ? {
+                ...c,
+                title: editingMetadataClip.title.trim() || 'Untitled Take',
+                category: editingMetadataClip.category,
+                userTags: editingMetadataClip.userTags,
+                notes: editingMetadataClip.notes.trim(),
+                rating: editingMetadataClip.rating,
+                favorite: editingMetadataClip.rating > 0,
+              }
+            : c
+        )
+      );
     }
+    setEditingMetadataClip(null);
   }
 
   // Quick category switcher from context menu
@@ -2268,6 +2342,12 @@ export default function App() {
       if (status !== transcriptFilter) return false;
     }
 
+    // Rating filter (0 = any, 1-5 = min stars)
+    if (ratingFilter > 0) {
+      const clipRating = c.rating ?? (c.favorite ? 5 : 0);
+      if (clipRating < ratingFilter) return false;
+    }
+
     return matchesCat && matchesTag;
   });
 
@@ -2289,6 +2369,10 @@ export default function App() {
         diff = tagsA.localeCompare(tagsB);
       } else if (sortField === 'confidence') {
         diff = a.classificationConfidence - b.classificationConfidence;
+      } else if (sortField === 'rating') {
+        const ratingA = a.rating ?? (a.favorite ? 5 : 0);
+        const ratingB = b.rating ?? (b.favorite ? 5 : 0);
+        diff = ratingA - ratingB;
       } else if (sortField === 'createdAt') {
         const timeA = new Date(a.createdAt).getTime() || 0;
         const timeB = new Date(b.createdAt).getTime() || 0;
@@ -2473,9 +2557,38 @@ export default function App() {
       }
     }
     setClips((prev) =>
-      prev.map((c) => (selectedClipIds.has(c.id) ? { ...c, favorite: !c.favorite } : c))
+      prev.map((c) => {
+        if (!selectedClipIds.has(c.id)) return c;
+        const newFav = !c.favorite;
+        const newRating = newFav ? (c.rating && c.rating > 0 ? c.rating : 5) : 0;
+        return { ...c, favorite: newFav, rating: newRating };
+      })
     );
     setToastMessage(`Toggled favorite on ${ids.length} recording(s)`);
+    setTimeout(() => setToastMessage(null), 3000);
+  }
+
+  async function handleBatchSetRating(rating: number) {
+    if (selectedClipIds.size === 0) return;
+    const clamped = Math.max(0, Math.min(5, Math.round(rating)));
+    const ids = Array.from(selectedClipIds);
+    for (const id of ids) {
+      if (window.audioVault?.setClipRating) {
+        await window.audioVault.setClipRating(id, clamped);
+      }
+    }
+    setClips((prev) =>
+      prev.map((c) =>
+        selectedClipIds.has(c.id)
+          ? { ...c, rating: clamped, favorite: clamped > 0 }
+          : c
+      )
+    );
+    setToastMessage(
+      clamped === 0
+        ? `Cleared rating on ${ids.length} recording(s)`
+        : `Rated ${ids.length} recording(s) ${clamped} star${clamped === 1 ? '' : 's'}`
+    );
     setTimeout(() => setToastMessage(null), 3000);
   }
 
@@ -2719,6 +2832,13 @@ export default function App() {
           )}
             </div>
           </div>
+        </td>
+        <td onClick={(e) => e.stopPropagation()}>
+          <StarRatingWidget
+            rating={clip.rating ?? (clip.favorite ? 5 : 0)}
+            onChange={(r) => handleSetClipRating(clip.id, r)}
+            size="sm"
+          />
         </td>
         <td>
           <span className={`category-pill cat-${clip.category}`}>
@@ -3772,7 +3892,7 @@ export default function App() {
                       </button>
                     </div>
                   ) : (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flexWrap: 'wrap' }}>
                       <h1 className="detail-title" data-testid="detail-title" style={{ margin: 0 }}>
                         {activeClip.title}
                       </h1>
@@ -3789,6 +3909,12 @@ export default function App() {
                       >
                         ✏️
                       </button>
+                      <StarRatingWidget
+                        rating={activeClip.rating ?? (activeClip.favorite ? 5 : 0)}
+                        onChange={(r) => handleSetClipRating(activeClip.id, r)}
+                        size="md"
+                        showLabel
+                      />
                     </div>
                   )}
                 </div>
@@ -4181,9 +4307,14 @@ export default function App() {
             {/* Bottom Player Bar */}
             <div className="detail-player-bar" data-testid="detail-player-bar">
               <div className="detail-player-top">
-                <div className="detail-now-playing">
+                <div className="detail-now-playing" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
                   <span>Now playing ·</span>
                   <span style={{ color: 'var(--accent-cyan)' }}>{activeClip.title}</span>
+                  <StarRatingWidget
+                    rating={activeClip.rating ?? (activeClip.favorite ? 5 : 0)}
+                    onChange={(r) => handleSetClipRating(activeClip.id, r)}
+                    size="sm"
+                  />
                 </div>
 
                 {/* Profile pills */}
@@ -4537,6 +4668,34 @@ export default function App() {
                     </button>
                   )}
 
+                  <label className="toolbar-label">
+                    Rating:
+                    <select
+                      className="toolbar-select"
+                      value={ratingFilter}
+                      onChange={(e) => setRatingFilter(Number(e.target.value))}
+                      data-testid="rating-filter-select"
+                    >
+                      <option value={0}>Any rating</option>
+                      <option value={5}>★★★★★ (5 stars)</option>
+                      <option value={4}>★★★★☆ (4+ stars)</option>
+                      <option value={3}>★★★☆☆ (3+ stars)</option>
+                      <option value={2}>★★☆☆☆ (2+ stars)</option>
+                      <option value={1}>★☆☆☆☆ (1+ stars)</option>
+                    </select>
+                  </label>
+
+                  {ratingFilter > 0 && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      style={{ fontSize: '0.74rem', padding: '2px 8px' }}
+                      onClick={() => setRatingFilter(0)}
+                    >
+                      Clear rating
+                    </button>
+                  )}
+
                   <button
                     type="button"
                     className="btn btn-secondary btn-sm"
@@ -4697,6 +4856,9 @@ export default function App() {
                           <span>Clip Title</span> {renderSortIndicator('title')}
                         </div>
                       </th>
+                      <th onClick={() => handleSort('rating')} title="Click to sort by Star Rating">
+                        Rating {renderSortIndicator('rating')}
+                      </th>
                       <th onClick={() => handleSort('category')} title="Click to sort by Category">
                         Category {renderSortIndicator('category')}
                       </th>
@@ -4718,7 +4880,7 @@ export default function App() {
                   <tbody>
                     {sortedClips.length === 0 ? (
                       <tr>
-                        <td colSpan={7} style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--text-muted)' }}>
+                        <td colSpan={8} style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--text-muted)' }}>
                           <div style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>No recordings match these filters</div>
                           <button
                             type="button"
@@ -4838,6 +5000,14 @@ export default function App() {
                     >
                       ★ Toggle favorite
                     </button>
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0 6px', background: 'rgba(255,255,255,0.06)', borderRadius: '4px' }}>
+                      <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>Rate:</span>
+                      <StarRatingWidget
+                        rating={0}
+                        onChange={(r) => handleBatchSetRating(r)}
+                        size="sm"
+                      />
+                    </div>
                     <button
                       type="button"
                       className="btn btn-secondary btn-sm"
@@ -4858,6 +5028,11 @@ export default function App() {
                 <span className={`category-pill cat-${activeClip.category}`}>
                   {activeClip.category}
                 </span>
+                <StarRatingWidget
+                  rating={activeClip.rating ?? (activeClip.favorite ? 5 : 0)}
+                  onChange={(r) => handleSetClipRating(activeClip.id, r)}
+                  size="sm"
+                />
                 <span>
                   <HighlightMatch text={activeClip.title} query={searchQuery} />
                 </span>
@@ -5329,6 +5504,27 @@ export default function App() {
           </div>
 
           <div
+            style={{
+              padding: '6px 12px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              borderBottom: '1px solid var(--border-color)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>Rating:</span>
+            <StarRatingWidget
+              rating={clipContextMenu.clip.rating ?? (clipContextMenu.clip.favorite ? 5 : 0)}
+              onChange={(r) => {
+                handleSetClipRating(clipContextMenu.clip.id, r);
+                setClipContextMenu(null);
+              }}
+              size="sm"
+            />
+          </div>
+
+          <div
             className="context-menu-item"
             data-testid="ctx-edit-title"
             onClick={() => handleOpenMetadataModal(clipContextMenu.clip)}
@@ -5656,6 +5852,33 @@ export default function App() {
                       {cat.toUpperCase()}
                     </button>
                   ))}
+                </div>
+              </div>
+
+              {/* Star Rating */}
+              <div className="form-group">
+                <label className="form-label">Star Rating</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <StarRatingWidget
+                    rating={editingMetadataClip.rating}
+                    onChange={(r) =>
+                      setEditingMetadataClip({ ...editingMetadataClip, rating: r })
+                    }
+                    size="md"
+                    showLabel
+                  />
+                  {editingMetadataClip.rating > 0 && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      style={{ fontSize: '0.74rem', padding: '2px 8px' }}
+                      onClick={() =>
+                        setEditingMetadataClip({ ...editingMetadataClip, rating: 0 })
+                      }
+                    >
+                      Clear rating
+                    </button>
+                  )}
                 </div>
               </div>
 

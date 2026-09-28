@@ -962,6 +962,10 @@ function setupIpcHandlers() {
     return dedupEngine.toggleFavorite(clipId);
   });
 
+  ipcMain.handle('vault:set-clip-rating', async (_, clipId: string, rating: number): Promise<number> => {
+    return dedupEngine.setClipRating(clipId, rating);
+  });
+
   ipcMain.handle('vault:toggle-reviewed', async (_, clipId: string): Promise<boolean> => {
     return dedupEngine.toggleReviewed(clipId);
   });

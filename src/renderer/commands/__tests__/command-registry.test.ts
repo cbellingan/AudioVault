@@ -94,4 +94,53 @@ describe('Slice F02: Typed Command Registry and Keyboard Routing', () => {
     registry.handleKeyDown({ metaKey: true, key: 'o', preventDefault: vi.fn() } as any);
     expect(openSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('triggers star rating commands rate-0 through rate-5 when pressing 0-5 outside text inputs', () => {
+    const registry = new CommandRegistry();
+    const rateSpies: Record<number, any> = {};
+
+    for (let r = 0; r <= 5; r++) {
+      rateSpies[r] = vi.fn();
+      registry.register({
+        id: `rate-${r}` as any,
+        label: `Rate ${r}`,
+        isEnabled: () => true,
+        execute: rateSpies[r],
+      });
+    }
+
+    // Pressing '3' outside text editing
+    const bodyElement = { tagName: 'DIV', isContentEditable: false } as HTMLElement;
+    const event3 = {
+      key: '3',
+      target: bodyElement,
+      preventDefault: vi.fn(),
+    } as unknown as KeyboardEvent;
+
+    const handled = registry.handleKeyDown(event3);
+    expect(handled).toBe(true);
+    expect(rateSpies[3]).toHaveBeenCalledTimes(1);
+    expect(event3.preventDefault).toHaveBeenCalled();
+
+    // Pressing '0' to clear rating
+    const event0 = {
+      key: '0',
+      target: bodyElement,
+      preventDefault: vi.fn(),
+    } as unknown as KeyboardEvent;
+    registry.handleKeyDown(event0);
+    expect(rateSpies[0]).toHaveBeenCalledTimes(1);
+
+    // Typing '3' inside an input element should NOT trigger rate-3
+    const inputElement = { tagName: 'INPUT', isContentEditable: false } as HTMLElement;
+    const inputEvent = {
+      key: '3',
+      target: inputElement,
+      preventDefault: vi.fn(),
+    } as unknown as KeyboardEvent;
+
+    const handledInInput = registry.handleKeyDown(inputEvent);
+    expect(handledInInput).toBe(false);
+    expect(rateSpies[3]).toHaveBeenCalledTimes(1); // Still 1 from before
+  });
 });
