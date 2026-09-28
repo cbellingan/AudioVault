@@ -1576,6 +1576,63 @@ mark {
   transform: scale(1.15);
 }
 
+/* 0-5 Star Rating System */
+.star-rating-container {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  user-select: none;
+}
+
+.star-rating-container .stars-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.star-rating-container .star-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 1px 2px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.2);
+  transition: transform var(--transition-fast), color var(--transition-fast);
+}
+
+.star-rating-container.size-sm .star-btn {
+  font-size: 0.85rem;
+  padding: 0 1px;
+}
+
+.star-rating-container.size-md .star-btn {
+  font-size: 1.05rem;
+}
+
+.star-rating-container.size-lg .star-btn {
+  font-size: 1.35rem;
+}
+
+.star-rating-container .star-btn.filled {
+  color: #fbbf24;
+  text-shadow: 0 0 6px rgba(251, 191, 36, 0.45);
+}
+
+.star-rating-container .star-btn.hovered {
+  color: #f59e0b;
+}
+
+.star-rating-container:not(.read-only) .star-btn:hover {
+  transform: scale(1.25);
+}
+
+.star-rating-container .rating-label {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
 /* Floating Batch Bar */
 .batch-selection-bar {
   position: sticky;

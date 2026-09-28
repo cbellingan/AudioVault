@@ -172,6 +172,7 @@ export interface SavedViewRecord {
   scope: 'all' | 'recent' | 'review' | 'favorites' | string;
   groupBy: 'date' | 'month' | 'batch' | 'collection' | 'none';
   statusFilter: 'all' | 'ready' | 'pending' | 'not_transcribed' | 'nospeech' | 'no_speech' | 'failed';
+  ratingFilter?: number | 'unrated'; // Filter by minimum star rating (1-5) or unrated (0)
   searchQuery?: string;
   createdAt: string;
 }
@@ -200,7 +201,8 @@ export interface VirtualClip {
   // Domain Redesign Extensions
   recordedAt?: string; // Original recording timestamp if known (never fabricated)
   reviewed?: boolean; // User review state (default false)
-  favorite?: boolean; // User favorite star
+  favorite?: boolean; // User favorite star (legacy compatibility)
+  rating?: number; // 0 to 5 star rating (0 = unrated)
   collections?: string[]; // Many-to-many collection names/IDs
   batchId?: string; // ID of acquisition batch
   transcriptState?: 'not_requested' | 'queued' | 'transcribing' | 'ready' | 'no_speech' | 'failed';
@@ -360,6 +362,7 @@ export interface AudioVaultAPI {
 
   // Flags & Membership
   toggleFavorite?: (clipId: string) => Promise<boolean>;
+  setClipRating?: (clipId: string, rating: number) => Promise<number>;
   toggleReviewed?: (clipId: string) => Promise<boolean>;
   addClipToCollection?: (clipId: string, collectionName: string) => Promise<boolean>;
   removeClipFromCollection?: (clipId: string, collectionName: string) => Promise<boolean>;

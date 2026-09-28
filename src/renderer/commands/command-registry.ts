@@ -14,6 +14,12 @@ export type CommandId =
   | 'add-to-collection'
   | 'mark-reviewed'
   | 'toggle-favorite'
+  | 'rate-0'
+  | 'rate-1'
+  | 'rate-2'
+  | 'rate-3'
+  | 'rate-4'
+  | 'rate-5'
   | 'save-excerpt'
   | 'show-in-finder'
   | 'nav-library'
@@ -165,8 +171,12 @@ export class CommandRegistry {
       }
     }
 
-    // Playback outside text editing
-    if (!isEditingText && !this.context.isModalOpen) {
+    // Star rating keys 0-5 and playback outside text editing
+    if (!isEditingText && !this.context.isModalOpen && !e.metaKey && !e.ctrlKey) {
+      if (['0', '1', '2', '3', '4', '5'].includes(e.key) && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        return this.execute(`rate-${e.key}` as CommandId);
+      }
       if (e.code === 'Space') {
         e.preventDefault();
         return this.execute('play-pause');
