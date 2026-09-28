@@ -282,6 +282,31 @@ export default function App() {
     initialLocation?: string;
   } | null>(null);
 
+  // Audio Trimming, Selection Operations & Undo/Redo Engine
+  interface TrimUndoAction {
+    id: string;
+    description: string;
+    clipId: string;
+    type: 'trim' | 'split' | 'middle_cut';
+    before?: {
+      startTimeSeconds: number;
+      endTimeSeconds: number;
+      title?: string;
+    };
+    after?: {
+      startTimeSeconds: number;
+      endTimeSeconds: number;
+      title?: string;
+    };
+    originalClip?: VirtualClip;
+    createdClipIds?: string[];
+  }
+
+  const [undoStack, setUndoStack] = useState<TrimUndoAction[]>([]);
+  const [redoStack, setRedoStack] = useState<TrimUndoAction[]>([]);
+  const [showSelectionMenu, setShowSelectionMenu] = useState<boolean>(false);
+  const [toastUndoAction, setToastUndoAction] = useState<(() => void) | null>(null);
+
   const [isGeneratingTitleForClipId, setIsGeneratingTitleForClipId] = useState<string | null>(null);
   const [waveformProfile, setWaveformProfile] = useState<'adaptive' | 'balanced' | 'punchy' | 'linear'>('adaptive');
 
@@ -662,6 +687,9 @@ export default function App() {
       selectedCount: selectedClipIds.size,
       hasTranscript: !!(activeClip && (activeClip.fullTranscription || activeClip.transcription)),
       hasCopiedMetadata: !!copiedMetadata,
+      hasSelectionRange: Boolean(selectionRange && (selectionRange.end - selectionRange.start) > 0.003),
+      canUndo: undoStack.length > 0,
+      canRedo: redoStack.length > 0,
       isPlaying,
       isModalOpen: !!(
         clipToDelete ||
@@ -680,6 +708,9 @@ export default function App() {
     activeClip,
     selectedClipIds,
     isPlaying,
+    selectionRange,
+    undoStack,
+    redoStack,
     clipToDelete,
     editingMetadataClip,
     showBatchMetadataModal,
@@ -889,6 +920,54 @@ export default function App() {
       },
     });
     commandRegistry.register({
+      id: 'undo',
+      label: 'Undo',
+      isEnabled: () => undoStack.length > 0,
+      execute: () => {
+        handleUndo();
+      },
+    });
+    commandRegistry.register({
+      id: 'redo',
+      label: 'Redo',
+      isEnabled: () => redoStack.length > 0,
+      execute: () => {
+        handleRedo();
+      },
+    });
+    commandRegistry.register({
+      id: 'cut-selection',
+      label: 'Cut Out Selection (Delete Region)',
+      isEnabled: () => Boolean(activeClip && selectionRange && (selectionRange.end - selectionRange.start) > 0.003),
+      execute: () => {
+        handleCutOutSelection();
+      },
+    });
+    commandRegistry.register({
+      id: 'trim-to-selection',
+      label: 'Trim to Selection (Crop)',
+      isEnabled: () => Boolean(activeClip && selectionRange && (selectionRange.end - selectionRange.start) > 0.003),
+      execute: () => {
+        handleTrimToSelection();
+      },
+    });
+    commandRegistry.register({
+      id: 'split-clip',
+      label: 'Split as Virtual Clip',
+      isEnabled: () => Boolean(activeClip && selectionRange && (selectionRange.end - selectionRange.start) > 0.003),
+      execute: () => {
+        handleSplitVirtualClip();
+      },
+    });
+    commandRegistry.register({
+      id: 'clear-selection',
+      label: 'Clear Selection',
+      isEnabled: () => Boolean(selectionRange),
+      execute: () => {
+        setSelectionRange(null);
+      },
+    });
+    commandRegistry.register({
       id: 'export',
       label: 'Export…',
       isEnabled: () => selectedClipIds.size > 0 || !!activeClip,
@@ -993,6 +1072,8 @@ export default function App() {
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        setShowSelectionMenu(false);
+        setSelectionRange(null);
         setShowUnifiedExportModal(false);
         setShowExcerptModal(false);
         setShowNewCollectionModal(false);
@@ -1017,7 +1098,17 @@ export default function App() {
       unsubscribeMenu();
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [activeClip, activeWorkspace, selectionRange, activePassage, currentTimeSec, copiedMetadata, selectedClipIds]);
+  }, [
+    activeClip,
+    activeWorkspace,
+    selectionRange,
+    activePassage,
+    currentTimeSec,
+    copiedMetadata,
+    selectedClipIds,
+    undoStack,
+    redoStack,
+  ]);
 
   // Convert Float32Array PCM samples into a valid 16-bit 48kHz WAV ArrayBuffer
   function encodeWav(samples: Float32Array, sampleRate = 48000): ArrayBuffer {
@@ -1532,11 +1623,26 @@ export default function App() {
     if (e.button === 2) return; // Ignore right click for drag start
     const rect = e.currentTarget.getBoundingClientRect();
     const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+
+    if (e.shiftKey) {
+      const anchor = playbackProgress;
+      setIsSelecting(true);
+      setDragStart(anchor);
+      setSelectionRange({
+        start: Math.min(anchor, pos),
+        end: Math.max(anchor, pos),
+      });
+      setContextMenu(null);
+      setShowSelectionMenu(false);
+      return;
+    }
+
     setIsSelecting(true);
     setDragStart(pos);
     setSelectionRange({ start: pos, end: pos });
     setPlaybackProgress(pos);
     setContextMenu(null);
+    setShowSelectionMenu(false);
 
     if (audioRef.current && activeClip) {
       const duration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
@@ -1559,6 +1665,9 @@ export default function App() {
   function handleWaveformMouseUp() {
     setIsSelecting(false);
     setDragStart(null);
+    if (selectionRange && (selectionRange.end - selectionRange.start) < 0.003) {
+      setSelectionRange(null);
+    }
   }
 
   function handleWaveformContextMenu(e: React.MouseEvent) {
@@ -1746,25 +1855,396 @@ export default function App() {
     setContextMenu(null);
   }
 
-  function handleSplitVirtualClip() {
-    if (!selectionRange || !activeClip) return;
-    const startSec = Math.round(selectionRange.start * activeClip.endTimeSeconds);
-    const endSec = Math.round(selectionRange.end * activeClip.endTimeSeconds);
+  function formatAudioTime(seconds: number): string {
+    const totalSecs = Math.max(0, Math.floor(seconds));
+    const m = Math.floor(totalSecs / 60);
+    const s = totalSecs % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  }
 
-    const splitClip: VirtualClip = {
-      id: `clip_${Date.now()}`,
+  function showToastWithUndo(message: string) {
+    setToastMessage(message);
+    setToastUndoAction(() => () => {
+      handleUndo();
+    });
+    setTimeout(() => {
+      setToastMessage((prev) => (prev === message ? null : prev));
+      setToastUndoAction(null);
+    }, 5000);
+  }
+
+  function handleUndo() {
+    if (undoStack.length === 0) return;
+    const [action, ...remainingUndo] = undoStack;
+
+    if (action.type === 'trim' && action.before) {
+      if (window.audioVault) {
+        window.audioVault.updateVirtualClip(action.clipId, {
+          startTimeSeconds: action.before.startTimeSeconds,
+          endTimeSeconds: action.before.endTimeSeconds,
+        });
+      }
+      setClips((prev) =>
+        prev.map((c) =>
+          c.id === action.clipId
+            ? {
+                ...c,
+                startTimeSeconds: action.before!.startTimeSeconds,
+                endTimeSeconds: action.before!.endTimeSeconds,
+                updatedAt: new Date().toISOString(),
+              }
+            : c
+        )
+      );
+      if (activeClip && activeClip.id === action.clipId) {
+        if (audioRef.current) {
+          audioRef.current.currentTime = action.before.startTimeSeconds;
+        }
+        setPlaybackProgress(0);
+        setCurrentTimeSec(0);
+      }
+    } else if (action.type === 'middle_cut' && action.originalClip) {
+      if (window.audioVault) {
+        window.audioVault.updateVirtualClip(action.originalClip.id, {
+          startTimeSeconds: action.originalClip.startTimeSeconds,
+          endTimeSeconds: action.originalClip.endTimeSeconds,
+          title: action.originalClip.title,
+        });
+        if (action.createdClipIds) {
+          for (const id of action.createdClipIds) {
+            window.audioVault.deleteVirtualClip(id);
+          }
+        }
+      }
+      setClips((prev) => {
+        const withoutCreated = prev.filter((c) => !(action.createdClipIds || []).includes(c.id));
+        return withoutCreated.map((c) => (c.id === action.originalClip!.id ? { ...action.originalClip! } : c));
+      });
+      if (activeClip && activeClip.id === action.clipId) {
+        if (audioRef.current) {
+          audioRef.current.currentTime = action.originalClip.startTimeSeconds;
+        }
+        setPlaybackProgress(0);
+        setCurrentTimeSec(0);
+      }
+    } else if (action.type === 'split' && action.createdClipIds) {
+      if (window.audioVault) {
+        for (const id of action.createdClipIds) {
+          window.audioVault.deleteVirtualClip(id);
+        }
+      }
+      setClips((prev) => prev.filter((c) => !(action.createdClipIds || []).includes(c.id)));
+    }
+
+    setUndoStack(remainingUndo);
+    setRedoStack((prev) => [action, ...prev]);
+    setToastMessage(`↩️ Undid: ${action.description}`);
+    setToastUndoAction(null);
+    setTimeout(() => setToastMessage(null), 3500);
+  }
+
+  function handleRedo() {
+    if (redoStack.length === 0) return;
+    const [action, ...remainingRedo] = redoStack;
+
+    if (action.type === 'trim' && action.after) {
+      if (window.audioVault) {
+        window.audioVault.updateVirtualClip(action.clipId, {
+          startTimeSeconds: action.after.startTimeSeconds,
+          endTimeSeconds: action.after.endTimeSeconds,
+        });
+      }
+      setClips((prev) =>
+        prev.map((c) =>
+          c.id === action.clipId
+            ? {
+                ...c,
+                startTimeSeconds: action.after!.startTimeSeconds,
+                endTimeSeconds: action.after!.endTimeSeconds,
+                updatedAt: new Date().toISOString(),
+              }
+            : c
+        )
+      );
+      if (activeClip && activeClip.id === action.clipId) {
+        if (audioRef.current) {
+          audioRef.current.currentTime = action.after.startTimeSeconds;
+        }
+        setPlaybackProgress(0);
+        setCurrentTimeSec(0);
+      }
+    }
+
+    setRedoStack(remainingRedo);
+    setUndoStack((prev) => [action, ...prev]);
+    setToastMessage(`🔁 Redid: ${action.description}`);
+    setTimeout(() => setToastMessage(null), 3500);
+  }
+
+  function handlePlaySelection() {
+    if (!activeClip || !selectionRange || !audioRef.current) return;
+    const clipDuration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+    const targetTime = activeClip.startTimeSeconds + selectionRange.start * clipDuration;
+    audioRef.current.currentTime = targetTime;
+    setCurrentTimeSec(selectionRange.start * clipDuration);
+    setPlaybackProgress(selectionRange.start);
+    setIsPlaying(true);
+    audioRef.current.play().catch(() => {});
+  }
+
+  function handleSaveSelectionAsExcerpt() {
+    if (!activeClip || !selectionRange) return;
+    const clipDuration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+    setExcerptStart(Math.round(selectionRange.start * clipDuration * 10) / 10);
+    setExcerptEnd(Math.round(selectionRange.end * clipDuration * 10) / 10);
+    setExcerptTitle(`${activeClip.title} (Selection)`);
+    setShowExcerptModal(true);
+    setShowSelectionMenu(false);
+    setContextMenu(null);
+  }
+
+  function handleCutOutSelection() {
+    if (!activeClip || !selectionRange) return;
+    const clipDuration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+    const selStartSec = activeClip.startTimeSeconds + selectionRange.start * clipDuration;
+    const selEndSec = activeClip.startTimeSeconds + selectionRange.end * clipDuration;
+    const cutDuration = selEndSec - selStartSec;
+
+    if (cutDuration <= 0.05) return;
+
+    setShowSelectionMenu(false);
+    setContextMenu(null);
+
+    // Case 1: Head Trim (cutting intro / silence at start)
+    if (selectionRange.start <= 0.03) {
+      const newStart = Math.min(activeClip.endTimeSeconds - 0.2, Math.round(selEndSec * 100) / 100);
+      const action: TrimUndoAction = {
+        id: `undo_${Date.now()}`,
+        description: `Trimmed intro (${cutDuration.toFixed(1)}s)`,
+        clipId: activeClip.id,
+        type: 'trim',
+        before: {
+          startTimeSeconds: activeClip.startTimeSeconds,
+          endTimeSeconds: activeClip.endTimeSeconds,
+        },
+        after: {
+          startTimeSeconds: newStart,
+          endTimeSeconds: activeClip.endTimeSeconds,
+        },
+      };
+
+      setUndoStack((prev) => [action, ...prev]);
+      setRedoStack([]);
+
+      if (window.audioVault) {
+        window.audioVault.updateVirtualClip(activeClip.id, { startTimeSeconds: newStart });
+      }
+
+      setClips((prev) =>
+        prev.map((c) =>
+          c.id === activeClip.id
+            ? { ...c, startTimeSeconds: newStart, updatedAt: new Date().toISOString() }
+            : c
+        )
+      );
+
+      setSelectionRange(null);
+      setPlaybackProgress(0);
+      setCurrentTimeSec(0);
+      if (audioRef.current) {
+        audioRef.current.currentTime = newStart;
+      }
+      showToastWithUndo(`✂️ Trimmed intro (cut ${cutDuration.toFixed(1)}s)`);
+      return;
+    }
+
+    // Case 2: Tail Trim (cutting outro / end silence)
+    if (selectionRange.end >= 0.97) {
+      const newEnd = Math.max(activeClip.startTimeSeconds + 0.2, Math.round(selStartSec * 100) / 100);
+      const action: TrimUndoAction = {
+        id: `undo_${Date.now()}`,
+        description: `Trimmed outro (${cutDuration.toFixed(1)}s)`,
+        clipId: activeClip.id,
+        type: 'trim',
+        before: {
+          startTimeSeconds: activeClip.startTimeSeconds,
+          endTimeSeconds: activeClip.endTimeSeconds,
+        },
+        after: {
+          startTimeSeconds: activeClip.startTimeSeconds,
+          endTimeSeconds: newEnd,
+        },
+      };
+
+      setUndoStack((prev) => [action, ...prev]);
+      setRedoStack([]);
+
+      if (window.audioVault) {
+        window.audioVault.updateVirtualClip(activeClip.id, { endTimeSeconds: newEnd });
+      }
+
+      setClips((prev) =>
+        prev.map((c) =>
+          c.id === activeClip.id
+            ? { ...c, endTimeSeconds: newEnd, updatedAt: new Date().toISOString() }
+            : c
+        )
+      );
+
+      setSelectionRange(null);
+      const newDur = newEnd - activeClip.startTimeSeconds;
+      const newPos = Math.min(currentTimeSec, newDur);
+      setCurrentTimeSec(newPos);
+      setPlaybackProgress(newDur > 0 ? newPos / newDur : 0);
+      showToastWithUndo(`✂️ Trimmed outro (cut ${cutDuration.toFixed(1)}s)`);
+      return;
+    }
+
+    // Case 3: Middle Cut (split into Part 1 and Part 2, omitting excised middle)
+    const part1End = Math.round(selStartSec * 100) / 100;
+    const part2Start = Math.round(selEndSec * 100) / 100;
+
+    const part2Clip: VirtualClip = {
+      id: `clip_${Date.now()}_pt2`,
       parentFileId: activeClip.parentFileId,
-      title: `${activeClip.title} (Cut ${startSec}s-${endSec}s)`,
-      startTimeSeconds: startSec,
-      endTimeSeconds: endSec,
+      title: `${activeClip.title} (Part 2)`,
+      startTimeSeconds: part2Start,
+      endTimeSeconds: activeClip.endTimeSeconds,
       category: activeClip.category,
-      userTags: [...activeClip.userTags, 'Virtual Segment'],
+      userTags: [...(activeClip.userTags || []), 'Split Take'],
       classificationConfidence: activeClip.classificationConfidence,
       classificationSource: 'user_manual',
       isExcluded: false,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      artist: activeClip.artist,
+      location: activeClip.location,
+      rating: activeClip.rating,
     };
+
+    const action: TrimUndoAction = {
+      id: `undo_${Date.now()}`,
+      description: `Cut middle section (${cutDuration.toFixed(1)}s)`,
+      clipId: activeClip.id,
+      type: 'middle_cut',
+      originalClip: { ...activeClip },
+      createdClipIds: [part2Clip.id],
+    };
+
+    setUndoStack((prev) => [action, ...prev]);
+    setRedoStack([]);
+
+    if (window.audioVault) {
+      window.audioVault.updateVirtualClip(activeClip.id, { endTimeSeconds: part1End });
+      window.audioVault.createVirtualClip(part2Clip);
+    }
+
+    setClips((prev) => [
+      part2Clip,
+      ...prev.map((c) =>
+        c.id === activeClip.id
+          ? { ...c, endTimeSeconds: part1End, updatedAt: new Date().toISOString() }
+          : c
+      ),
+    ]);
+
+    setSelectionRange(null);
+    showToastWithUndo(`✂️ Cut out middle ${cutDuration.toFixed(1)}s (created Part 2)`);
+  }
+
+  function handleTrimToSelection() {
+    if (!activeClip || !selectionRange) return;
+    const clipDuration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+    const selStartSec = Math.round((activeClip.startTimeSeconds + selectionRange.start * clipDuration) * 100) / 100;
+    const selEndSec = Math.round((activeClip.startTimeSeconds + selectionRange.end * clipDuration) * 100) / 100;
+    const keptDuration = selEndSec - selStartSec;
+
+    if (keptDuration <= 0.2) return;
+
+    setShowSelectionMenu(false);
+    setContextMenu(null);
+
+    const action: TrimUndoAction = {
+      id: `undo_${Date.now()}`,
+      description: `Crop to selection (${keptDuration.toFixed(1)}s)`,
+      clipId: activeClip.id,
+      type: 'trim',
+      before: {
+        startTimeSeconds: activeClip.startTimeSeconds,
+        endTimeSeconds: activeClip.endTimeSeconds,
+      },
+      after: {
+        startTimeSeconds: selStartSec,
+        endTimeSeconds: selEndSec,
+      },
+    };
+
+    setUndoStack((prev) => [action, ...prev]);
+    setRedoStack([]);
+
+    if (window.audioVault) {
+      window.audioVault.updateVirtualClip(activeClip.id, {
+        startTimeSeconds: selStartSec,
+        endTimeSeconds: selEndSec,
+      });
+    }
+
+    setClips((prev) =>
+      prev.map((c) =>
+        c.id === activeClip.id
+          ? {
+              ...c,
+              startTimeSeconds: selStartSec,
+              endTimeSeconds: selEndSec,
+              updatedAt: new Date().toISOString(),
+            }
+          : c
+      )
+    );
+
+    setSelectionRange(null);
+    setPlaybackProgress(0);
+    setCurrentTimeSec(0);
+    if (audioRef.current) {
+      audioRef.current.currentTime = selStartSec;
+    }
+    showToastWithUndo(`✂️ Cropped track to selection (${keptDuration.toFixed(1)}s kept)`);
+  }
+
+  function handleSplitVirtualClip() {
+    if (!selectionRange || !activeClip) return;
+    const clipDuration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+    const startSec = Math.round(activeClip.startTimeSeconds + selectionRange.start * clipDuration);
+    const endSec = Math.round(activeClip.startTimeSeconds + selectionRange.end * clipDuration);
+
+    const splitClip: VirtualClip = {
+      id: `clip_${Date.now()}`,
+      parentFileId: activeClip.parentFileId,
+      title: `${activeClip.title} (Split ${formatAudioTime(startSec - activeClip.startTimeSeconds)} - ${formatAudioTime(endSec - activeClip.startTimeSeconds)})`,
+      startTimeSeconds: startSec,
+      endTimeSeconds: endSec,
+      category: activeClip.category,
+      userTags: [...(activeClip.userTags || []), 'Virtual Segment'],
+      classificationConfidence: activeClip.classificationConfidence,
+      classificationSource: 'user_manual',
+      isExcluded: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      artist: activeClip.artist,
+      location: activeClip.location,
+      rating: activeClip.rating,
+    };
+
+    const action: TrimUndoAction = {
+      id: `undo_${Date.now()}`,
+      description: `Split clip "${splitClip.title}"`,
+      clipId: activeClip.id,
+      type: 'split',
+      createdClipIds: [splitClip.id],
+    };
+
+    setUndoStack((prev) => [action, ...prev]);
+    setRedoStack([]);
 
     if (window.audioVault) {
       window.audioVault.createVirtualClip(splitClip);
@@ -1772,7 +2252,174 @@ export default function App() {
     setClips((prev) => [splitClip, ...prev]);
     setSelectedClipId(splitClip.id);
     setContextMenu(null);
+    setShowSelectionMenu(false);
+    showToastWithUndo(`✓ Created virtual clip: "${splitClip.title}"`);
   }
+
+  const renderSelectionBar = () => {
+    if (!activeClip || !selectionRange || (selectionRange.end - selectionRange.start) < 0.003) {
+      return null;
+    }
+
+    const clipDuration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+    const selStartSec = selectionRange.start * clipDuration;
+    const selEndSec = selectionRange.end * clipDuration;
+    const selDuration = Math.max(0, selEndSec - selStartSec);
+
+    return (
+      <div className="waveform-selection-bar" data-testid="waveform-selection-bar" style={{ marginBottom: '0.4rem' }}>
+        <div className="selection-bar-info">
+          <span className="selection-badge">✂️ Range</span>
+          <span className="selection-time">
+            {formatAudioTime(selStartSec)} – {formatAudioTime(selEndSec)} ({selDuration.toFixed(1)}s)
+          </span>
+        </div>
+
+        <div className="selection-bar-actions">
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            style={{ color: '#38bdf8' }}
+            onClick={handlePlaySelection}
+            title="Play audition for selected region"
+            data-testid="selection-play-btn"
+          >
+            ▶️ Play
+          </button>
+
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            style={{ color: '#f87171', borderColor: 'rgba(239, 68, 68, 0.4)' }}
+            onClick={handleCutOutSelection}
+            title="Cut out and delete this region (Backspace)"
+            data-testid="selection-cut-btn"
+          >
+            ✂️ Cut Out
+          </button>
+
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={handleTrimToSelection}
+            title="Crop track to keep only this region (Alt+Cmd+T)"
+            data-testid="selection-crop-btn"
+          >
+            🎯 Crop
+          </button>
+
+          <div className="selection-dropdown-container">
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => setShowSelectionMenu((prev) => !prev)}
+              data-testid="selection-menu-trigger"
+            >
+              Selection Operations ▾
+            </button>
+
+            {showSelectionMenu && (
+              <div className="selection-dropdown-menu" data-testid="selection-dropdown-menu">
+                <div className="dropdown-group-header">Trim & Edit</div>
+                <div
+                  className="dropdown-item danger"
+                  onClick={handleCutOutSelection}
+                  data-testid="menu-cut-selection"
+                >
+                  <span>✂️ Cut Out (Delete Region)</span>
+                  <kbd>⌫</kbd>
+                </div>
+                <div
+                  className="dropdown-item"
+                  onClick={handleTrimToSelection}
+                  data-testid="menu-crop-selection"
+                >
+                  <span>🎯 Trim to Selection (Crop)</span>
+                  <kbd>⌥⌘T</kbd>
+                </div>
+                <div
+                  className="dropdown-item"
+                  onClick={handleSplitVirtualClip}
+                  data-testid="menu-split-clip"
+                >
+                  <span>✂️ Split as Virtual Clip</span>
+                  <kbd>⌘S</kbd>
+                </div>
+
+                <div className="context-divider" style={{ margin: '4px 0' }} />
+                <div className="dropdown-group-header">Export & Extract</div>
+                <div
+                  className="dropdown-item"
+                  onClick={() => {
+                    setShowSelectionMenu(false);
+                    handleOpenExportModal([activeClip.id]);
+                  }}
+                  data-testid="menu-export-selection"
+                >
+                  <span>💾 Export Selection…</span>
+                </div>
+                <div
+                  className="dropdown-item"
+                  onClick={() => {
+                    setShowSelectionMenu(false);
+                    handleExportClipMp3(activeClip, true);
+                  }}
+                  data-testid="menu-export-mp3-selection"
+                >
+                  <span>🎵 Export Selection to MP3</span>
+                </div>
+                <div
+                  className="dropdown-item"
+                  onClick={handleSaveSelectionAsExcerpt}
+                  data-testid="menu-excerpt-selection"
+                >
+                  <span>📑 Save Selection as Excerpt…</span>
+                </div>
+
+                <div className="context-divider" style={{ margin: '4px 0' }} />
+                <div className="dropdown-group-header">Playback & Control</div>
+                <div
+                  className="dropdown-item"
+                  onClick={() => {
+                    setShowSelectionMenu(false);
+                    handlePlaySelection();
+                  }}
+                  data-testid="menu-play-selection"
+                >
+                  <span>▶️ Play Selection</span>
+                  <kbd>Space</kbd>
+                </div>
+                <div
+                  className="dropdown-item"
+                  onClick={() => {
+                    setShowSelectionMenu(false);
+                    setSelectionRange(null);
+                  }}
+                  data-testid="menu-clear-selection"
+                >
+                  <span>✕ Clear Selection</span>
+                  <kbd>Esc</kbd>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => {
+              setShowSelectionMenu(false);
+              setSelectionRange(null);
+            }}
+            title="Clear selection (Escape)"
+            style={{ padding: '0.2rem 0.5rem', opacity: 0.8 }}
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   function handleExcludeRegion() {
     setClips((prev) =>
@@ -4631,6 +5278,9 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Selection Bar & Quick Operations */}
+              {renderSelectionBar()}
+
               {/* Interactive Waveform Canvas Container */}
               <div
                 className="waveform-canvas-container"
@@ -5477,6 +6127,9 @@ export default function App() {
               </div>
             </div>
 
+            {/* Selection Bar & Quick Operations */}
+            {renderSelectionBar()}
+
             {/* Interactive Waveform Canvas Container */}
             <div
               className="waveform-canvas-container"
@@ -5758,6 +6411,51 @@ export default function App() {
           <div className="context-menu-item" onClick={handleAddTagPrompt}>
             🔖 Add Custom Sub-Tag...
           </div>
+          {selectionRange && (selectionRange.end - selectionRange.start) > 0.003 && (
+            <>
+              <div className="context-divider" />
+              <div
+                className="dropdown-group-header"
+                style={{ padding: '4px 12px 2px 12px' }}
+              >
+                ✂️ SELECTION ({(Math.max(0, (selectionRange.end - selectionRange.start) * (activeClip?.endTimeSeconds ? activeClip.endTimeSeconds - activeClip.startTimeSeconds : 0))).toFixed(1)}s)
+              </div>
+              <div
+                className="context-menu-item"
+                style={{ color: '#f87171' }}
+                onClick={handleCutOutSelection}
+              >
+                ✂️ Cut Out Selection (Delete Region)
+              </div>
+              <div
+                className="context-menu-item"
+                onClick={handleTrimToSelection}
+              >
+                🎯 Trim to Selection (Crop)
+              </div>
+              <div
+                className="context-menu-item"
+                onClick={handlePlaySelection}
+              >
+                ▶️ Play Selection
+              </div>
+              <div
+                className="context-menu-item"
+                onClick={handleSaveSelectionAsExcerpt}
+              >
+                📑 Save as Excerpt...
+              </div>
+              <div
+                className="context-menu-item"
+                onClick={() => {
+                  setSelectionRange(null);
+                  setContextMenu(null);
+                }}
+              >
+                ✕ Clear Selection
+              </div>
+            </>
+          )}
           <div className="context-menu-item" onClick={handleSplitVirtualClip}>
             ✂️ Split as Virtual Clip
           </div>
@@ -7567,6 +8265,18 @@ export default function App() {
       {toastMessage && (
         <div className="copy-toast" data-testid="copy-toast">
           <span>{toastMessage}</span>
+          {toastUndoAction && (
+            <button
+              className="toast-undo-btn"
+              data-testid="toast-undo-button"
+              onClick={() => {
+                toastUndoAction();
+                setToastUndoAction(null);
+              }}
+            >
+              Undo
+            </button>
+          )}
         </div>
       )}
     </div>

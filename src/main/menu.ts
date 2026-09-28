@@ -76,13 +76,58 @@ export function setupApplicationMenu(getMainWindow: () => BrowserWindow | null) 
     {
       label: 'Edit',
       submenu: [
-        { role: 'undo' },
-        { role: 'redo' },
+        {
+          label: 'Undo',
+          accelerator: 'CmdOrCtrl+Z',
+          click: () => sendAction('undo'),
+        },
+        {
+          label: 'Redo',
+          accelerator: isMac ? 'Shift+CmdOrCtrl+Z' : 'CmdOrCtrl+Y',
+          click: () => sendAction('redo'),
+        },
         { type: 'separator' },
         { role: 'cut' },
         { role: 'copy' },
         { role: 'paste' },
         { role: 'selectAll' },
+        { type: 'separator' },
+        {
+          label: 'Selection Operations',
+          submenu: [
+            {
+              label: 'Cut Out Selection (Delete Region)',
+              accelerator: 'Backspace',
+              click: () => sendAction('cut-selection'),
+            },
+            {
+              label: 'Trim to Selection (Crop)',
+              accelerator: 'Alt+CmdOrCtrl+T',
+              click: () => sendAction('trim-to-selection'),
+            },
+            {
+              label: 'Split as Virtual Clip',
+              click: () => sendAction('split-clip'),
+            },
+            { type: 'separator' },
+            {
+              label: 'Clear Selection',
+              accelerator: 'Escape',
+              click: () => sendAction('clear-selection'),
+            },
+          ],
+        },
+        { type: 'separator' },
+        {
+          label: 'Copy Artist & Location',
+          accelerator: 'Alt+CmdOrCtrl+C',
+          click: () => sendAction('copy-metadata'),
+        },
+        {
+          label: 'Paste Artist & Location',
+          accelerator: 'Alt+CmdOrCtrl+V',
+          click: () => sendAction('paste-metadata'),
+        },
         { type: 'separator' },
         {
           label: 'Find in Transcript…',

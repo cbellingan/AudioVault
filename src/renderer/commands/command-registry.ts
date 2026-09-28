@@ -22,6 +22,12 @@ export type CommandId =
   | 'rate-5'
   | 'copy-metadata'
   | 'paste-metadata'
+  | 'undo'
+  | 'redo'
+  | 'cut-selection'
+  | 'trim-to-selection'
+  | 'split-clip'
+  | 'clear-selection'
   | 'save-excerpt'
   | 'show-in-finder'
   | 'nav-library'
@@ -40,6 +46,9 @@ export interface CommandContext {
   selectedCount: number;
   hasTranscript: boolean;
   hasCopiedMetadata?: boolean;
+  hasSelectionRange?: boolean;
+  canUndo?: boolean;
+  canRedo?: boolean;
   isPlaying: boolean;
   isModalOpen: boolean;
 }
@@ -156,6 +165,22 @@ export class CommandRegistry {
         e.preventDefault();
         return this.execute('transcribe');
       }
+      if (key === 'z' && !isEditingText) {
+        e.preventDefault();
+        return e.shiftKey ? this.execute('redo') : this.execute('undo');
+      }
+      if (key === 'y' && !e.shiftKey && !isEditingText) {
+        e.preventDefault();
+        return this.execute('redo');
+      }
+      if (key === 't' && e.altKey && !isEditingText) {
+        e.preventDefault();
+        return this.execute('trim-to-selection');
+      }
+      if (key === 's' && !e.shiftKey && !e.altKey && !isEditingText && this.context.hasSelectionRange) {
+        e.preventDefault();
+        return this.execute('split-clip');
+      }
       if (key === 'c' && e.altKey && !isEditingText) {
         e.preventDefault();
         return this.execute('copy-metadata');
@@ -182,8 +207,12 @@ export class CommandRegistry {
       }
     }
 
-    // Star rating keys 0-5 and playback outside text editing
+    // Star rating keys 0-5, Delete / Backspace for cut-selection, and playback outside text editing
     if (!isEditingText && !this.context.isModalOpen && !e.metaKey && !e.ctrlKey) {
+      if ((e.key === 'Backspace' || e.key === 'Delete') && this.context.hasSelectionRange) {
+        e.preventDefault();
+        return this.execute('cut-selection');
+      }
       if (['0', '1', '2', '3', '4', '5'].includes(e.key) && !e.altKey && !e.shiftKey) {
         e.preventDefault();
         return this.execute(`rate-${e.key}` as CommandId);

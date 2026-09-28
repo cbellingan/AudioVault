@@ -211,4 +211,74 @@ describe('Slice F02: Typed Command Registry and Keyboard Routing', () => {
     expect(inputHandled).toBe(false);
     expect(copySpy).toHaveBeenCalledTimes(1);
   });
+
+  it('handles undo, redo, cut-selection, trim-to-selection, and split-clip commands', () => {
+    const registry = new CommandRegistry();
+    const undoSpy = vi.fn();
+    const redoSpy = vi.fn();
+    const cutSpy = vi.fn();
+    const trimSpy = vi.fn();
+    const splitSpy = vi.fn();
+
+    registry.register({
+      id: 'undo',
+      label: 'Undo',
+      isEnabled: (ctx) => Boolean(ctx.canUndo),
+      execute: undoSpy,
+    });
+    registry.register({
+      id: 'redo',
+      label: 'Redo',
+      isEnabled: (ctx) => Boolean(ctx.canRedo),
+      execute: redoSpy,
+    });
+    registry.register({
+      id: 'cut-selection',
+      label: 'Cut Selection',
+      isEnabled: (ctx) => Boolean(ctx.hasSelectionRange),
+      execute: cutSpy,
+    });
+    registry.register({
+      id: 'trim-to-selection',
+      label: 'Trim to Selection',
+      isEnabled: (ctx) => Boolean(ctx.hasSelectionRange),
+      execute: trimSpy,
+    });
+    registry.register({
+      id: 'split-clip',
+      label: 'Split Clip',
+      isEnabled: (ctx) => Boolean(ctx.hasSelectionRange),
+      execute: splitSpy,
+    });
+
+    const bodyElement = { tagName: 'DIV', isContentEditable: false } as HTMLElement;
+
+    // Initially canUndo is false -> Cmd+Z does not trigger
+    registry.handleKeyDown({ metaKey: true, key: 'z', target: bodyElement, preventDefault: vi.fn() } as any);
+    expect(undoSpy).not.toHaveBeenCalled();
+
+    // Enable canUndo -> Cmd+Z triggers
+    registry.updateContext({ canUndo: true });
+    registry.handleKeyDown({ metaKey: true, key: 'z', target: bodyElement, preventDefault: vi.fn() } as any);
+    expect(undoSpy).toHaveBeenCalledTimes(1);
+
+    // Redo via Shift+Cmd+Z
+    registry.updateContext({ canRedo: true });
+    registry.handleKeyDown({ metaKey: true, shiftKey: true, key: 'z', target: bodyElement, preventDefault: vi.fn() } as any);
+    expect(redoSpy).toHaveBeenCalledTimes(1);
+
+    // Backspace / Delete with hasSelectionRange triggers cut-selection
+    registry.updateContext({ hasSelectionRange: true });
+    registry.handleKeyDown({ key: 'Backspace', target: bodyElement, preventDefault: vi.fn() } as any);
+    expect(cutSpy).toHaveBeenCalledTimes(1);
+
+    // Alt+Cmd+T triggers trim-to-selection
+    registry.handleKeyDown({ metaKey: true, altKey: true, key: 't', target: bodyElement, preventDefault: vi.fn() } as any);
+    expect(trimSpy).toHaveBeenCalledTimes(1);
+
+    // Cmd+S with hasSelectionRange triggers split-clip
+    registry.handleKeyDown({ metaKey: true, key: 's', target: bodyElement, preventDefault: vi.fn() } as any);
+    expect(splitSpy).toHaveBeenCalledTimes(1);
+  });
 });
+
