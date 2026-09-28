@@ -143,4 +143,72 @@ describe('Slice F02: Typed Command Registry and Keyboard Routing', () => {
     expect(handledInInput).toBe(false);
     expect(rateSpies[3]).toHaveBeenCalledTimes(1); // Still 1 from before
   });
+
+  it('handles Option+Cmd+C (copy-metadata) and Option+Cmd+V (paste-metadata) shortcuts', () => {
+    const registry = new CommandRegistry();
+    const copySpy = vi.fn();
+    const pasteSpy = vi.fn();
+
+    registry.register({
+      id: 'copy-metadata',
+      label: 'Copy Artist & Location',
+      isEnabled: () => true,
+      execute: copySpy,
+    });
+
+    registry.register({
+      id: 'paste-metadata',
+      label: 'Paste Artist & Location',
+      isEnabled: (ctx) => Boolean(ctx.hasCopiedMetadata),
+      execute: pasteSpy,
+    });
+
+    // Press Option+Cmd+C
+    const bodyElement = { tagName: 'DIV', isContentEditable: false } as HTMLElement;
+    const copyEvent = {
+      metaKey: true,
+      altKey: true,
+      key: 'c',
+      target: bodyElement,
+      preventDefault: vi.fn(),
+    } as unknown as KeyboardEvent;
+
+    const copyHandled = registry.handleKeyDown(copyEvent);
+    expect(copyHandled).toBe(true);
+    expect(copySpy).toHaveBeenCalledTimes(1);
+    expect(copyEvent.preventDefault).toHaveBeenCalled();
+
+    // Paste metadata when hasCopiedMetadata is false -> should not execute
+    const pasteEvent = {
+      metaKey: true,
+      altKey: true,
+      key: 'v',
+      target: bodyElement,
+      preventDefault: vi.fn(),
+    } as unknown as KeyboardEvent;
+
+    const pasteHandledBeforeCopy = registry.handleKeyDown(pasteEvent);
+    expect(pasteHandledBeforeCopy).toBe(false);
+    expect(pasteSpy).not.toHaveBeenCalled();
+
+    // Set hasCopiedMetadata to true and test paste
+    registry.updateContext({ hasCopiedMetadata: true });
+    const pasteHandledAfterCopy = registry.handleKeyDown(pasteEvent);
+    expect(pasteHandledAfterCopy).toBe(true);
+    expect(pasteSpy).toHaveBeenCalledTimes(1);
+
+    // Press Option+Cmd+C inside text input should not trigger
+    const inputElement = { tagName: 'INPUT', isContentEditable: false } as HTMLElement;
+    const inputCopyEvent = {
+      metaKey: true,
+      altKey: true,
+      key: 'c',
+      target: inputElement,
+      preventDefault: vi.fn(),
+    } as unknown as KeyboardEvent;
+
+    const inputHandled = registry.handleKeyDown(inputCopyEvent);
+    expect(inputHandled).toBe(false);
+    expect(copySpy).toHaveBeenCalledTimes(1);
+  });
 });

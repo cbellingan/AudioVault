@@ -20,6 +20,8 @@ export type CommandId =
   | 'rate-3'
   | 'rate-4'
   | 'rate-5'
+  | 'copy-metadata'
+  | 'paste-metadata'
   | 'save-excerpt'
   | 'show-in-finder'
   | 'nav-library'
@@ -37,6 +39,7 @@ export interface CommandContext {
   hasSelectedClips: boolean;
   selectedCount: number;
   hasTranscript: boolean;
+  hasCopiedMetadata?: boolean;
   isPlaying: boolean;
   isModalOpen: boolean;
 }
@@ -152,6 +155,14 @@ export class CommandRegistry {
       if (key === 't' && e.shiftKey) {
         e.preventDefault();
         return this.execute('transcribe');
+      }
+      if (key === 'c' && e.altKey && !isEditingText) {
+        e.preventDefault();
+        return this.execute('copy-metadata');
+      }
+      if (key === 'v' && e.altKey && !isEditingText) {
+        e.preventDefault();
+        return this.execute('paste-metadata');
       }
       if (key === 'c' && e.shiftKey) {
         e.preventDefault();

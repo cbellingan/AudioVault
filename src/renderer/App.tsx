@@ -37,6 +37,7 @@ import {
   SearchPassageHit,
 } from './library/search-engine';
 import { StarRatingWidget } from './components/StarRatingWidget';
+import { LocationMapView } from './components/LocationMapView';
 
 // Standalone fallback mock data
 const mockFallbackClips: VirtualClip[] = [
@@ -272,6 +273,14 @@ export default function App() {
     category: string;
     tagInput: string;
   }>({ artist: '', location: '', category: 'keep', tagInput: '' });
+
+  // Metadata Copy/Paste & Map Explorer (Slice 3)
+  const [copiedMetadata, setCopiedMetadata] = useState<{ artist?: string; location?: string } | null>(null);
+  const [mapModalTarget, setMapModalTarget] = useState<{
+    mode: 'edit-modal' | 'batch-modal' | 'view-only' | 'clip';
+    clipId?: string;
+    initialLocation?: string;
+  } | null>(null);
 
   const [isGeneratingTitleForClipId, setIsGeneratingTitleForClipId] = useState<string | null>(null);
   const [waveformProfile, setWaveformProfile] = useState<'adaptive' | 'balanced' | 'punchy' | 'linear'>('adaptive');
@@ -652,11 +661,13 @@ export default function App() {
       hasSelectedClips: selectedClipIds.size > 0,
       selectedCount: selectedClipIds.size,
       hasTranscript: !!(activeClip && (activeClip.fullTranscription || activeClip.transcription)),
+      hasCopiedMetadata: !!copiedMetadata,
       isPlaying,
       isModalOpen: !!(
         clipToDelete ||
         editingMetadataClip ||
         showBatchMetadataModal ||
+        mapModalTarget ||
         showRefreshAiModal ||
         showNewCollectionModal ||
         showSaveViewModal ||
@@ -672,6 +683,8 @@ export default function App() {
     clipToDelete,
     editingMetadataClip,
     showBatchMetadataModal,
+    mapModalTarget,
+    copiedMetadata,
     showRefreshAiModal,
     showNewCollectionModal,
     showSaveViewModal,
@@ -859,6 +872,23 @@ export default function App() {
       },
     });
     commandRegistry.register({
+      id: 'copy-metadata',
+      label: 'Copy Artist & Location',
+      isEnabled: () => !!activeClip,
+      execute: () => {
+        if (activeClip) handleCopyClipMetadata(activeClip);
+      },
+    });
+    commandRegistry.register({
+      id: 'paste-metadata',
+      label: 'Paste Artist & Location',
+      isEnabled: (ctx) => !!ctx.hasCopiedMetadata && (!!activeClip || selectedClipIds.size > 0),
+      execute: () => {
+        const targetIds = selectedClipIds.size > 0 ? Array.from(selectedClipIds) : (activeClip ? [activeClip.id] : []);
+        if (targetIds.length > 0) handlePasteMetadataToClips(targetIds);
+      },
+    });
+    commandRegistry.register({
       id: 'export',
       label: 'Export…',
       isEnabled: () => selectedClipIds.size > 0 || !!activeClip,
@@ -970,6 +1000,8 @@ export default function App() {
         setShowSaveViewModal(false);
         setShowEditTextModal(false);
         setShowRefreshAiModal(false);
+        setShowBatchMetadataModal(false);
+        setMapModalTarget(null);
         setImportPlan(null);
         setShowRevertConfirmModal(false);
         setReprocessPromptClip(null);
@@ -985,7 +1017,7 @@ export default function App() {
       unsubscribeMenu();
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [activeClip, activeWorkspace, selectionRange, activePassage, currentTimeSec]);
+  }, [activeClip, activeWorkspace, selectionRange, activePassage, currentTimeSec, copiedMetadata, selectedClipIds]);
 
   // Convert Float32Array PCM samples into a valid 16-bit 48kHz WAV ArrayBuffer
   function encodeWav(samples: Float32Array, sampleRate = 48000): ArrayBuffer {
@@ -2323,6 +2355,96 @@ export default function App() {
     }
   }
 
+  // Copy artist and location metadata from a track (internal state + clipboard)
+  async function handleCopyClipMetadata(clip: VirtualClip) {
+    const data = {
+      artist: clip.artist || '',
+      location: clip.location || '',
+    };
+    setCopiedMetadata(data);
+
+    const parts: string[] = [];
+    if (data.artist) parts.push(`Artist: ${data.artist}`);
+    if (data.location) parts.push(`Location: ${data.location}`);
+    const summary = parts.join(' • ');
+
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(
+          JSON.stringify({ type: 'audiovault/metadata', artist: data.artist, location: data.location }, null, 2)
+        );
+      }
+    } catch (err) {
+      console.warn('Could not write metadata to system clipboard:', err);
+    }
+
+    setToastMessage(`📋 Copied metadata${summary ? ` (${summary})` : ''}`);
+    setTimeout(() => setToastMessage(null), 2500);
+    setClipContextMenu(null);
+    setContextMenu(null);
+  }
+
+  // Paste copied artist and location metadata onto one or more tracks
+  async function handlePasteMetadataToClips(targetClipIds: string[]) {
+    if (targetClipIds.length === 0) return;
+    let dataToPaste = copiedMetadata;
+
+    // Clipboard fallback: if internal memory is empty, check system clipboard
+    if (!dataToPaste || (!dataToPaste.artist && !dataToPaste.location)) {
+      try {
+        if (navigator.clipboard && navigator.clipboard.readText) {
+          const text = await navigator.clipboard.readText();
+          if (text) {
+            const parsed = JSON.parse(text);
+            if (parsed && (parsed.type === 'audiovault/metadata' || parsed.artist || parsed.location)) {
+              dataToPaste = { artist: parsed.artist || '', location: parsed.location || '' };
+            }
+          }
+        }
+      } catch {
+        // Not a JSON metadata string; ignore
+      }
+    }
+
+    if (!dataToPaste || (!dataToPaste.artist && !dataToPaste.location)) {
+      setToastMessage('ℹ️ No artist or location metadata in clipboard to paste');
+      setTimeout(() => setToastMessage(null), 2000);
+      return;
+    }
+
+    const updates: { artist?: string; location?: string } = {};
+    if (dataToPaste.artist) updates.artist = dataToPaste.artist;
+    if (dataToPaste.location) updates.location = dataToPaste.location;
+
+    if (window.audioVault?.batchUpdateMetadata) {
+      try {
+        const updatedClips = await window.audioVault.batchUpdateMetadata(targetClipIds, updates);
+        if (updatedClips && updatedClips.length > 0) {
+          setClips((prev) => {
+            const map = new Map(updatedClips.map((c) => [c.id, c]));
+            return prev.map((c) => map.get(c.id) || c);
+          });
+        }
+      } catch (err) {
+        console.error('Failed to paste metadata via IPC:', err);
+      }
+    } else {
+      setClips((prev) =>
+        prev.map((c) => (targetClipIds.includes(c.id) ? { ...c, ...updates } : c))
+      );
+    }
+
+    const parts: string[] = [];
+    if (dataToPaste.artist) parts.push(`Artist: ${dataToPaste.artist}`);
+    if (dataToPaste.location) parts.push(`Location: ${dataToPaste.location}`);
+    const summary = parts.join(', ');
+
+    setToastMessage(`📋 Pasted metadata (${summary}) onto ${targetClipIds.length} recording(s)`);
+    setTimeout(() => setToastMessage(null), 2500);
+    setClipContextMenu(null);
+    setContextMenu(null);
+  }
+
   // On-demand single clip re-processing (audio analysis, YAMNet classification, full Whisper transcription)
   async function handleReprocessClip(clip: VirtualClip) {
     setClipContextMenu(null);
@@ -2911,7 +3033,18 @@ export default function App() {
               </span>
             )}
             {clip.location && (
-              <span style={{ marginLeft: '8px', color: 'var(--accent-emerald)', fontWeight: 500 }}>
+              <span
+                style={{ marginLeft: '8px', color: 'var(--accent-emerald)', fontWeight: 500, cursor: 'pointer' }}
+                title="Click to view location on map"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMapModalTarget({
+                    mode: 'view-only',
+                    initialLocation: clip.location,
+                    clipId: clip.id,
+                  });
+                }}
+              >
                 📍 <HighlightMatch text={clip.location} query={searchQuery} />
               </span>
             )}
@@ -4040,7 +4173,31 @@ export default function App() {
                   {activeClip.location && (
                     <>
                       <span>•</span>
-                      <span style={{ color: 'var(--accent-emerald)', fontWeight: 500 }}>📍 {activeClip.location}</span>
+                      <button
+                        type="button"
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: 'var(--accent-emerald)',
+                          fontWeight: 500,
+                          cursor: 'pointer',
+                          padding: 0,
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '3px',
+                        }}
+                        onClick={() =>
+                          setMapModalTarget({
+                            mode: 'view-only',
+                            initialLocation: activeClip.location,
+                            clipId: activeClip.id,
+                          })
+                        }
+                        title="Click to view location on map"
+                        data-testid="detail-location-map-btn"
+                      >
+                        📍 {activeClip.location} 🗺️
+                      </button>
                     </>
                   )}
                   {activeClip.reviewed && (
@@ -4053,6 +4210,26 @@ export default function App() {
               </div>
 
               <div className="detail-actions-group">
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  data-testid="detail-copy-metadata-btn"
+                  title="Copy artist and location metadata (⌥⌘C)"
+                  onClick={() => handleCopyClipMetadata(activeClip)}
+                >
+                  📋 Copy Metadata
+                </button>
+                {copiedMetadata && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    data-testid="detail-paste-metadata-btn"
+                    title={`Paste metadata (${copiedMetadata.artist || ''}${copiedMetadata.artist && copiedMetadata.location ? ' • ' : ''}${copiedMetadata.location || ''}) onto this track (⌥⌘V)`}
+                    onClick={() => handlePasteMetadataToClips([activeClip.id])}
+                  >
+                    📋 Paste Metadata
+                  </button>
+                )}
                 <button
                   type="button"
                   className="btn btn-secondary btn-sm"
@@ -5135,6 +5312,17 @@ export default function App() {
                     >
                       🏷️ Edit metadata…
                     </button>
+                    {copiedMetadata && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        data-testid="batch-paste-metadata-btn"
+                        onClick={() => handlePasteMetadataToClips(Array.from(selectedClipIds))}
+                        title={`Paste metadata (${copiedMetadata.artist || ''}${copiedMetadata.artist && copiedMetadata.location ? ' • ' : ''}${copiedMetadata.location || ''}) onto selected tracks (⌥⌘V)`}
+                      >
+                        📋 Paste metadata
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="btn btn-secondary btn-sm"
@@ -5517,6 +5705,42 @@ export default function App() {
             );
           })()}
 
+          {activeClip && (
+            <>
+              <div
+                className="context-menu-item"
+                data-testid="wf-ctx-copy-metadata"
+                onClick={() => handleCopyClipMetadata(activeClip)}
+              >
+                📋 Copy Artist & Location (⌥⌘C)
+              </div>
+              <div
+                className={`context-menu-item ${copiedMetadata ? '' : 'disabled'}`}
+                data-testid="wf-ctx-paste-metadata"
+                aria-disabled={!copiedMetadata}
+                onClick={copiedMetadata ? () => handlePasteMetadataToClips([activeClip.id]) : undefined}
+              >
+                📋 Paste Artist & Location (⌥⌘V)
+              </div>
+              {activeClip.location && (
+                <div
+                  className="context-menu-item"
+                  data-testid="wf-ctx-view-map"
+                  onClick={() => {
+                    setContextMenu(null);
+                    setMapModalTarget({
+                      mode: 'view-only',
+                      initialLocation: activeClip.location,
+                      clipId: activeClip.id,
+                    });
+                  }}
+                >
+                  🗺️ View Location on Map...
+                </div>
+              )}
+            </>
+          )}
+
           <div className="context-divider" />
           <div className="context-menu-item" onClick={() => handleClassifySelection('music')}>
             🎵 Classify as Music
@@ -5658,6 +5882,41 @@ export default function App() {
           >
             ✏️ Edit Title & Metadata...
           </div>
+
+          <div
+            className="context-menu-item"
+            data-testid="ctx-copy-metadata"
+            onClick={() => handleCopyClipMetadata(clipContextMenu.clip)}
+          >
+            📋 Copy Artist & Location (⌥⌘C)
+          </div>
+
+          <div
+            className={`context-menu-item ${copiedMetadata ? '' : 'disabled'}`}
+            data-testid="ctx-paste-metadata"
+            aria-disabled={!copiedMetadata}
+            onClick={copiedMetadata ? () => handlePasteMetadataToClips([clipContextMenu.clip.id]) : undefined}
+            title={copiedMetadata ? `Paste: ${copiedMetadata.artist || ''}${copiedMetadata.artist && copiedMetadata.location ? ' • ' : ''}${copiedMetadata.location || ''}` : 'No metadata copied yet'}
+          >
+            📋 Paste Artist & Location (⌥⌘V)
+          </div>
+
+          {clipContextMenu.clip.location && (
+            <div
+              className="context-menu-item"
+              data-testid="ctx-view-map"
+              onClick={() => {
+                setClipContextMenu(null);
+                setMapModalTarget({
+                  mode: 'view-only',
+                  initialLocation: clipContextMenu.clip.location,
+                  clipId: clipContextMenu.clip.id,
+                });
+              }}
+            >
+              🗺️ View Location on Map...
+            </div>
+          )}
 
           <div
             className="context-menu-item"
@@ -6035,7 +6294,23 @@ export default function App() {
 
               {/* Location / Venue with Dropdown Memory */}
               <div className="form-group">
-                <label className="form-label">Location / Venue</label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                  <label className="form-label" style={{ margin: 0 }}>Location / Venue</label>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    style={{ fontSize: '0.72rem', padding: '2px 8px' }}
+                    onClick={() =>
+                      setMapModalTarget({
+                        mode: 'edit-modal',
+                        initialLocation: editingMetadataClip.location,
+                      })
+                    }
+                    data-testid="edit-modal-map-btn"
+                  >
+                    🗺️ Map & Search
+                  </button>
+                </div>
                 <input
                   type="text"
                   className="form-input"
@@ -6232,7 +6507,23 @@ export default function App() {
 
               {/* Batch Location */}
               <div className="form-group">
-                <label className="form-label">Location / Venue</label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                  <label className="form-label" style={{ margin: 0 }}>Location / Venue</label>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    style={{ fontSize: '0.72rem', padding: '2px 8px' }}
+                    onClick={() =>
+                      setMapModalTarget({
+                        mode: 'batch-modal',
+                        initialLocation: batchMetadata.location,
+                      })
+                    }
+                    data-testid="batch-modal-map-btn"
+                  >
+                    🗺️ Map & Search
+                  </button>
+                </div>
                 <input
                   type="text"
                   className="form-input"
@@ -6296,6 +6587,35 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Map Explorer Modal (Slice 3) */}
+      {mapModalTarget && (
+        <LocationMapView
+          initialLocation={mapModalTarget.initialLocation || ''}
+          readOnly={mapModalTarget.mode === 'view-only'}
+          onClose={() => setMapModalTarget(null)}
+          onSelectLocation={(locName) => {
+            if (mapModalTarget.mode === 'edit-modal') {
+              setEditingMetadataClip((prev) => (prev ? { ...prev, location: locName } : null));
+            } else if (mapModalTarget.mode === 'batch-modal') {
+              setBatchMetadata((prev) => ({ ...prev, location: locName }));
+            } else if (mapModalTarget.mode === 'clip' && mapModalTarget.clipId) {
+              const clipId = mapModalTarget.clipId;
+              if (window.audioVault?.updateVirtualClip) {
+                window.audioVault.updateVirtualClip(clipId, { location: locName }).then((updated) => {
+                  if (updated) {
+                    setClips((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+                    setToastMessage(`✓ Updated location for "${updated.title}"`);
+                    setTimeout(() => setToastMessage(null), 2500);
+                  }
+                });
+              } else {
+                setClips((prev) => prev.map((c) => (c.id === clipId ? { ...c, location: locName } : c)));
+              }
+            }
+          }}
+        />
       )}
 
       {/* Delete Clip Confirmation Modal */}
