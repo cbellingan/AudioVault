@@ -210,7 +210,16 @@ export interface VirtualClip {
   transcriptState?: 'not_requested' | 'queued' | 'transcribing' | 'ready' | 'no_speech' | 'failed';
   userTitle?: string; // Explicit user title (protected from auto-titling)
   editedTranscript?: string; // Explicit user edits to transcript
+  soundEvents?: SoundEvent[]; // Classified acoustic events (e.g. birds chirping, horse neigh, applause)
   transcriptVersions?: Array<{ id: string; text: string; source: 'machine' | 'user_edit'; createdAt: string }>;
+}
+
+export interface SoundEvent {
+  label: string;
+  category?: string;
+  confidence: number;
+  timestamp: [number, number]; // [startSec, endSec]
+  icon?: string;
 }
 
 export interface VaultSettings {

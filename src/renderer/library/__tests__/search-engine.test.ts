@@ -117,5 +117,87 @@ describe("search-engine", () => {
       expect(results[0].clip.id).toBe("clip-3");
       expect(results[0].matchedInTitle).toBe(true);
     });
+
+    it("searches sound event classifications across both 'all' and 'transcripts' scopes", () => {
+      const clipsWithSoundEvents: VirtualClip[] = [
+        ...clips,
+        {
+          id: "clip-ambient-birds",
+          parentFileId: "file-ambient",
+          title: "Early Morning Forest",
+          startTimeSeconds: 0,
+          endTimeSeconds: 60,
+          category: "ambient",
+          userTags: ["Nature", "Birds chirping", "Owl call"],
+          classificationConfidence: 0.92,
+          classificationSource: "yamnet_local",
+          isExcluded: false,
+          transcription: "🎧 [Acoustic Scene]: Birds chirping, Owl call",
+          fullTranscription: "[00:00] 🐦 Birds chirping (88%)\n\n[00:15] 🦉 Owl call (66%)",
+          transcriptionChunks: [
+            { text: "🐦 Birds chirping", timestamp: [0, 15] },
+            { text: "🦉 Owl call", timestamp: [15, 30] },
+          ],
+          soundEvents: [
+            { label: "Birds chirping", confidence: 0.88, timestamp: [0, 15], icon: "🐦" },
+            { label: "Owl call", confidence: 0.66, timestamp: [15, 30], icon: "🦉" },
+          ],
+          createdAt: "2026-09-04T10:00:00Z",
+          updatedAt: "2026-09-04T10:00:00Z",
+        },
+        {
+          id: "clip-music-horse",
+          parentFileId: "file-music",
+          title: "Country Trail Jam",
+          startTimeSeconds: 0,
+          endTimeSeconds: 90,
+          category: "music",
+          userTags: ["Guitar", "Horse neigh"],
+          classificationConfidence: 0.9,
+          classificationSource: "yamnet_local",
+          isExcluded: false,
+          transcription: "Country tune with acoustic cues",
+          fullTranscription: "[00:00] Strumming rhythm\n\n[00:30] [Sound Event: 🐴 Horse neigh]\n\n[01:00] Outro solo",
+          transcriptionChunks: [
+            { text: "Strumming rhythm", timestamp: [0, 30] },
+            { text: "[Sound Event: 🐴 Horse neigh]", timestamp: [30, 45] },
+            { text: "Outro solo", timestamp: [45, 90] },
+          ],
+          soundEvents: [
+            { label: "Horse neigh", confidence: 0.95, timestamp: [30, 45], icon: "🐴" },
+          ],
+          createdAt: "2026-09-05T10:00:00Z",
+          updatedAt: "2026-09-05T10:00:00Z",
+        },
+      ];
+
+      // 1. Search 'bird' in 'transcripts' scope
+      const birdTranscripts = searchLibrary(clipsWithSoundEvents, "bird", "transcripts");
+      expect(birdTranscripts.length).toBe(1);
+      expect(birdTranscripts[0].clip.id).toBe("clip-ambient-birds");
+      expect(birdTranscripts[0].passageHits[0].snippet).toContain("Birds chirping");
+
+      // 2. Search 'chirp' in 'all' scope
+      const chirpAll = searchLibrary(clipsWithSoundEvents, "chirp", "all");
+      expect(chirpAll.length).toBe(1);
+      expect(chirpAll[0].clip.id).toBe("clip-ambient-birds");
+
+      // 3. Search 'owl' in 'transcripts' scope
+      const owlTranscripts = searchLibrary(clipsWithSoundEvents, "owl", "transcripts");
+      expect(owlTranscripts.length).toBe(1);
+      expect(owlTranscripts[0].clip.id).toBe("clip-ambient-birds");
+      expect(owlTranscripts[0].passageHits.some((h) => h.snippet.includes("Owl"))).toBe(true);
+
+      // 4. Search 'horse' in 'transcripts' scope (woven into music track)
+      const horseTranscripts = searchLibrary(clipsWithSoundEvents, "horse", "transcripts");
+      expect(horseTranscripts.length).toBe(1);
+      expect(horseTranscripts[0].clip.id).toBe("clip-music-horse");
+      expect(horseTranscripts[0].passageHits.some((h) => h.snippet.includes("Horse neigh"))).toBe(true);
+
+      // 5. Search 'neigh' in 'all' scope
+      const neighAll = searchLibrary(clipsWithSoundEvents, "neigh", "all");
+      expect(neighAll.length).toBe(1);
+      expect(neighAll[0].clip.id).toBe("clip-music-horse");
+    });
   });
 });

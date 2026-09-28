@@ -118,6 +118,31 @@ export function searchLibrary(
           score += 50;
         }
       }
+
+      // Also index structured soundEvents if not already captured in passages
+      if (clip.soundEvents && clip.soundEvents.length > 0) {
+        for (const ev of clip.soundEvents) {
+          const evLower = (ev.label || '').toLowerCase();
+          const catLower = (ev.category || '').toLowerCase();
+          if (
+            evLower.includes(trimmed) ||
+            terms.every((t) => evLower.includes(t) || catLower.includes(t))
+          ) {
+            const alreadyCaptured = passageHits.some((h) => h.text.toLowerCase().includes(evLower));
+            if (!alreadyCaptured) {
+              passageHits.push({
+                passageId: `sound-event-${ev.timestamp[0]}`,
+                startSec: ev.timestamp[0],
+                endSec: ev.timestamp[1],
+                timestampLabel: formatTimestamp(ev.timestamp[0]),
+                snippet: `${ev.icon ? ev.icon + ' ' : ''}${ev.label} (${Math.round(ev.confidence * 100)}%)`,
+                text: `${ev.icon ? ev.icon + ' ' : ''}${ev.label}`,
+              });
+              score += 45;
+            }
+          }
+        }
+      }
     }
 
     if (matchedInTitle || matchedInTags || matchedInNotes || passageHits.length > 0) {

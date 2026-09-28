@@ -101,6 +101,24 @@ describe("transcript-passages", () => {
       const passages = extractTranscriptPassages(baseClip);
       expect(passages).toEqual([]);
     });
+
+    it("extracts sound event passages and sets isSoundEvent flag", () => {
+      const clip: VirtualClip = {
+        ...baseClip,
+        transcription: "🎧 [Acoustic Scene]: Birds chirping, Owl call",
+        transcriptionChunks: [
+          { text: "🐦 Birds chirping", timestamp: [0, 10] },
+          { text: "🦉 Owl call", timestamp: [10, 20] },
+        ],
+      };
+
+      const passages = extractTranscriptPassages(clip);
+      expect(passages.length).toBe(2);
+      expect(passages[0].isSoundEvent).toBe(true);
+      expect(passages[0].text).toBe("🐦 Birds chirping");
+      expect(passages[1].isSoundEvent).toBe(true);
+      expect(passages[1].text).toBe("🦉 Owl call");
+    });
   });
 
   describe("findActivePassage", () => {

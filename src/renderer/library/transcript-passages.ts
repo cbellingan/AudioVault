@@ -6,6 +6,22 @@ export interface TranscriptPassage {
   endSec: number;
   timestampLabel: string;
   text: string;
+  isSoundEvent?: boolean;
+  icon?: string;
+}
+
+/**
+ * Checks whether a text snippet represents an acoustic sound event or cue.
+ */
+export function isSoundEventText(text: string): boolean {
+  if (!text) return false;
+  const t = text.trim();
+  return (
+    t.includes('[Sound Event:') ||
+    t.includes('[Acoustic Scene:') ||
+    t.startsWith('🎧') ||
+    /^[🐦🦉🐴🐕🐱🦗🐸🐝🐾💨🌧️⚡🌊🔥🎸🎹🥁🎺🪕🎻🎤👏😄🙌👣🚗✈️🚆🔔⏱️🌲🍃🤫🔊]/.test(t)
+  );
 }
 
 /**
@@ -45,9 +61,10 @@ export function parseTimestamp(label: string): number {
 /**
  * Extracts structured timestamped passages from a VirtualClip.
  * Priority:
- * 1. transcriptionChunks (from Whisper / sidecar)
- * 2. embedded timestamps in editedTranscript / fullTranscription e.g. [01:24] text
- * 3. paragraphs split across clip duration
+ * 1. transcriptionChunks (from Whisper / sound event classifier / sidecar)
+ * 2. soundEvents structured list
+ * 3. embedded timestamps in editedTranscript / fullTranscription e.g. [01:24] text
+ * 4. paragraphs split across clip duration
  */
 export function extractTranscriptPassages(
   clip: VirtualClip,
@@ -66,6 +83,7 @@ export function extractTranscriptPassages(
     let currentText = "";
     let currentStart = -1;
     let currentEnd = -1;
+    let currentIsSoundEvent = false;
 
     for (let i = 0; i < clip.transcriptionChunks.length; i++) {
       const chunk = clip.transcriptionChunks[i];
@@ -75,12 +93,40 @@ export function extractTranscriptPassages(
       const chunkStart = chunk.timestamp && typeof chunk.timestamp[0] === "number" ? chunk.timestamp[0] : 0;
       const chunkEnd =
         chunk.timestamp && typeof chunk.timestamp[1] === "number" ? chunk.timestamp[1] : chunkStart + 5;
+      const chunkIsSound = isSoundEventText(text);
+
+      // Sound events or cues should stand as distinct standalone passage cards
+      if (chunkIsSound) {
+        if (currentText) {
+          passages.push({
+            id: `passage-${passages.length}`,
+            startSec: currentStart,
+            endSec: currentEnd,
+            timestampLabel: formatTimestamp(currentStart),
+            text: currentText,
+            isSoundEvent: currentIsSoundEvent,
+          });
+          currentText = "";
+          currentStart = -1;
+          currentEnd = -1;
+        }
+        passages.push({
+          id: `passage-${passages.length}`,
+          startSec: chunkStart,
+          endSec: chunkEnd,
+          timestampLabel: formatTimestamp(chunkStart),
+          text,
+          isSoundEvent: true,
+        });
+        continue;
+      }
 
       if (currentStart === -1) {
         currentStart = chunkStart;
         currentEnd = chunkEnd;
         currentText = text;
-      } else if (currentText.length < 180 && chunkStart - currentEnd < 4) {
+        currentIsSoundEvent = false;
+      } else if (currentText.length < 180 && chunkStart - currentEnd < 4 && !currentIsSoundEvent) {
         currentText += " " + text;
         currentEnd = chunkEnd;
       } else {
@@ -90,10 +136,12 @@ export function extractTranscriptPassages(
           endSec: currentEnd,
           timestampLabel: formatTimestamp(currentStart),
           text: currentText,
+          isSoundEvent: currentIsSoundEvent,
         });
         currentStart = chunkStart;
         currentEnd = chunkEnd;
         currentText = text;
+        currentIsSoundEvent = false;
       }
     }
 
@@ -104,12 +152,26 @@ export function extractTranscriptPassages(
         endSec: currentEnd,
         timestampLabel: formatTimestamp(currentStart),
         text: currentText,
+        isSoundEvent: currentIsSoundEvent,
       });
     }
 
     if (passages.length > 0) {
       return passages;
     }
+  }
+
+  // 2. If soundEvents are present and no chunks were available
+  if (clip.soundEvents && clip.soundEvents.length > 0) {
+    return clip.soundEvents.map((ev, idx) => ({
+      id: `sound-event-${idx}`,
+      startSec: ev.timestamp[0],
+      endSec: ev.timestamp[1],
+      timestampLabel: formatTimestamp(ev.timestamp[0]),
+      text: `${ev.icon ? ev.icon + ' ' : ''}${ev.label}${ev.confidence ? ` (${Math.round(ev.confidence * 100)}%)` : ''}`,
+      isSoundEvent: true,
+      icon: ev.icon,
+    }));
   }
 
   // 2. Fall back to machine text (fullTranscription or transcription)
@@ -148,6 +210,7 @@ function parseTextPassages(rawText: string, duration: number): TranscriptPassage
         endSec: Math.max(startSec + 2, nextStartSec),
         timestampLabel: formatTimestamp(startSec),
         text: passageText,
+        isSoundEvent: isSoundEventText(passageText),
       });
     }
     return passages;
@@ -171,6 +234,7 @@ function parseTextPassages(rawText: string, duration: number): TranscriptPassage
       endSec,
       timestampLabel: formatTimestamp(startSec),
       text: para,
+      isSoundEvent: isSoundEventText(para),
     };
   });
 }

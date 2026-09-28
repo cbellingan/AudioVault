@@ -1,14 +1,22 @@
 import { parentPort } from 'node:worker_threads';
 import fs from 'node:fs';
+import { SoundEvent } from '../shared/types';
+import {
+  normalizeSoundLabel,
+  synthesizeAcousticTranscription,
+  weaveSoundEventsIntoTranscript,
+} from './sound-event-formatter';
 
 export interface WorkerTask {
   id: string;
+  type?: 'transcribe' | 'classify_events' | 'transcribe_and_classify';
   filePath: string;
   maxDurationSeconds?: number;
   startOffsetSeconds?: number;
 }
 
 let transcriberPromise: Promise<any> | null = null;
+let classifierPromise: Promise<any> | null = null;
 
 async function getTranscriber() {
   if (!transcriberPromise) {
@@ -31,6 +39,29 @@ async function getTranscriber() {
     })();
   }
   return transcriberPromise;
+}
+
+async function getAudioClassifier() {
+  if (!classifierPromise) {
+    classifierPromise = (async () => {
+      try {
+        let transformersModule: any;
+        try {
+          transformersModule = await import('@xenova/transformers');
+        } catch {
+          transformersModule = await (new Function('return import("@xenova/transformers")')());
+        }
+        const { pipeline } = transformersModule as typeof import('@xenova/transformers');
+        return await pipeline('audio-classification', 'Xenova/ast-finetuned-audioset-10-10-0.4593', {
+          quantized: true,
+        });
+      } catch (err) {
+        console.error('[Audio Classifier Worker] Failed to load AST audio classification model:', err);
+        return null;
+      }
+    })();
+  }
+  return classifierPromise;
 }
 
 function decodeWavToFloat32_16k(
@@ -133,9 +164,83 @@ function decodeWavToFloat32_16k(
   }
 }
 
+async function classifyFileEvents(
+  filePath: string,
+  maxDurationSeconds = 60,
+  startOffsetSeconds = 0
+): Promise<SoundEvent[]> {
+  try {
+    const classifier = await getAudioClassifier();
+    if (!classifier) return [];
+
+    const events: SoundEvent[] = [];
+    const windowDurationSec = 10;
+    const effectiveDuration = maxDurationSeconds && maxDurationSeconds > 0 ? maxDurationSeconds : 60;
+    const maxWindows = Math.min(6, Math.max(1, Math.ceil(effectiveDuration / windowDurationSec)));
+
+    for (let w = 0; w < maxWindows; w++) {
+      const offset = startOffsetSeconds + w * windowDurationSec;
+      const audioData = decodeWavToFloat32_16k(filePath, windowDurationSec, offset);
+      if (!audioData || audioData.length === 0) break;
+
+      const target160k = new Float32Array(160000);
+      target160k.set(audioData.subarray(0, Math.min(160000, audioData.length)));
+
+      try {
+        const preds: Array<{ label: string; score: number }> = await classifier(target160k, { topk: 4 });
+        if (Array.isArray(preds)) {
+          for (const pred of preds) {
+            if (pred.score < 0.08) continue;
+            const norm = normalizeSoundLabel(pred.label);
+            events.push({
+              label: norm.cleanLabel,
+              category: norm.category,
+              confidence: parseFloat(pred.score.toFixed(3)),
+              timestamp: [offset, offset + windowDurationSec],
+              icon: norm.icon,
+            });
+          }
+        }
+      } catch (err) {
+        console.warn(`[Audio Classifier Worker] Window classification failed at ${offset}s:`, err);
+      }
+    }
+
+    // Merge consecutive identical events within 10s windows
+    const merged: SoundEvent[] = [];
+    for (const ev of events) {
+      const prev = merged[merged.length - 1];
+      if (prev && prev.label === ev.label && Math.abs(prev.timestamp[1] - ev.timestamp[0]) <= 2) {
+        prev.timestamp[1] = ev.timestamp[1];
+        prev.confidence = Math.max(prev.confidence, ev.confidence);
+      } else {
+        merged.push({ ...ev });
+      }
+    }
+    return merged;
+  } catch (err) {
+    console.warn('[Audio Classifier Worker] Error in classifyFileEvents:', err);
+    return [];
+  }
+}
+
 if (parentPort) {
   parentPort.on('message', async (task: WorkerTask) => {
     try {
+      if (task.type === 'classify_events') {
+        const events = await classifyFileEvents(
+          task.filePath,
+          task.maxDurationSeconds,
+          task.startOffsetSeconds ?? 0
+        );
+        parentPort?.postMessage({
+          id: task.id,
+          success: true,
+          result: { events },
+        });
+        return;
+      }
+
       const transcriber = await getTranscriber();
       if (!transcriber) {
         parentPort?.postMessage({ id: task.id, success: false, error: 'Model failed to initialize' });
@@ -154,33 +259,91 @@ if (parentPort) {
         return_timestamps: true,
       });
 
-      if (output && typeof output.text === 'string') {
-        const cleanedText = output.text.trim();
-        const startOffsetSeconds = task.startOffsetSeconds ?? 0;
-        const chunks = Array.isArray(output.chunks)
-          ? output.chunks.map((c: any) => ({
-              text: (c.text || '').trim(),
-              timestamp: Array.isArray(c.timestamp)
-                ? [
-                    parseFloat(((c.timestamp[0] ?? 0) + startOffsetSeconds).toFixed(2)),
-                    parseFloat(((c.timestamp[1] ?? 0) + startOffsetSeconds).toFixed(2)),
-                  ] as [number, number]
-                : [startOffsetSeconds, startOffsetSeconds] as [number, number],
-            }))
-          : undefined;
+      const rawText = output && typeof output.text === 'string' ? output.text.trim() : '';
+      const startOffsetSeconds = task.startOffsetSeconds ?? 0;
+      const chunks = Array.isArray(output?.chunks)
+        ? output.chunks.map((c: any) => ({
+            text: (c.text || '').trim(),
+            timestamp: Array.isArray(c.timestamp)
+              ? [
+                  parseFloat(((c.timestamp[0] ?? 0) + startOffsetSeconds).toFixed(2)),
+                  parseFloat(((c.timestamp[1] ?? 0) + startOffsetSeconds).toFixed(2)),
+                ] as [number, number]
+              : [startOffsetSeconds, startOffsetSeconds] as [number, number],
+          }))
+        : undefined;
 
+      const isBlankOrNoSpeech =
+        !rawText ||
+        /^\[+\s*(?:blank_audio|music)?\s*\]+$/i.test(rawText) ||
+        rawText.includes('[BLANK_AUDIO]');
+
+      if (isBlankOrNoSpeech) {
+        // Sound event classification fallback for ambient, wildlife, and music takes
+        const events = await classifyFileEvents(
+          task.filePath,
+          task.maxDurationSeconds,
+          task.startOffsetSeconds ?? 0
+        );
+
+        if (events.length > 0) {
+          const synth = synthesizeAcousticTranscription(events);
+          parentPort?.postMessage({
+            id: task.id,
+            success: true,
+            result: {
+              text: synth.fullTranscription,
+              summary: synth.transcription,
+              language: 'en',
+              chunks: synth.chunks,
+              soundEvents: events,
+              tags: synth.tags,
+              isAcousticOnly: true,
+            },
+          });
+          return;
+        }
+
+        parentPort?.postMessage({ id: task.id, success: false, error: 'Empty output' });
+        return;
+      }
+
+      // Spoken speech was recognized - also check for notable acoustic sound events (e.g. horse neigh, applause)
+      const events = await classifyFileEvents(
+        task.filePath,
+        task.maxDurationSeconds,
+        task.startOffsetSeconds ?? 0
+      );
+
+      if (events.length > 0) {
+        const woven = weaveSoundEventsIntoTranscript(rawText, chunks, events);
         parentPort?.postMessage({
           id: task.id,
           success: true,
           result: {
-            text: cleanedText,
+            text: woven.fullTranscription,
+            summary: rawText.length > 120 ? `${rawText.slice(0, 120).trim()}...` : rawText,
             language: 'en',
-            chunks,
+            chunks: woven.chunks,
+            soundEvents: events,
+            tags: woven.tags,
+            isAcousticOnly: false,
           },
         });
-      } else {
-        parentPort?.postMessage({ id: task.id, success: false, error: 'Empty output' });
+        return;
       }
+
+      parentPort?.postMessage({
+        id: task.id,
+        success: true,
+        result: {
+          text: rawText,
+          summary: rawText.length > 120 ? `${rawText.slice(0, 120).trim()}...` : rawText,
+          language: 'en',
+          chunks,
+          isAcousticOnly: false,
+        },
+      });
     } catch (err: any) {
       parentPort?.postMessage({ id: task.id, success: false, error: err.message || String(err) });
     }

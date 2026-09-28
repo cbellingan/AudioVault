@@ -612,7 +612,8 @@ export class PipelineOrchestrator extends EventEmitter {
       const classification = this.audioEngine.classifyAcoustics(
         analysis.features,
         currentJob.filename,
-        transcript
+        transcript,
+        transcriptRes?.soundEvents || []
       );
       console.log(`[AudioVault Pipeline] 🏷️ Classified as: ${classification.category.toUpperCase()} (${(classification.confidence * 100).toFixed(0)}%)`);
       currentJob.analysisPercent = 95;
@@ -650,19 +651,26 @@ export class PipelineOrchestrator extends EventEmitter {
       }
 
       // 6. Update clip in registry with transcript, chunks, tags, category, and composite title
-      const mergedTags = Array.from(new Set([...defaultClip.userTags, ...classification.tags]));
+      const mergedTags = Array.from(new Set([...defaultClip.userTags, ...classification.tags, ...(transcriptRes?.tags || [])]));
+      const effectiveTranscription = transcriptRes?.summary || classification.transcriptionSnippet || (transcript ? `[Whisper]: "${transcript.slice(0, 80)}..."` : undefined);
+      const effectiveFullTranscription = transcript || defaultClip.fullTranscription;
+      const effectiveState = (effectiveFullTranscription && effectiveFullTranscription.trim().length > 0)
+        ? 'ready'
+        : (classification.category === 'music' || classification.category === 'ambient' ? 'no_speech' : 'ready');
+
       const updated = this.dedupEngine.updateVirtualClip(defaultClip.id, {
         title: finalTitle,
         category: classification.category,
         userTags: mergedTags,
         classificationConfidence: classification.confidence,
         classificationSource: 'yamnet_local',
-        transcription: classification.transcriptionSnippet,
-        fullTranscription: transcript || defaultClip.fullTranscription,
-        transcriptPath: (transcript && fs.existsSync(transcriptPath)) ? transcriptPath : defaultClip.transcriptPath,
+        transcription: effectiveTranscription,
+        fullTranscription: effectiveFullTranscription,
+        transcriptPath: (effectiveFullTranscription && fs.existsSync(transcriptPath)) ? transcriptPath : defaultClip.transcriptPath,
         transcriptionChunks: transcriptChunks,
+        soundEvents: transcriptRes?.soundEvents || defaultClip.soundEvents,
         transcriptVersions: newVersions,
-        transcriptState: transcript ? 'ready' : (classification.category === 'music' || classification.category === 'ambient' ? 'no_speech' : 'ready'),
+        transcriptState: effectiveState,
         updatedAt: new Date().toISOString(),
       });
       if (updated) {

@@ -3196,7 +3196,7 @@ export default function App() {
     if (selectedSource === 'in-app' && !isLocalTake) return false;
     if (selectedSource === 'sd-card' && isLocalTake) return false;
 
-    // Global Search Query across Title, Transcript, Tags, and Raw Filename (Slice F06)
+    // Global Search Query across Title, Transcript, Tags, Sound Events, and Raw Filename (Slice F06)
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
       const inTitle = c.title.toLowerCase().includes(q);
@@ -3208,14 +3208,17 @@ export default function App() {
       const inChunks = Array.isArray(c.transcriptionChunks)
         ? c.transcriptionChunks.some((chunk) => chunk && typeof chunk.text === 'string' && chunk.text.toLowerCase().includes(q))
         : false;
+      const inSoundEvents = Array.isArray(c.soundEvents)
+        ? c.soundEvents.some((ev) => ev && ev.label && (ev.label.toLowerCase().includes(q) || (ev.category || '').toLowerCase().includes(q)))
+        : false;
       const inFilename = parentRaw ? parentRaw.originalFilename.toLowerCase().includes(q) : false;
 
       if (searchScope === 'titles') {
         if (!inTitle && !inArtist && !inLocation && !inTags && !inFilename) return false;
       } else if (searchScope === 'transcripts') {
-        if (!inTranscript && !inChunks) return false;
+        if (!inTranscript && !inChunks && !inSoundEvents) return false;
       } else {
-        if (!inTitle && !inArtist && !inLocation && !inTranscript && !inChunks && !inTags && !inFilename && !inNotes) {
+        if (!inTitle && !inArtist && !inLocation && !inTranscript && !inChunks && !inSoundEvents && !inTags && !inFilename && !inNotes) {
           return false;
         }
       }
@@ -5058,8 +5061,13 @@ export default function App() {
                         <div
                           key={passage.id}
                           ref={isActive ? activePassageRef : undefined}
-                          className={`passage-card ${isActive ? 'active' : ''} ${isSearchHit ? 'search-hit' : ''}`}
+                          className={`passage-card ${isActive ? 'active' : ''} ${isSearchHit ? 'search-hit' : ''} ${passage.isSoundEvent ? 'sound-event-passage' : ''}`}
                           data-testid={`passage-${passage.id}`}
+                          style={
+                            passage.isSoundEvent
+                              ? { borderLeft: '3px solid #10b981', background: 'rgba(16, 185, 129, 0.05)' }
+                              : undefined
+                          }
                         >
                           <button
                             type="button"
@@ -5067,10 +5075,29 @@ export default function App() {
                             data-testid={`passage-time-${passage.timestampLabel}`}
                             onClick={() => handleSeekToPassage(passage.startSec)}
                             title={`Seek to ${passage.timestampLabel}`}
+                            style={passage.isSoundEvent ? { color: '#10b981', borderColor: 'rgba(16, 185, 129, 0.35)' } : undefined}
                           >
                             {passage.timestampLabel}
                           </button>
                           <p className="passage-text">
+                            {passage.isSoundEvent && (
+                              <span
+                                style={{
+                                  display: 'inline-block',
+                                  fontSize: '0.68rem',
+                                  fontWeight: 600,
+                                  textTransform: 'uppercase',
+                                  padding: '1px 5px',
+                                  borderRadius: '4px',
+                                  background: 'rgba(16, 185, 129, 0.15)',
+                                  color: '#10b981',
+                                  marginRight: '6px',
+                                  verticalAlign: 'middle',
+                                }}
+                              >
+                                Sound Event
+                              </span>
+                            )}
                             <HighlightMatch text={passage.text} query={transcriptFindQuery} />
                           </p>
                         </div>

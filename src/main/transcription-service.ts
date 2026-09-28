@@ -1,11 +1,21 @@
 import fs from 'fs';
 import path from 'path';
 import { Worker } from 'node:worker_threads';
+import { SoundEvent } from '../shared/types';
+import {
+  normalizeSoundLabel,
+  synthesizeAcousticTranscription,
+  weaveSoundEventsIntoTranscript,
+} from './sound-event-formatter';
 
 export interface TranscriptionResult {
   text: string;
+  summary?: string;
   language?: string;
   chunks?: Array<{ text: string; timestamp: [number, number] }>;
+  soundEvents?: SoundEvent[];
+  tags?: string[];
+  isAcousticOnly?: boolean;
 }
 
 export class TranscriptionService {
@@ -111,6 +121,7 @@ export class TranscriptionService {
         this.pendingTasks.set(id, { resolve, reject });
         worker.postMessage({
           id,
+          type: 'transcribe_and_classify',
           filePath,
           maxDurationSeconds,
           startOffsetSeconds,
@@ -120,6 +131,34 @@ export class TranscriptionService {
 
     // In-process fallback (e.g. for vitest or if worker script not found)
     return this.transcribeInProcess(filePath, maxDurationSeconds, startOffsetSeconds);
+  }
+
+  /**
+   * Runs local AudioSet / YAMNet sound event classification via background Worker.
+   */
+  public async classifyAudioEvents(
+    filePath: string,
+    maxDurationSeconds?: number,
+    startOffsetSeconds = 0
+  ): Promise<SoundEvent[]> {
+    const worker = this.getWorker();
+    if (worker) {
+      return new Promise<SoundEvent[]>((resolve) => {
+        const id = `task_classify_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        this.pendingTasks.set(id, {
+          resolve: (res) => resolve(res?.events || []),
+          reject: () => resolve([]),
+        });
+        worker.postMessage({
+          id,
+          type: 'classify_events',
+          filePath,
+          maxDurationSeconds,
+          startOffsetSeconds,
+        });
+      });
+    }
+    return [];
   }
 
   /**
