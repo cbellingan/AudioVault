@@ -977,4 +977,17 @@ function setupIpcHandlers() {
   ipcMain.handle('vault:remove-clip-from-collection', async (_, clipId: string, collectionName: string): Promise<boolean> => {
     return dedupEngine.removeClipFromCollection(clipId, collectionName);
   });
+
+  // Metadata Suggestions & Batch Updates (Slice 2)
+  ipcMain.handle('vault:get-known-artists', async (): Promise<string[]> => {
+    return dedupEngine.getKnownArtists();
+  });
+
+  ipcMain.handle('vault:get-known-locations', async (): Promise<string[]> => {
+    return dedupEngine.getKnownLocations();
+  });
+
+  ipcMain.handle('vault:batch-update-metadata', async (_, clipIds: string[], metadata: any): Promise<VirtualClip[]> => {
+    return dedupEngine.batchUpdateMetadata(clipIds, metadata);
+  });
 }

@@ -252,6 +252,8 @@ export default function App() {
   const [editingMetadataClip, setEditingMetadataClip] = useState<{
     id: string;
     title: string;
+    artist: string;
+    location: string;
     category: PrimaryCategory;
     userTags: string[];
     notes: string;
@@ -259,6 +261,17 @@ export default function App() {
     newTagInput: string;
     isGeneratingAiTitle: boolean;
   } | null>(null);
+
+  // Known metadata suggestions & batch metadata modal (Slice 2)
+  const [knownArtists, setKnownArtists] = useState<string[]>([]);
+  const [knownLocations, setKnownLocations] = useState<string[]>([]);
+  const [showBatchMetadataModal, setShowBatchMetadataModal] = useState<boolean>(false);
+  const [batchMetadata, setBatchMetadata] = useState<{
+    artist: string;
+    location: string;
+    category: string;
+    tagInput: string;
+  }>({ artist: '', location: '', category: 'keep', tagInput: '' });
 
   const [isGeneratingTitleForClipId, setIsGeneratingTitleForClipId] = useState<string | null>(null);
   const [waveformProfile, setWaveformProfile] = useState<'adaptive' | 'balanced' | 'punchy' | 'linear'>('adaptive');
@@ -601,6 +614,36 @@ export default function App() {
     }
   }, [activeWorkspace, fetchVaultStats]);
 
+  // Fetch known metadata suggestions on mount (Slice 2)
+  useEffect(() => {
+    if (window.audioVault?.getKnownArtists) {
+      window.audioVault.getKnownArtists().then((arr) => {
+        if (arr) setKnownArtists(arr);
+      });
+    }
+    if (window.audioVault?.getKnownLocations) {
+      window.audioVault.getKnownLocations().then((arr) => {
+        if (arr) setKnownLocations(arr);
+      });
+    }
+  }, []);
+
+  const derivedArtists = useMemo(() => {
+    const set = new Set<string>(knownArtists);
+    for (const c of clips) {
+      if (c.artist && c.artist.trim()) set.add(c.artist.trim());
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  }, [knownArtists, clips]);
+
+  const derivedLocations = useMemo(() => {
+    const set = new Set<string>(knownLocations);
+    for (const c of clips) {
+      if (c.location && c.location.trim()) set.add(c.location.trim());
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  }, [knownLocations, clips]);
+
   // Connect CommandRegistry context to current app state
   useEffect(() => {
     commandRegistry.updateContext({
@@ -613,6 +656,7 @@ export default function App() {
       isModalOpen: !!(
         clipToDelete ||
         editingMetadataClip ||
+        showBatchMetadataModal ||
         showRefreshAiModal ||
         showNewCollectionModal ||
         showSaveViewModal ||
@@ -627,6 +671,7 @@ export default function App() {
     isPlaying,
     clipToDelete,
     editingMetadataClip,
+    showBatchMetadataModal,
     showRefreshAiModal,
     showNewCollectionModal,
     showSaveViewModal,
@@ -2065,6 +2110,8 @@ export default function App() {
     setEditingMetadataClip({
       id: clip.id,
       title: clip.title,
+      artist: clip.artist || '',
+      location: clip.location || '',
       category: clip.category,
       userTags: [...clip.userTags],
       notes: clip.notes || '',
@@ -2113,10 +2160,15 @@ export default function App() {
     if (!editingMetadataClip) {
       return;
     }
+    const trimmedArtist = editingMetadataClip.artist.trim() || undefined;
+    const trimmedLocation = editingMetadataClip.location.trim() || undefined;
+
     if (window.audioVault) {
       try {
         const updated = await window.audioVault.updateVirtualClip(editingMetadataClip.id, {
           title: editingMetadataClip.title.trim() || 'Untitled Take',
+          artist: trimmedArtist,
+          location: trimmedLocation,
           category: editingMetadataClip.category,
           userTags: editingMetadataClip.userTags,
           notes: editingMetadataClip.notes.trim(),
@@ -2135,6 +2187,8 @@ export default function App() {
             ? {
                 ...c,
                 title: editingMetadataClip.title.trim() || 'Untitled Take',
+                artist: trimmedArtist,
+                location: trimmedLocation,
                 category: editingMetadataClip.category,
                 userTags: editingMetadataClip.userTags,
                 notes: editingMetadataClip.notes.trim(),
@@ -2146,6 +2200,47 @@ export default function App() {
       );
     }
     setEditingMetadataClip(null);
+  }
+
+  // Save batch metadata changes (Slice 2)
+  async function handleBatchSaveMetadata() {
+    if (selectedClipIds.size === 0) return;
+    const ids = Array.from(selectedClipIds);
+    const updates: any = {};
+    if (batchMetadata.artist.trim()) updates.artist = batchMetadata.artist.trim();
+    if (batchMetadata.location.trim()) updates.location = batchMetadata.location.trim();
+    if (batchMetadata.category && batchMetadata.category !== 'keep') updates.category = batchMetadata.category as PrimaryCategory;
+    if (batchMetadata.tagInput.trim()) {
+      const tag = batchMetadata.tagInput.trim().replace(/^#/, '');
+      if (tag) updates.addTags = [tag];
+    }
+
+    if (window.audioVault?.batchUpdateMetadata) {
+      const updatedClips = await window.audioVault.batchUpdateMetadata(ids, updates);
+      if (updatedClips && updatedClips.length > 0) {
+        setClips((prev) => {
+          const map = new Map(updatedClips.map((c) => [c.id, c]));
+          return prev.map((c) => map.get(c.id) || c);
+        });
+      }
+    } else {
+      setClips((prev) =>
+        prev.map((c) => {
+          if (!selectedClipIds.has(c.id)) return c;
+          return {
+            ...c,
+            ...(updates.artist ? { artist: updates.artist } : {}),
+            ...(updates.location ? { location: updates.location } : {}),
+            ...(updates.category ? { category: updates.category } : {}),
+            ...(updates.addTags ? { userTags: Array.from(new Set([...c.userTags, ...updates.addTags])) } : {}),
+          };
+        })
+      );
+    }
+    setShowBatchMetadataModal(false);
+    setBatchMetadata({ artist: '', location: '', category: 'keep', tagInput: '' });
+    setToastMessage(`✓ Updated metadata on ${ids.length} recording(s)`);
+    setTimeout(() => setToastMessage(null), 3000);
   }
 
   // Quick category switcher from context menu
@@ -2317,6 +2412,8 @@ export default function App() {
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
       const inTitle = c.title.toLowerCase().includes(q);
+      const inArtist = (c.artist || '').toLowerCase().includes(q);
+      const inLocation = (c.location || '').toLowerCase().includes(q);
       const inTags = c.userTags.some((tag) => tag.toLowerCase().includes(q));
       const inNotes = (c.notes || '').toLowerCase().includes(q);
       const inTranscript = (c.editedTranscript || c.fullTranscription || c.transcription || '').toLowerCase().includes(q);
@@ -2326,11 +2423,11 @@ export default function App() {
       const inFilename = parentRaw ? parentRaw.originalFilename.toLowerCase().includes(q) : false;
 
       if (searchScope === 'titles') {
-        if (!inTitle && !inTags && !inFilename) return false;
+        if (!inTitle && !inArtist && !inLocation && !inTags && !inFilename) return false;
       } else if (searchScope === 'transcripts') {
         if (!inTranscript && !inChunks) return false;
       } else {
-        if (!inTitle && !inTranscript && !inChunks && !inTags && !inFilename && !inNotes) {
+        if (!inTitle && !inArtist && !inLocation && !inTranscript && !inChunks && !inTags && !inFilename && !inNotes) {
           return false;
         }
       }
@@ -2808,6 +2905,16 @@ export default function App() {
           </div>
           <span className="take-source-sub">
             <HighlightMatch text={sourceSub} query={searchQuery} />
+            {clip.artist && (
+              <span style={{ marginLeft: '8px', color: 'var(--accent-indigo)', fontWeight: 500 }}>
+                👤 <HighlightMatch text={clip.artist} query={searchQuery} />
+              </span>
+            )}
+            {clip.location && (
+              <span style={{ marginLeft: '8px', color: 'var(--accent-emerald)', fontWeight: 500 }}>
+                📍 <HighlightMatch text={clip.location} query={searchQuery} />
+              </span>
+            )}
           </span>
           {(clip.transcription || clip.fullTranscription) && (
             <div
@@ -3924,6 +4031,18 @@ export default function App() {
                   <span>⏱️ {Math.floor((activeClip.endTimeSeconds - activeClip.startTimeSeconds) / 60).toString().padStart(2, '0')}:{(Math.floor((activeClip.endTimeSeconds - activeClip.startTimeSeconds) % 60)).toString().padStart(2, '0')}</span>
                   <span>•</span>
                   <span>📁 {activeClip.collections && activeClip.collections.length > 0 ? activeClip.collections.join(', ') : 'Unassigned'}</span>
+                  {activeClip.artist && (
+                    <>
+                      <span>•</span>
+                      <span style={{ color: 'var(--accent-indigo)', fontWeight: 500 }}>👤 {activeClip.artist}</span>
+                    </>
+                  )}
+                  {activeClip.location && (
+                    <>
+                      <span>•</span>
+                      <span style={{ color: 'var(--accent-emerald)', fontWeight: 500 }}>📍 {activeClip.location}</span>
+                    </>
+                  )}
                   {activeClip.reviewed && (
                     <>
                       <span>•</span>
@@ -5011,6 +5130,14 @@ export default function App() {
                     <button
                       type="button"
                       className="btn btn-secondary btn-sm"
+                      data-testid="batch-metadata-btn"
+                      onClick={() => setShowBatchMetadataModal(true)}
+                    >
+                      🏷️ Edit metadata…
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
                       data-testid="batch-clear-btn"
                       onClick={() => setSelectedClipIds(new Set())}
                     >
@@ -5882,6 +6009,54 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Artist / Performer with Dropdown Memory */}
+              <div className="form-group">
+                <label className="form-label">Artist / Performer</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  list="known-artists-list"
+                  value={editingMetadataClip.artist}
+                  onChange={(e) =>
+                    setEditingMetadataClip({ ...editingMetadataClip, artist: e.target.value })
+                  }
+                  placeholder="e.g. The Midnight Quartet, Carl, Field Jam..."
+                  data-testid="metadata-artist-input"
+                />
+                <datalist id="known-artists-list">
+                  {derivedArtists.map((artist) => (
+                    <option key={artist} value={artist} />
+                  ))}
+                </datalist>
+                <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem', display: 'block' }}>
+                  Auto-suggests known artists. Automatically embedded directly into audio tags.
+                </span>
+              </div>
+
+              {/* Location / Venue with Dropdown Memory */}
+              <div className="form-group">
+                <label className="form-label">Location / Venue</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  list="known-locations-list"
+                  value={editingMetadataClip.location}
+                  onChange={(e) =>
+                    setEditingMetadataClip({ ...editingMetadataClip, location: e.target.value })
+                  }
+                  placeholder="e.g. Studio B, Electric Lady, Red Rocks..."
+                  data-testid="metadata-location-input"
+                />
+                <datalist id="known-locations-list">
+                  {derivedLocations.map((loc) => (
+                    <option key={loc} value={loc} />
+                  ))}
+                </datalist>
+                <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem', display: 'block' }}>
+                  Auto-suggests known locations and cross-references with map. Automatically embedded directly into audio tags.
+                </span>
+              </div>
+
               {/* Tags Manager */}
               <div className="form-group">
                 <label className="form-label">Sub-Tags</label>
@@ -6006,6 +6181,117 @@ export default function App() {
                 onClick={handleSaveMetadata}
               >
                 💾 Save Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch Metadata Modal (Slice 2) */}
+      {showBatchMetadataModal && (
+        <div
+          className="modal-overlay"
+          onClick={() => setShowBatchMetadataModal(false)}
+          data-testid="batch-metadata-modal"
+        >
+          <div
+            className="modal-dialog"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: '520px' }}
+          >
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span style={{ fontSize: '1.2rem' }}>🏷️</span>
+                <h3 style={{ fontSize: '1.05rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                  Batch Edit Metadata ({selectedClipIds.size} recordings)
+                </h3>
+              </div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => setShowBatchMetadataModal(false)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="modal-body">
+              {/* Batch Artist */}
+              <div className="form-group">
+                <label className="form-label">Artist / Performer</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  list="known-artists-list"
+                  value={batchMetadata.artist}
+                  onChange={(e) => setBatchMetadata({ ...batchMetadata, artist: e.target.value })}
+                  placeholder="Set artist across all selected tracks (leave blank to keep existing)..."
+                  data-testid="batch-artist-input"
+                />
+              </div>
+
+              {/* Batch Location */}
+              <div className="form-group">
+                <label className="form-label">Location / Venue</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  list="known-locations-list"
+                  value={batchMetadata.location}
+                  onChange={(e) => setBatchMetadata({ ...batchMetadata, location: e.target.value })}
+                  placeholder="Set location across all selected tracks (leave blank to keep existing)..."
+                  data-testid="batch-location-input"
+                />
+              </div>
+
+              {/* Batch Category */}
+              <div className="form-group">
+                <label className="form-label">Category</label>
+                <select
+                  className="toolbar-select"
+                  style={{ width: '100%', padding: '0.45rem 0.6rem' }}
+                  value={batchMetadata.category}
+                  onChange={(e) => setBatchMetadata({ ...batchMetadata, category: e.target.value })}
+                  data-testid="batch-category-select"
+                >
+                  <option value="keep">— Keep existing category —</option>
+                  <option value="music">MUSIC</option>
+                  <option value="concerts">CONCERTS</option>
+                  <option value="dictaphone">DICTAPHONE</option>
+                  <option value="meeting">MEETING</option>
+                  <option value="ambient">AMBIENT</option>
+                </select>
+              </div>
+
+              {/* Batch Add Tag */}
+              <div className="form-group">
+                <label className="form-label">Add Tag to Selected</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={batchMetadata.tagInput}
+                  onChange={(e) => setBatchMetadata({ ...batchMetadata, tagInput: e.target.value })}
+                  placeholder="e.g. Festival2026, Soundcheck..."
+                  data-testid="batch-tag-input"
+                />
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setShowBatchMetadataModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                data-testid="batch-save-metadata-btn"
+                onClick={handleBatchSaveMetadata}
+              >
+                Apply to {selectedClipIds.size} recordings
               </button>
             </div>
           </div>

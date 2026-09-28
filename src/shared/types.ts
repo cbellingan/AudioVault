@@ -199,6 +199,8 @@ export interface VirtualClip {
   updatedAt: string;
 
   // Domain Redesign Extensions
+  artist?: string; // Track artist / performer
+  location?: string; // Recording location / venue
   recordedAt?: string; // Original recording timestamp if known (never fabricated)
   reviewed?: boolean; // User review state (default false)
   favorite?: boolean; // User favorite star (legacy compatibility)
@@ -359,6 +361,21 @@ export interface AudioVaultAPI {
   getSavedViews?: () => Promise<SavedViewRecord[]>;
   addSavedView?: (view: SavedViewRecord) => Promise<SavedViewRecord>;
   deleteSavedView?: (id: string) => Promise<boolean>;
+
+  // Metadata Suggestions & Batch Updates
+  getKnownArtists?: () => Promise<string[]>;
+  getKnownLocations?: () => Promise<string[]>;
+  batchUpdateMetadata?: (
+    clipIds: string[],
+    metadata: {
+      artist?: string;
+      location?: string;
+      category?: PrimaryCategory;
+      addTags?: string[];
+      notes?: string;
+      rating?: number;
+    }
+  ) => Promise<VirtualClip[]>;
 
   // Flags & Membership
   toggleFavorite?: (clipId: string) => Promise<boolean>;
