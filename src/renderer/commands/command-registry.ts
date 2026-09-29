@@ -7,6 +7,9 @@ export type CommandId =
   | 'find-in-transcript'
   | 'copy-transcript'
   | 'play-pause'
+  | 'next-track'
+  | 'prev-track'
+  | 'toggle-continuous-play'
   | 'skip-back'
   | 'skip-forward'
   | 'transcribe'
@@ -51,6 +54,9 @@ export interface CommandContext {
   canRedo?: boolean;
   isPlaying: boolean;
   isModalOpen: boolean;
+  hasNextTrack?: boolean;
+  hasPrevTrack?: boolean;
+  isContinuousPlay?: boolean;
 }
 
 export interface CommandHandler {
@@ -201,6 +207,18 @@ export class CommandRegistry {
         e.preventDefault();
         return this.execute('show-details');
       }
+      if ((e.altKey && e.key === 'ArrowRight') || (key === ']' && !e.shiftKey)) {
+        e.preventDefault();
+        return this.execute('next-track');
+      }
+      if ((e.altKey && e.key === 'ArrowLeft') || (key === '[' && !e.shiftKey)) {
+        e.preventDefault();
+        return this.execute('prev-track');
+      }
+      if (key === 'p' && e.altKey && !isEditingText) {
+        e.preventDefault();
+        return this.execute('toggle-continuous-play');
+      }
       if (e.key === ',') {
         e.preventDefault();
         return this.execute('nav-settings');
@@ -209,6 +227,10 @@ export class CommandRegistry {
 
     // Star rating keys 0-5, Delete / Backspace for cut-selection, and playback outside text editing
     if (!isEditingText && !this.context.isModalOpen && !e.metaKey && !e.ctrlKey) {
+      if ((e.key === 'p' || e.key === 'P') && (e.altKey || e.shiftKey)) {
+        e.preventDefault();
+        return this.execute('toggle-continuous-play');
+      }
       if ((e.key === 'Backspace' || e.key === 'Delete') && this.context.hasSelectionRange) {
         e.preventDefault();
         return this.execute('cut-selection');

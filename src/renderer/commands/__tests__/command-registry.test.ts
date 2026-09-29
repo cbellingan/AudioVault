@@ -280,5 +280,64 @@ describe('Slice F02: Typed Command Registry and Keyboard Routing', () => {
     registry.handleKeyDown({ metaKey: true, key: 's', target: bodyElement, preventDefault: vi.fn() } as any);
     expect(splitSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('routes next-track, prev-track, and toggle-continuous-play shortcuts', () => {
+    const registry = new CommandRegistry();
+    const nextSpy = vi.fn();
+    const prevSpy = vi.fn();
+    const toggleSpy = vi.fn();
+
+    registry.register({
+      id: 'next-track',
+      label: 'Next Track',
+      isEnabled: (ctx) => Boolean(ctx.hasNextTrack),
+      execute: nextSpy,
+    });
+    registry.register({
+      id: 'prev-track',
+      label: 'Previous Track',
+      isEnabled: (ctx) => Boolean(ctx.hasPrevTrack),
+      execute: prevSpy,
+    });
+    registry.register({
+      id: 'toggle-continuous-play',
+      label: 'Toggle Continuous Play',
+      isEnabled: () => true,
+      execute: toggleSpy,
+    });
+
+    const bodyElement = { tagName: 'DIV', isContentEditable: false } as HTMLElement;
+
+    // Disabled when no next/prev track
+    registry.handleKeyDown({ metaKey: true, altKey: true, key: 'ArrowRight', target: bodyElement, preventDefault: vi.fn() } as any);
+    expect(nextSpy).not.toHaveBeenCalled();
+
+    registry.handleKeyDown({ metaKey: true, key: ']', target: bodyElement, preventDefault: vi.fn() } as any);
+    expect(nextSpy).not.toHaveBeenCalled();
+
+    // Enable next track
+    registry.updateContext({ hasNextTrack: true });
+    registry.handleKeyDown({ metaKey: true, altKey: true, key: 'ArrowRight', target: bodyElement, preventDefault: vi.fn() } as any);
+    expect(nextSpy).toHaveBeenCalledTimes(1);
+
+    registry.handleKeyDown({ metaKey: true, key: ']', target: bodyElement, preventDefault: vi.fn() } as any);
+    expect(nextSpy).toHaveBeenCalledTimes(2);
+
+    // Enable prev track
+    registry.updateContext({ hasPrevTrack: true });
+    registry.handleKeyDown({ metaKey: true, altKey: true, key: 'ArrowLeft', target: bodyElement, preventDefault: vi.fn() } as any);
+    expect(prevSpy).toHaveBeenCalledTimes(1);
+
+    registry.handleKeyDown({ metaKey: true, key: '[', target: bodyElement, preventDefault: vi.fn() } as any);
+    expect(prevSpy).toHaveBeenCalledTimes(2);
+
+    // Toggle continuous play via Shift+P or Alt+P
+    registry.handleKeyDown({ shiftKey: true, key: 'p', target: bodyElement, preventDefault: vi.fn() } as any);
+    expect(toggleSpy).toHaveBeenCalledTimes(1);
+
+    registry.handleKeyDown({ metaKey: true, altKey: true, key: 'p', target: bodyElement, preventDefault: vi.fn() } as any);
+    expect(toggleSpy).toHaveBeenCalledTimes(2);
+  });
 });
+
 

@@ -1779,6 +1779,82 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
 
     await app.close();
   });
+
+  test("27. Continuous library playlist playback supports sequential navigation, queue badge, and transport controls", async () => {
+    const app = await launchTestApp(sandbox);
+    const window = await app.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+
+    // Wait for table to load
+    await window.waitForSelector(".clips-table tbody tr", { timeout: 8000 });
+    const rows = window.locator(".clips-table tbody tr");
+    const count = await rows.count();
+    expect(count).toBeGreaterThanOrEqual(4);
+
+    // 1. Verify dock transport elements exist
+    const prevBtn = window.locator("[data-testid=\"prev-track-btn\"]");
+    const nextBtn = window.locator("[data-testid=\"next-track-btn\"]");
+    const toggleContinuousBtn = window.locator("[data-testid=\"continuous-play-toggle\"]");
+    const queueBadge = window.locator("[data-testid=\"playlist-queue-badge\"]");
+
+    await expect(prevBtn).toBeVisible();
+    await expect(nextBtn).toBeVisible();
+    await expect(toggleContinuousBtn).toBeVisible();
+    await expect(queueBadge).toBeVisible();
+
+    // Verify initial queue position
+    const initialBadgeText = await queueBadge.innerText();
+    expect(initialBadgeText).toContain("Track 1 of");
+
+    // 2. Click Next Track button
+    await nextBtn.click();
+    await expect(queueBadge).toHaveText(`Track 2 of ${count}`);
+
+    // 3. Click Previous Track button (at start <2s, jumps to track 1)
+    await prevBtn.click();
+    await expect(queueBadge).toHaveText(`Track 1 of ${count}`);
+
+    // 4. Toggle Continuous Playback off and on
+    await toggleContinuousBtn.click();
+    await expect(toggleContinuousBtn).not.toHaveClass(/active/);
+    await toggleContinuousBtn.click();
+    await expect(toggleContinuousBtn).toHaveClass(/active/);
+
+    // 5. Test Quick-Play button on second row
+    const row2PlayBtn = rows.nth(1).locator("[data-testid^=\"row-play-btn-\"]");
+    await expect(row2PlayBtn).toBeVisible();
+    await row2PlayBtn.click();
+
+    // Verify track 2 is now active and playing
+    await expect(queueBadge).toHaveText(`Track 2 of ${count}`);
+    const playBtn = window.locator(".play-btn");
+    await expect(playBtn).toHaveText("⏸");
+
+    // 6. Navigate to detail workspace and verify transport controls there
+    const clipTitleLink = rows.nth(1).locator("[data-testid=\"clip-title-link\"]");
+    await clipTitleLink.click();
+
+    const detailNextBtn = window.locator("[data-testid=\"detail-next-track-btn\"]");
+    const detailPrevBtn = window.locator("[data-testid=\"detail-prev-track-btn\"]");
+    const detailContinuousBtn = window.locator("[data-testid=\"detail-continuous-play-toggle\"]");
+    const detailQueueBadge = window.locator("[data-testid=\"detail-playlist-queue-badge\"]");
+
+    await expect(detailNextBtn).toBeVisible();
+    await expect(detailPrevBtn).toBeVisible();
+    await expect(detailContinuousBtn).toBeVisible();
+    await expect(detailQueueBadge).toBeVisible();
+    await expect(detailQueueBadge).toHaveText(`Track 2 of ${count}`);
+
+    // Advance from detail workspace
+    await detailNextBtn.click();
+    await expect(detailQueueBadge).toHaveText(`Track 3 of ${count}`);
+
+    // Previous from detail workspace
+    await detailPrevBtn.click();
+    await expect(detailQueueBadge).toHaveText(`Track 2 of ${count}`);
+
+    await app.close();
+  });
 });
 
 

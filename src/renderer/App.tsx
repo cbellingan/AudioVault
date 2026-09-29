@@ -38,6 +38,11 @@ import {
 } from './library/search-engine';
 import { StarRatingWidget } from './components/StarRatingWidget';
 import { LocationMapView } from './components/LocationMapView';
+import {
+  findNextTrack,
+  findPrevTrack,
+  getPlaylistPosition,
+} from './library/playlist-controller';
 
 // Standalone fallback mock data
 const mockFallbackClips: VirtualClip[] = [
@@ -161,6 +166,22 @@ export default function App() {
   const [autoUnmountPref, setAutoUnmountPref] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackProgress, setPlaybackProgress] = useState(0.2); // 0.0 - 1.0
+  const [isContinuousPlay, setIsContinuousPlay] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('audiovault_continuous_play');
+      return saved !== null ? saved === 'true' : true;
+    } catch {
+      return true;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('audiovault_continuous_play', String(isContinuousPlay));
+    } catch {
+      // Ignore
+    }
+  }, [isContinuousPlay]);
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatusEvent | null>(null);
   const [vaultDataLoaded, setVaultDataLoaded] = useState(false);
   const [deletedFilesCount, setDeletedFilesCount] = useState(0);
@@ -355,7 +376,182 @@ export default function App() {
   const pendingSeekRef = useRef<number | null>(null);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
 
-  const activeClip = clips.find((c) => c.id === selectedClipId) || clips[0] || mockFallbackClips[0];
+  const allCount = useMemo(() => clips.filter((c) => !c.isExcluded).length, [clips]);
+  const recentCount = useMemo(() => {
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    return clips.filter((c) => !c.isExcluded && new Date(c.recordedAt || c.createdAt).getTime() >= sevenDaysAgo).length;
+  }, [clips]);
+  const reviewCount = useMemo(() => clips.filter((c) => !c.isExcluded && !c.reviewed).length, [clips]);
+  const favoritesCount = useMemo(() => clips.filter((c) => !c.isExcluded && c.favorite).length, [clips]);
+
+  // Filter clips by workspace scope, category, tag, source, and global search query
+  const filteredClips = clips.filter((c) => {
+    if (c.isExcluded) return false;
+
+    // Redesigned Scope filtering
+    if (activeScope === 'recent') {
+      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const clipTime = new Date(c.recordedAt || c.createdAt).getTime();
+      if (clipTime < sevenDaysAgo) return false;
+    } else if (activeScope === 'review') {
+      if (c.reviewed === true) return false;
+    } else if (activeScope === 'favorites') {
+      if (!c.favorite) return false;
+    } else if (activeScope.startsWith('col:')) {
+      const colName = activeScope.slice(4);
+      if (!c.collections || !c.collections.includes(colName)) return false;
+    }
+
+    const matchesCat = selectedCategory === 'all' || c.category === selectedCategory;
+    const matchesTag = !selectedTag || c.userTags.includes(selectedTag);
+
+    // Source filtering
+    const parentRaw = rawFiles.find((r) => r.id === c.parentFileId);
+    const isLocalTake =
+      c.userTags.includes('In-App Take') ||
+      c.title.toLowerCase().includes('in-app take') ||
+      (parentRaw && parentRaw.sourceDevice === 'In-App Recorder');
+
+    if (selectedSource === 'in-app' && !isLocalTake) return false;
+    if (selectedSource === 'sd-card' && isLocalTake) return false;
+
+    // Global Search Query across Title, Transcript, Tags, Sound Events, and Raw Filename (Slice F06)
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      const inTitle = c.title.toLowerCase().includes(q);
+      const inArtist = (c.artist || '').toLowerCase().includes(q);
+      const inLocation = (c.location || '').toLowerCase().includes(q);
+      const inTags = c.userTags.some((tag) => tag.toLowerCase().includes(q));
+      const inNotes = (c.notes || '').toLowerCase().includes(q);
+      const inTranscript = (c.editedTranscript || c.fullTranscription || c.transcription || '').toLowerCase().includes(q);
+      const inChunks = Array.isArray(c.transcriptionChunks)
+        ? c.transcriptionChunks.some((chunk) => chunk && typeof chunk.text === 'string' && chunk.text.toLowerCase().includes(q))
+        : false;
+      const inSoundEvents = Array.isArray(c.soundEvents)
+        ? c.soundEvents.some((ev) => ev && ev.label && (ev.label.toLowerCase().includes(q) || (ev.category || '').toLowerCase().includes(q)))
+        : false;
+      const inFilename = parentRaw ? parentRaw.originalFilename.toLowerCase().includes(q) : false;
+
+      if (searchScope === 'titles') {
+        if (!inTitle && !inArtist && !inLocation && !inTags && !inFilename) return false;
+      } else if (searchScope === 'transcripts') {
+        if (!inTranscript && !inChunks && !inSoundEvents) return false;
+      } else {
+        if (!inTitle && !inArtist && !inLocation && !inTranscript && !inChunks && !inSoundEvents && !inTags && !inFilename && !inNotes) {
+          return false;
+        }
+      }
+    }
+
+    // F03 Transcript Status filtering
+    if (transcriptFilter !== 'all') {
+      const status = getClipTranscriptStatus(c);
+      if (status !== transcriptFilter) return false;
+    }
+
+    // Rating filter (0 = any, 1-5 = min stars)
+    if (ratingFilter > 0) {
+      const clipRating = c.rating ?? (c.favorite ? 5 : 0);
+      if (clipRating < ratingFilter) return false;
+    }
+
+    return matchesCat && matchesTag;
+  });
+
+  // Sort clips by selected field and order (starts desc on createdAt / import time)
+  const sortedClips = useMemo(() => {
+    return [...filteredClips].sort((a, b) => {
+      let diff = 0;
+      if (sortField === 'title') {
+        diff = a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' });
+      } else if (sortField === 'category') {
+        diff = a.category.localeCompare(b.category);
+      } else if (sortField === 'duration') {
+        const durA = a.endTimeSeconds - a.startTimeSeconds;
+        const durB = b.endTimeSeconds - b.startTimeSeconds;
+        diff = durA - durB;
+      } else if (sortField === 'tags') {
+        const tagsA = a.userTags.join(', ');
+        const tagsB = b.userTags.join(', ');
+        diff = tagsA.localeCompare(tagsB);
+      } else if (sortField === 'confidence') {
+        diff = a.classificationConfidence - b.classificationConfidence;
+      } else if (sortField === 'rating') {
+        const ratingA = a.rating ?? (a.favorite ? 5 : 0);
+        const ratingB = b.rating ?? (b.favorite ? 5 : 0);
+        diff = ratingA - ratingB;
+      } else if (sortField === 'createdAt') {
+        const timeA = new Date(a.createdAt).getTime() || 0;
+        const timeB = new Date(b.createdAt).getTime() || 0;
+        diff = timeA - timeB;
+      }
+      return sortOrder === 'asc' ? diff : -diff;
+    });
+  }, [filteredClips, sortField, sortOrder]);
+
+  // F03: Hierarchy and Grouping for Library
+  const hierarchyItems = useMemo(() => buildHierarchy(sortedClips), [sortedClips]);
+  const groupedSections = useMemo(
+    () => groupLibrary(hierarchyItems, groupingMode),
+    [hierarchyItems, groupingMode]
+  );
+
+  const activeClip = clips.find((c) => c.id === selectedClipId) || sortedClips[0] || clips[0] || mockFallbackClips[0];
+
+  const playlistPosition = useMemo(
+    () => getPlaylistPosition(activeClip?.id, sortedClips),
+    [activeClip?.id, sortedClips]
+  );
+  const nextTrack = useMemo(() => findNextTrack(activeClip?.id, sortedClips), [activeClip?.id, sortedClips]);
+  const prevTrack = useMemo(() => findPrevTrack(activeClip?.id, sortedClips), [activeClip?.id, sortedClips]);
+
+  const handlePlayNextTrack = useCallback(() => {
+    const next = findNextTrack(selectedClipId, sortedClips);
+    if (!next) {
+      setIsPlaying(false);
+      return false;
+    }
+    setSelectedClipId(next.id);
+    setCurrentTimeSec(0);
+    setPlaybackProgress(0);
+    pendingSeekRef.current = 0;
+    setIsPlaying(true);
+    if (audioRef.current) {
+      audioRef.current.currentTime = next.startTimeSeconds;
+      audioRef.current.play().catch(() => {});
+    }
+    return true;
+  }, [selectedClipId, sortedClips]);
+
+  const handlePlayPrevTrack = useCallback((forcePrev = false) => {
+    if (currentTimeSec > 2 && !forcePrev) {
+      setCurrentTimeSec(0);
+      setPlaybackProgress(0);
+      if (audioRef.current && activeClip) {
+        audioRef.current.currentTime = activeClip.startTimeSeconds;
+      }
+      return true;
+    }
+    const prev = findPrevTrack(selectedClipId, sortedClips);
+    if (!prev) {
+      setCurrentTimeSec(0);
+      setPlaybackProgress(0);
+      if (audioRef.current && activeClip) {
+        audioRef.current.currentTime = activeClip.startTimeSeconds;
+      }
+      return false;
+    }
+    setSelectedClipId(prev.id);
+    setCurrentTimeSec(0);
+    setPlaybackProgress(0);
+    pendingSeekRef.current = 0;
+    setIsPlaying(true);
+    if (audioRef.current) {
+      audioRef.current.currentTime = prev.startTimeSeconds;
+      audioRef.current.play().catch(() => {});
+    }
+    return true;
+  }, [selectedClipId, sortedClips, currentTimeSec, activeClip]);
 
   const passages = useMemo<TranscriptPassage[]>(() => {
     if (!activeClip) return [];
@@ -533,6 +729,15 @@ export default function App() {
             const duration = Math.max(1, activeClip.endTimeSeconds - activeClip.startTimeSeconds);
             const next = prev + 0.1;
             if (next >= duration) {
+              if (isContinuousPlay) {
+                const nextClip = findNextTrack(selectedClipId, sortedClips);
+                if (nextClip) {
+                  setSelectedClipId(nextClip.id);
+                  setPlaybackProgress(0);
+                  pendingSeekRef.current = 0;
+                  return 0;
+                }
+              }
               setIsPlaying(false);
               setPlaybackProgress(0);
               return 0;
@@ -551,7 +756,7 @@ export default function App() {
     return () => {
       if (ticker) clearInterval(ticker);
     };
-  }, [isPlaying, activeClip]);
+  }, [isPlaying, activeClip, isContinuousPlay, selectedClipId, sortedClips]);
 
   useEffect(() => {
     if (pendingSeekRef.current !== null) {
@@ -701,6 +906,9 @@ export default function App() {
       canUndo: undoStack.length > 0,
       canRedo: redoStack.length > 0,
       isPlaying,
+      hasNextTrack: Boolean(findNextTrack(selectedClipId, sortedClips)),
+      hasPrevTrack: Boolean(findPrevTrack(selectedClipId, sortedClips) || currentTimeSec > 2),
+      isContinuousPlay,
       isModalOpen: !!(
         clipToDelete ||
         editingMetadataClip ||
@@ -718,6 +926,10 @@ export default function App() {
     activeClip,
     selectedClipIds,
     isPlaying,
+    currentTimeSec,
+    selectedClipId,
+    sortedClips,
+    isContinuousPlay,
     selectionRange,
     undoStack,
     redoStack,
@@ -877,6 +1089,27 @@ export default function App() {
       label: 'Play / Pause',
       isEnabled: () => !!activeClip,
       execute: () => setIsPlaying((prev) => !prev),
+    });
+    commandRegistry.register({
+      id: 'next-track',
+      label: 'Next Track',
+      shortcut: '⌥⌘→',
+      isEnabled: () => Boolean(findNextTrack(selectedClipId, sortedClips)),
+      execute: () => handlePlayNextTrack(),
+    });
+    commandRegistry.register({
+      id: 'prev-track',
+      label: 'Previous Track',
+      shortcut: '⌥⌘←',
+      isEnabled: () => Boolean(findPrevTrack(selectedClipId, sortedClips) || currentTimeSec > 2),
+      execute: () => handlePlayPrevTrack(),
+    });
+    commandRegistry.register({
+      id: 'toggle-continuous-play',
+      label: 'Toggle Continuous Play',
+      shortcut: '⌥P',
+      isEnabled: () => true,
+      execute: () => setIsContinuousPlay((prev) => !prev),
     });
     commandRegistry.register({
       id: 'skip-back',
@@ -1118,6 +1351,11 @@ export default function App() {
     selectedClipIds,
     undoStack,
     redoStack,
+    handlePlayNextTrack,
+    handlePlayPrevTrack,
+    sortedClips,
+    selectedClipId,
+    isContinuousPlay,
   ]);
 
   // Convert Float32Array PCM samples into a valid 16-bit 48kHz WAV ArrayBuffer
@@ -3183,126 +3421,6 @@ export default function App() {
     }
   }
 
-  const allCount = useMemo(() => clips.filter((c) => !c.isExcluded).length, [clips]);
-  const recentCount = useMemo(() => {
-    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    return clips.filter((c) => !c.isExcluded && new Date(c.recordedAt || c.createdAt).getTime() >= sevenDaysAgo).length;
-  }, [clips]);
-  const reviewCount = useMemo(() => clips.filter((c) => !c.isExcluded && !c.reviewed).length, [clips]);
-  const favoritesCount = useMemo(() => clips.filter((c) => !c.isExcluded && c.favorite).length, [clips]);
-
-  // Filter clips by workspace scope, category, tag, source, and global search query
-  const filteredClips = clips.filter((c) => {
-    if (c.isExcluded) return false;
-
-    // Redesigned Scope filtering
-    if (activeScope === 'recent') {
-      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      const clipTime = new Date(c.recordedAt || c.createdAt).getTime();
-      if (clipTime < sevenDaysAgo) return false;
-    } else if (activeScope === 'review') {
-      if (c.reviewed === true) return false;
-    } else if (activeScope === 'favorites') {
-      if (!c.favorite) return false;
-    } else if (activeScope.startsWith('col:')) {
-      const colName = activeScope.slice(4);
-      if (!c.collections || !c.collections.includes(colName)) return false;
-    }
-
-    const matchesCat = selectedCategory === 'all' || c.category === selectedCategory;
-    const matchesTag = !selectedTag || c.userTags.includes(selectedTag);
-
-    // Source filtering
-    const parentRaw = rawFiles.find((r) => r.id === c.parentFileId);
-    const isLocalTake =
-      c.userTags.includes('In-App Take') ||
-      c.title.toLowerCase().includes('in-app take') ||
-      (parentRaw && parentRaw.sourceDevice === 'In-App Recorder');
-
-    if (selectedSource === 'in-app' && !isLocalTake) return false;
-    if (selectedSource === 'sd-card' && isLocalTake) return false;
-
-    // Global Search Query across Title, Transcript, Tags, Sound Events, and Raw Filename (Slice F06)
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase().trim();
-      const inTitle = c.title.toLowerCase().includes(q);
-      const inArtist = (c.artist || '').toLowerCase().includes(q);
-      const inLocation = (c.location || '').toLowerCase().includes(q);
-      const inTags = c.userTags.some((tag) => tag.toLowerCase().includes(q));
-      const inNotes = (c.notes || '').toLowerCase().includes(q);
-      const inTranscript = (c.editedTranscript || c.fullTranscription || c.transcription || '').toLowerCase().includes(q);
-      const inChunks = Array.isArray(c.transcriptionChunks)
-        ? c.transcriptionChunks.some((chunk) => chunk && typeof chunk.text === 'string' && chunk.text.toLowerCase().includes(q))
-        : false;
-      const inSoundEvents = Array.isArray(c.soundEvents)
-        ? c.soundEvents.some((ev) => ev && ev.label && (ev.label.toLowerCase().includes(q) || (ev.category || '').toLowerCase().includes(q)))
-        : false;
-      const inFilename = parentRaw ? parentRaw.originalFilename.toLowerCase().includes(q) : false;
-
-      if (searchScope === 'titles') {
-        if (!inTitle && !inArtist && !inLocation && !inTags && !inFilename) return false;
-      } else if (searchScope === 'transcripts') {
-        if (!inTranscript && !inChunks && !inSoundEvents) return false;
-      } else {
-        if (!inTitle && !inArtist && !inLocation && !inTranscript && !inChunks && !inSoundEvents && !inTags && !inFilename && !inNotes) {
-          return false;
-        }
-      }
-    }
-
-    // F03 Transcript Status filtering
-    if (transcriptFilter !== 'all') {
-      const status = getClipTranscriptStatus(c);
-      if (status !== transcriptFilter) return false;
-    }
-
-    // Rating filter (0 = any, 1-5 = min stars)
-    if (ratingFilter > 0) {
-      const clipRating = c.rating ?? (c.favorite ? 5 : 0);
-      if (clipRating < ratingFilter) return false;
-    }
-
-    return matchesCat && matchesTag;
-  });
-
-  // Sort clips by selected field and order (starts desc on createdAt / import time)
-  const sortedClips = useMemo(() => {
-    return [...filteredClips].sort((a, b) => {
-      let diff = 0;
-      if (sortField === 'title') {
-        diff = a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' });
-      } else if (sortField === 'category') {
-        diff = a.category.localeCompare(b.category);
-      } else if (sortField === 'duration') {
-        const durA = a.endTimeSeconds - a.startTimeSeconds;
-        const durB = b.endTimeSeconds - b.startTimeSeconds;
-        diff = durA - durB;
-      } else if (sortField === 'tags') {
-        const tagsA = a.userTags.join(', ');
-        const tagsB = b.userTags.join(', ');
-        diff = tagsA.localeCompare(tagsB);
-      } else if (sortField === 'confidence') {
-        diff = a.classificationConfidence - b.classificationConfidence;
-      } else if (sortField === 'rating') {
-        const ratingA = a.rating ?? (a.favorite ? 5 : 0);
-        const ratingB = b.rating ?? (b.favorite ? 5 : 0);
-        diff = ratingA - ratingB;
-      } else if (sortField === 'createdAt') {
-        const timeA = new Date(a.createdAt).getTime() || 0;
-        const timeB = new Date(b.createdAt).getTime() || 0;
-        diff = timeA - timeB;
-      }
-      return sortOrder === 'asc' ? diff : -diff;
-    });
-  }, [filteredClips, sortField, sortOrder]);
-
-  // F03: Hierarchy and Grouping for Library
-  const hierarchyItems = useMemo(() => buildHierarchy(sortedClips), [sortedClips]);
-  const groupedSections = useMemo(
-    () => groupLibrary(hierarchyItems, groupingMode),
-    [hierarchyItems, groupingMode]
-  );
-
   function toggleExcerptExpansion(clipId: string, e: React.MouseEvent) {
     e.stopPropagation();
     setExpandedExcerptClipIds((prev) => {
@@ -3647,6 +3765,33 @@ export default function App() {
                 title={clip.favorite ? 'Unmark favorite' : 'Mark favorite'}
               >
                 {clip.favorite ? '★' : '☆'}
+              </button>
+              <button
+                type="button"
+                className={`row-play-btn ${clip.id === selectedClipId && isPlaying ? 'playing' : ''}`}
+                data-testid={`row-play-btn-${clip.id}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (clip.id === selectedClipId) {
+                    setIsPlaying(!isPlaying);
+                  } else {
+                    setSelectedClipId(clip.id);
+                    setCurrentTimeSec(0);
+                    setPlaybackProgress(0);
+                    pendingSeekRef.current = 0;
+                    setIsPlaying(true);
+                    if (audioRef.current) {
+                      audioRef.current.currentTime = clip.startTimeSeconds;
+                      audioRef.current.play().catch(() => {});
+                    }
+                  }
+                }}
+                title={clip.id === selectedClipId && isPlaying ? 'Pause (Space)' : 'Play recording in playlist sequence'}
+                style={{
+                  color: clip.id === selectedClipId && isPlaying ? 'var(--accent-cyan)' : 'var(--text-secondary)',
+                }}
+              >
+                {clip.id === selectedClipId && isPlaying ? '⏸' : '▶'}
               </button>
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
@@ -4193,6 +4338,9 @@ export default function App() {
                 setPlaybackProgress(Math.min(1, target / duration));
               }
             }
+            if (isPlaying && audioRef.current) {
+              audioRef.current.play().catch(() => {});
+            }
           }}
           onTimeUpdate={() => {
             if (audioRef.current && activeClip) {
@@ -4205,6 +4353,17 @@ export default function App() {
             }
           }}
           onEnded={() => {
+            if (isContinuousPlay) {
+              const next = findNextTrack(selectedClipId, sortedClips);
+              if (next) {
+                setSelectedClipId(next.id);
+                setCurrentTimeSec(0);
+                setPlaybackProgress(0);
+                pendingSeekRef.current = 0;
+                setIsPlaying(true);
+                return;
+              }
+            }
             setIsPlaying(false);
             setPlaybackProgress(0);
             setCurrentTimeSec(0);
@@ -5407,7 +5566,17 @@ export default function App() {
 
               {/* Player Controls */}
               <div className="detail-player-controls" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="detail-transport-btn"
+                    data-testid="detail-prev-track-btn"
+                    onClick={() => handlePlayPrevTrack()}
+                    title={currentTimeSec > 2 ? 'Return to Start (⌥⌘←)' : 'Previous Track (⌥⌘← / ⌘[)'}
+                    disabled={!prevTrack && currentTimeSec <= 2}
+                  >
+                    ⏮
+                  </button>
                   <button
                     type="button"
                     className="detail-transport-btn"
@@ -5435,7 +5604,40 @@ export default function App() {
                   >
                     +10s
                   </button>
-                  <span data-testid="detail-time-display" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', color: 'var(--text-secondary)', marginLeft: '0.4rem' }}>
+                  <button
+                    type="button"
+                    className="detail-transport-btn"
+                    data-testid="detail-next-track-btn"
+                    onClick={() => handlePlayNextTrack()}
+                    title="Next Track (⌥⌘→ / ⌘])"
+                    disabled={!nextTrack}
+                  >
+                    ⏭
+                  </button>
+                  <button
+                    type="button"
+                    className={`detail-transport-btn ${isContinuousPlay ? 'active' : ''}`}
+                    data-testid="detail-continuous-play-toggle"
+                    onClick={() => setIsContinuousPlay((prev) => !prev)}
+                    title={isContinuousPlay ? 'Continuous Library Playback: ON' : 'Continuous Library Playback: OFF'}
+                  >
+                    🔁
+                  </button>
+                  <span
+                    data-testid="detail-playlist-queue-badge"
+                    style={{
+                      fontSize: '0.78rem',
+                      color: 'var(--text-secondary)',
+                      padding: '2px 6px',
+                      background: 'var(--bg-tertiary)',
+                      borderRadius: '4px',
+                      fontFamily: 'var(--font-mono)',
+                    }}
+                    title="Current track position in active library view"
+                  >
+                    {playlistPosition.label}
+                  </span>
+                  <span data-testid="detail-time-display" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', color: 'var(--text-secondary)', marginLeft: '0.2rem' }}>
                     {Math.floor(currentTimeSec / 60).toString().padStart(2, '0')}:{(Math.floor(currentTimeSec % 60)).toString().padStart(2, '0')} / {Math.floor((activeClip.endTimeSeconds - activeClip.startTimeSeconds) / 60).toString().padStart(2, '0')}:{(Math.floor((activeClip.endTimeSeconds - activeClip.startTimeSeconds) % 60)).toString().padStart(2, '0')}
                   </span>
                 </div>
@@ -6129,7 +6331,17 @@ export default function App() {
                 ))}
               </div>
 
-              <div className="transport-controls">
+              <div className="transport-controls" style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  data-testid="prev-track-btn"
+                  onClick={() => handlePlayPrevTrack()}
+                  title={currentTimeSec > 2 ? 'Return to Start (⌥⌘←)' : 'Previous Track (⌥⌘← / ⌘[)'}
+                  disabled={!prevTrack && currentTimeSec <= 2}
+                >
+                  ⏮
+                </button>
                 <button
                   type="button"
                   className="btn btn-secondary btn-sm"
@@ -6156,12 +6368,38 @@ export default function App() {
                   +10s
                 </button>
                 <button
+                  type="button"
                   className="btn btn-secondary btn-sm"
-                  onClick={() => setPlaybackProgress(0)}
-                  title="Return to Start"
+                  data-testid="next-track-btn"
+                  onClick={() => handlePlayNextTrack()}
+                  title="Next Track (⌥⌘→ / ⌘])"
+                  disabled={!nextTrack}
                 >
-                  ⏮
+                  ⏭
                 </button>
+                <button
+                  type="button"
+                  className={`btn btn-secondary btn-sm ${isContinuousPlay ? 'active' : ''}`}
+                  data-testid="continuous-play-toggle"
+                  onClick={() => setIsContinuousPlay((prev) => !prev)}
+                  title={isContinuousPlay ? 'Continuous Library Playback: ON (Auto-advance to next track)' : 'Continuous Library Playback: OFF'}
+                >
+                  🔁
+                </button>
+                <span
+                  data-testid="playlist-queue-badge"
+                  style={{
+                    fontSize: '0.78rem',
+                    color: 'var(--text-secondary)',
+                    padding: '2px 7px',
+                    background: 'var(--bg-tertiary)',
+                    borderRadius: '4px',
+                    fontFamily: 'var(--font-mono)',
+                  }}
+                  title="Current track position in active library view"
+                >
+                  {playlistPosition.label}
+                </span>
                 <span data-testid="dock-time-display" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
                   {Math.floor(currentTimeSec / 60).toString().padStart(2, '0')}:{(Math.floor(currentTimeSec % 60)).toString().padStart(2, '0')} / {Math.floor((activeClip.endTimeSeconds - activeClip.startTimeSeconds) / 60).toString().padStart(2, '0')}:{(Math.floor((activeClip.endTimeSeconds - activeClip.startTimeSeconds) % 60)).toString().padStart(2, '0')}
                 </span>
