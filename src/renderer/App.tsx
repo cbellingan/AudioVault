@@ -162,6 +162,7 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackProgress, setPlaybackProgress] = useState(0.2); // 0.0 - 1.0
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatusEvent | null>(null);
+  const [vaultDataLoaded, setVaultDataLoaded] = useState(false);
   const [deletedFilesCount, setDeletedFilesCount] = useState(0);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const activeIngestingVolumePathRef = useRef<string | null>(null);
@@ -351,6 +352,7 @@ export default function App() {
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const pendingSeekRef = useRef<number | null>(null);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
 
   const activeClip = clips.find((c) => c.id === selectedClipId) || clips[0] || mockFallbackClips[0];
@@ -506,7 +508,11 @@ export default function App() {
     setCurrentTimeSec(clampedSec);
 
     if (audioRef.current) {
-      audioRef.current.currentTime = activeClip.startTimeSeconds + clampedSec;
+      if (audioRef.current.readyState >= 1) {
+        audioRef.current.currentTime = activeClip.startTimeSeconds + clampedSec;
+      } else {
+        pendingSeekRef.current = clampedSec;
+      }
     }
   }
 
@@ -548,6 +554,10 @@ export default function App() {
   }, [isPlaying, activeClip]);
 
   useEffect(() => {
+    if (pendingSeekRef.current !== null) {
+      // Retain pending seek target time for deep-link / passage jumps across clips
+      return;
+    }
     setIsPlaying(false);
     setPlaybackProgress(0);
     setCurrentTimeSec(0);
@@ -1331,6 +1341,7 @@ export default function App() {
         setSelectedClipId(allClips[0].id);
       }
       setRawFiles(allRaw);
+      setVaultDataLoaded(true);
       setAutoUnmountPref(settings.autoUnmountAfterIngest);
       if (settings.rememberDeleteChoice !== undefined) {
         setRememberDeleteChoice(settings.rememberDeleteChoice);
@@ -1718,34 +1729,49 @@ export default function App() {
   };
 
   const handleSeekToPassage = (startSec: number) => {
-    if (!audioRef.current || !activeClip) return;
+    if (!activeClip) return;
     const clipDuration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
     const targetTime = Math.max(0, Math.min(clipDuration, startSec));
-    audioRef.current.currentTime = activeClip.startTimeSeconds + targetTime;
     setCurrentTimeSec(targetTime);
     if (clipDuration > 0) {
       setPlaybackProgress(targetTime / clipDuration);
     }
-    if (!isPlaying) {
-      setIsPlaying(true);
-      audioRef.current.play().catch(() => {});
+    if (audioRef.current) {
+      if (audioRef.current.readyState >= 1) {
+        audioRef.current.currentTime = activeClip.startTimeSeconds + targetTime;
+      } else {
+        pendingSeekRef.current = targetTime;
+      }
+      if (!isPlaying) {
+        setIsPlaying(true);
+        audioRef.current.play().catch(() => {});
+      }
     }
   };
 
   const handleJumpToPassageHit = (clipId: string, startSec: number) => {
+    const isDifferentClip = clipId !== selectedClipId;
     setSelectedClipId(clipId);
     setActiveWorkspace('detail');
     const targetClip = clips.find((c) => c.id === clipId);
-    if (audioRef.current && targetClip) {
+    if (targetClip) {
       const clipDuration = targetClip.endTimeSeconds - targetClip.startTimeSeconds;
       const targetTime = Math.max(0, Math.min(clipDuration, startSec));
-      audioRef.current.currentTime = targetClip.startTimeSeconds + targetTime;
       setCurrentTimeSec(targetTime);
       if (clipDuration > 0) {
         setPlaybackProgress(targetTime / clipDuration);
       }
+      if (isDifferentClip) {
+        pendingSeekRef.current = targetTime;
+      } else if (audioRef.current && audioRef.current.readyState >= 1) {
+        audioRef.current.currentTime = targetClip.startTimeSeconds + targetTime;
+      } else {
+        pendingSeekRef.current = targetTime;
+      }
       setIsPlaying(true);
-      audioRef.current.play().catch(() => {});
+      if (audioRef.current) {
+        audioRef.current.play().catch(() => {});
+      }
     }
   };
 
@@ -4155,7 +4181,19 @@ export default function App() {
         {/* Persistent Native Audio Element across all workspaces */}
         <audio
           ref={audioRef}
-          src={activeClip && !activeClip.parentFileId.startsWith('raw_0') ? `audiovault://file/${activeClip.parentFileId}` : undefined}
+          src={activeClip && (vaultDataLoaded || !activeClip.parentFileId.startsWith('raw_0')) ? `audiovault://file/${activeClip.parentFileId}` : undefined}
+          onLoadedMetadata={() => {
+            if (pendingSeekRef.current !== null && audioRef.current && activeClip) {
+              const target = pendingSeekRef.current;
+              pendingSeekRef.current = null;
+              audioRef.current.currentTime = activeClip.startTimeSeconds + target;
+              setCurrentTimeSec(target);
+              const duration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
+              if (duration > 0) {
+                setPlaybackProgress(Math.min(1, target / duration));
+              }
+            }
+          }}
           onTimeUpdate={() => {
             if (audioRef.current && activeClip) {
               const duration = activeClip.endTimeSeconds - activeClip.startTimeSeconds;
@@ -5397,7 +5435,7 @@ export default function App() {
                   >
                     +10s
                   </button>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', color: 'var(--text-secondary)', marginLeft: '0.4rem' }}>
+                  <span data-testid="detail-time-display" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', color: 'var(--text-secondary)', marginLeft: '0.4rem' }}>
                     {Math.floor(currentTimeSec / 60).toString().padStart(2, '0')}:{(Math.floor(currentTimeSec % 60)).toString().padStart(2, '0')} / {Math.floor((activeClip.endTimeSeconds - activeClip.startTimeSeconds) / 60).toString().padStart(2, '0')}:{(Math.floor((activeClip.endTimeSeconds - activeClip.startTimeSeconds) % 60)).toString().padStart(2, '0')}
                   </span>
                 </div>
@@ -6124,7 +6162,7 @@ export default function App() {
                 >
                   ⏮
                 </button>
-                <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+                <span data-testid="dock-time-display" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
                   {Math.floor(currentTimeSec / 60).toString().padStart(2, '0')}:{(Math.floor(currentTimeSec % 60)).toString().padStart(2, '0')} / {Math.floor((activeClip.endTimeSeconds - activeClip.startTimeSeconds) / 60).toString().padStart(2, '0')}:{(Math.floor((activeClip.endTimeSeconds - activeClip.startTimeSeconds) % 60)).toString().padStart(2, '0')}
                 </span>
                 <select

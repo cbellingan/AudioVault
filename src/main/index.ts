@@ -6,6 +6,26 @@ import { execFile } from 'child_process';
 import util from 'util';
 
 const execFilePromise = util.promisify(execFile);
+import { Readable } from 'stream';
+
+function getAudioMimeType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case '.wav':
+      return 'audio/wav';
+    case '.mp3':
+      return 'audio/mpeg';
+    case '.m4a':
+    case '.aac':
+      return 'audio/mp4';
+    case '.flac':
+      return 'audio/flac';
+    case '.ogg':
+      return 'audio/ogg';
+    default:
+      return 'application/octet-stream';
+  }
+}
 
 function getFfmpegPath(): string {
   if (fs.existsSync('/opt/homebrew/bin/ffmpeg')) {
@@ -150,7 +170,54 @@ app.whenReady().then(() => {
       }
       const rawFile = dedupEngine.getRawFile(fileId);
       if (rawFile && fs.existsSync(rawFile.storagePath)) {
-        return net.fetch(`file://${rawFile.storagePath}`);
+        const filePath = rawFile.storagePath;
+        const stat = fs.statSync(filePath);
+        const totalSize = stat.size;
+        const mimeType = getAudioMimeType(filePath);
+        const rangeHeader = request.headers.get('range');
+
+        if (rangeHeader) {
+          const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+          if (match) {
+            const start = parseInt(match[1], 10);
+            const end = match[2] ? parseInt(match[2], 10) : totalSize - 1;
+            const clampedEnd = Math.min(end, totalSize - 1);
+            const chunkSize = clampedEnd - start + 1;
+
+            if (start >= totalSize || start > clampedEnd) {
+              return new Response(null, {
+                status: 416,
+                statusText: 'Range Not Satisfiable',
+                headers: {
+                  'Content-Range': `bytes */${totalSize}`,
+                },
+              });
+            }
+
+            const stream = fs.createReadStream(filePath, { start, end: clampedEnd });
+            return new Response(Readable.toWeb(stream as any) as any, {
+              status: 206,
+              statusText: 'Partial Content',
+              headers: {
+                'Content-Type': mimeType,
+                'Content-Range': `bytes ${start}-${clampedEnd}/${totalSize}`,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': String(chunkSize),
+              },
+            });
+          }
+        }
+
+        const stream = fs.createReadStream(filePath);
+        return new Response(Readable.toWeb(stream as any) as any, {
+          status: 200,
+          statusText: 'OK',
+          headers: {
+            'Content-Type': mimeType,
+            'Accept-Ranges': 'bytes',
+            'Content-Length': String(totalSize),
+          },
+        });
       }
     } catch (e) {
       console.error('AudioVault protocol fetch error:', e);

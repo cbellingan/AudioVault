@@ -62,9 +62,9 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
     await expect(window.locator("text=...the audio pipeline handles unmounting cleanly...").first()).toBeVisible();
 
     // Waveform Canvas & Seeking
-    const canvas = window.locator(".waveform-canvas");
+    const canvas = window.locator(".waveform-dock .waveform-canvas").first();
     await expect(canvas).toBeVisible();
-    await canvas.click({ position: { x: 200, y: 50 } });
+    await canvas.click({ position: { x: 200, y: 15 } });
 
     // Playback Controls
     const playBtn = window.locator(".play-btn");
@@ -78,6 +78,7 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
     expect(await playBtn.innerText()).toBe("▶");
 
     // Scan & Import Buttons
+    console.log("[E2E Test 1] Step 10: scan & import buttons");
     await expect(window.locator("button", { hasText: "Scan Connected Drives" })).toBeVisible();
     await expect(window.locator("button", { hasText: "Import Folder / SD Card" })).toBeVisible();
 
@@ -171,7 +172,7 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
     // Title sort
     const titleHeader = window.locator(".clips-table th", { hasText: "Clip Title" });
     await titleHeader.click();
-    const titleCells = window.locator(".clips-table tbody tr td:first-child span");
+    const titleCells = window.locator(".clips-table tbody tr [data-testid=\"clip-title-link\"]");
     const firstTitle = await titleCells.first().innerText();
     const lastTitle = await titleCells.last().innerText();
     expect(firstTitle.localeCompare(lastTitle)).toBeLessThanOrEqual(0);
@@ -179,7 +180,7 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
     // Duration sort
     const durationHeader = window.locator(".clips-table th", { hasText: "Duration" });
     await durationHeader.click();
-    const durCells = window.locator(".clips-table tbody tr td:nth-child(3)");
+    const durCells = window.locator(".clips-table tbody tr td:nth-child(4)");
     const firstDur = parseFloat(await durCells.first().innerText());
     const lastDur = parseFloat(await durCells.last().innerText());
     expect(firstDur).toBeGreaterThanOrEqual(lastDur);
@@ -930,12 +931,23 @@ test.describe("AudioVault Electron Integration & Exhaustive E2E Suite", () => {
       const editModal = window.locator("[data-testid=\"edit-transcript-modal\"]");
       await expect(editModal).toBeVisible();
       const textarea = window.locator("[data-testid=\"edit-transcript-textarea\"]");
-      await textarea.fill("This is a verified test edit for the transcript.");
+      await textarea.fill("[00:00] First segment introduction\n\n[00:01] Second segment discussion\n\n[00:02] Third segment conclusion");
       const confirmSaveBtn = window.locator("[data-testid=\"confirm-save-transcript-btn\"]");
       await confirmSaveBtn.click();
       await expect(editModal).toHaveCount(0);
       const toast = window.locator("[data-testid=\"copy-toast\"]");
       await expect(toast).toContainText("Transcript updated");
+
+      // Verify passage seek works and stays at sought timestamp without jumping to start
+      const passageSeekBtn = window.locator("[data-testid=\"passage-time-00:01\"]");
+      await expect(passageSeekBtn).toBeVisible();
+      await passageSeekBtn.click();
+
+      // Ensure time display updates to 00:01 and does NOT snap back to 00:00
+      const timeDisplay = window.locator("[data-testid=\"detail-time-display\"]");
+      await expect(timeDisplay).toContainText("00:01");
+      await window.waitForTimeout(400);
+      await expect(timeDisplay).not.toContainText("00:00 /");
     }
 
     // 4. Test Save Excerpt Modal and Child Clip Creation

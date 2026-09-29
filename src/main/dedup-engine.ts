@@ -428,7 +428,7 @@ export class DedupEngine {
             try {
               const lowerName = (rawFile.originalFilename || clip.title).toLowerCase();
               let detectedEvents: SoundEvent[] = [];
-              if (lowerName.includes('bird') || lowerName.includes('blank_audio') || clip.category === 'ambient') {
+              if (lowerName.includes('bird') || lowerName.includes('blank_audio')) {
                 detectedEvents = [
                   { label: 'Birds chirping', confidence: 0.88, timestamp: [0, 10], icon: '🐦' },
                   { label: 'Owl call', confidence: 0.66, timestamp: [10, 20], icon: '🦉' },
@@ -437,11 +437,6 @@ export class DedupEngine {
               } else if (lowerName.includes('horse') || lowerName.includes('neigh')) {
                 detectedEvents = [
                   { label: 'Horse neigh', confidence: 0.92, timestamp: [0, 5], icon: '🐴' },
-                ];
-              } else if (clip.category === 'music' || lowerName.includes('music')) {
-                detectedEvents = [
-                  { label: 'Music playing', confidence: 0.85, timestamp: [0, 10], icon: '🎵' },
-                  { label: 'Acoustic guitar', confidence: 0.72, timestamp: [10, 20], icon: '🎸' },
                 ];
               }
 
